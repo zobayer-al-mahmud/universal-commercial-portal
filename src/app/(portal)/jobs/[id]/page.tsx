@@ -16,6 +16,7 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       reviewTickets: true,
       renameItems: { orderBy: { createdAt: "asc" } },
       scheduleLines: { orderBy: { createdAt: "asc" } },
+      customsInvoices: true,
     },
   });
   if (!job) notFound();
@@ -169,6 +170,52 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
           </table>
         </section>
       ) : null}
+
+      {job.customsInvoices.map((inv) => {
+        let items: { description: string; hsCode: string; quantity: number; unitPrice: number; amount: number }[] = [];
+        try { items = JSON.parse(inv.lineItemsJson); } catch { /* ignore */ }
+        return (
+          <section key={inv.id} className="card mt-6 p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-700">Customs Invoice {inv.invoiceKey}</h3>
+              <span className="badge bg-amber-100 text-amber-800">draft document</span>
+            </div>
+            <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
+              <div><div className="font-medium text-slate-500">Exporter</div>{inv.exporterName}</div>
+              <div><div className="font-medium text-slate-500">Buyer</div>{inv.buyerName}</div>
+              <div><div className="font-medium text-slate-500">Cargo delivery ({inv.marketCode})</div>{inv.cargoDeliveryName || "— (pending, see review)"}</div>
+              <div><div className="font-medium text-slate-500">Contract No. / Date</div>{inv.contractNo} · {inv.contractDate}</div>
+              <div><div className="font-medium text-slate-500">H&M Order No.</div>{inv.hmOrderNo}</div>
+              <div><div className="font-medium text-slate-500">Exp No. / Date</div>{inv.expNo} · {inv.expDate}</div>
+              <div><div className="font-medium text-slate-500">Invoice Date</div>{inv.invoiceDate}</div>
+              <div><div className="font-medium text-slate-500">Port of Loading → Delivery</div>{inv.portOfLoading} → {inv.portOfDelivery}</div>
+              <div><div className="font-medium text-slate-500">Origin → Destination</div>{inv.countryOfOrigin} → {inv.countryOfFinalDestination}</div>
+            </div>
+            <table className="mt-4 w-full">
+              <thead className="bg-slate-50">
+                <tr><th className="th">Description</th><th className="th">HS Code</th><th className="th">Qty</th><th className="th">Unit Price</th><th className="th">Amount</th></tr>
+              </thead>
+              <tbody>
+                {items.map((li, i) => (
+                  <tr key={i} className="border-t border-slate-50">
+                    <td className="td">{li.description}</td>
+                    <td className="td font-mono text-xs">{li.hsCode}</td>
+                    <td className="td">{li.quantity}</td>
+                    <td className="td">{li.unitPrice}</td>
+                    <td className="td">{li.amount}</td>
+                  </tr>
+                ))}
+                <tr className="border-t border-slate-200 font-semibold">
+                  <td className="td" colSpan={2}>Total</td>
+                  <td className="td">{inv.totalQty}</td>
+                  <td className="td"></td>
+                  <td className="td">{inv.currency} {inv.totalValue}</td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        );
+      })}
 
       {job.contractRows.length > 0 ? (
         <section className="card mt-6 overflow-x-auto">

@@ -12,7 +12,7 @@ const prisma = new PrismaClient();
 const MODULES = [
   { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Intake H&M Order Packages, extract & reconcile POs into Sales Contract records (SRS UCP-SRS-SC-001)." },
   { key: "shipment-schedule", name: "Week Wise Shipment Schedule Creation", sortOrder: 2, status: "active", description: "Build weekly cut-off shipment schedules (per-market invoice lines) from confirmed orders." },
-  { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 3, status: "planned", description: "Generate per-market customs invoice workbooks (SUMMARY / PAYMENT INVOICE / BL DRAFT)." },
+  { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 3, status: "active", description: "Generate per-order/per-market customs invoices (header, consignee, HS-coded line items, totals)." },
   { key: "pdf-rename", name: "PDF File Rename", sortOrder: 4, status: "active", description: "Extract FCR / Bill-of-Export fields from scanned PDFs and rename by business key." },
   { key: "booking-correction", name: "Booking Correction", sortOrder: 5, status: "planned", description: "Match original vs corrected booking/packing-list docs; verify on the Damco portal." },
   { key: "hm-portal", name: "H&M Portal", sortOrder: 6, status: "blocked", description: "H&M Supplier Portal interactions. Blocked: no source files; credentials & field lists required." },
@@ -110,6 +110,21 @@ async function main() {
   await ref("currency", ["USD"]);
   await ref("incoterm", ["FCA"]);
   await ref("transport", ["Sea", "Air", "Sea-Air"]);
+
+  // Per-market cargo-delivery consignees (observed-sample; Q-CI-01 master list TBD).
+  const marketConsignees: [string, string][] = [
+    ["NH", "H&M Retail Sdn Bhd, c/o CEVA Freight Holdings Sdn Bhd, Shah Alam, Malaysia"],
+    ["MY", "H&M Retail Sdn Bhd, c/o CEVA Freight Holdings Sdn Bhd, Shah Alam, Malaysia"],
+    ["US", "H&M Hennes & Mauritz LP, United States"],
+    ["BR", "H&M Hennes & Mauritz Brazil Importacoes Ltda"],
+  ];
+  for (const [code, value] of marketConsignees) {
+    await prisma.referenceData.upsert({
+      where: { type_code: { type: "market-consignee", code } },
+      update: { value },
+      create: { type: "market-consignee", code, value, metaJson: JSON.stringify({ source: "observed-sample" }) },
+    });
+  }
 
   console.log("✔ Seed complete.");
 }

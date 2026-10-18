@@ -16,7 +16,8 @@ fail-closed external integrations.
 | Sales Contract Creation (intake → extract → reconcile → draft → mock UCP) | ✅ implemented + tested |
 | PDF File Rename | 🟡 CSV → rename-plan preview implemented + tested; on-disk apply gated |
 | Week Wise Shipment Schedule | 🟡 schedule build (order→market lines, invoices) implemented + tested |
-| Customs Invoice / Booking Correction | 🟠 requirements captured, not implemented |
+| Customs Invoice Generation | 🟡 per-order invoice build (consignee, HS line items, totals) implemented + tested |
+| Booking Correction | 🟠 requirements captured, not implemented |
 | H&M / Bangladesh Bank / Damco portals | ⛔ blocked (no source files; credentials required) |
 
 See [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for detail.

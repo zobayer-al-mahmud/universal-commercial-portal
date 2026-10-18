@@ -116,9 +116,10 @@ model Job {
   stageEvents   JobStageEvent[]
   poRows        PoExtractionRow[]
   contractRows  SalesContractRow[]
-  reviewTickets ReviewTicket[]
-  renameItems   RenameItem[]
-  scheduleLines ShipmentScheduleLine[]
+  reviewTickets  ReviewTicket[]
+  renameItems    RenameItem[]
+  scheduleLines  ShipmentScheduleLine[]
+  customsInvoices CustomsInvoice[]
 
   @@index([module, status])
   @@index([businessKey])
@@ -256,6 +257,45 @@ model ShipmentScheduleLine {
 
   @@index([jobId])
   @@index([orderNo])
+}
+
+// ---------------------------------------------------------------------------
+// Customs Invoice Generation — per-order/per-market invoice (module 3)
+// Keyed by Invoice Number + market code (e.g. "45238 NH"). Line items stored as
+// JSON; header + totals as columns. Output document is rendered; xlsx export gated.
+// ---------------------------------------------------------------------------
+
+model CustomsInvoice {
+  id                        String   @id @default(cuid())
+  jobId                     String
+  job                       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  invoiceNumber             String
+  marketCode                String
+  invoiceKey                String // "<number> <market>"
+  invoiceDate               String
+  contractNo                String
+  contractDate              String
+  hmOrderNo                 String
+  expNo                     String
+  expDate                   String
+  portOfLoading             String
+  portOfDelivery            String
+  countryOfOrigin           String
+  countryOfFinalDestination String
+  exporterName              String
+  buyerName                 String
+  consigneeName             String
+  cargoDeliveryName         String
+  currency                  String   @default("USD")
+  totalQty                  Int
+  totalValue                Float
+  lineItemsJson             String   @default("[]")
+  status                    String   @default("draft") // draft | queued
+  message                   String   @default("")
+  createdAt                 DateTime @default(now())
+
+  @@index([jobId])
+  @@index([invoiceKey])
 }
 
 // ---------------------------------------------------------------------------

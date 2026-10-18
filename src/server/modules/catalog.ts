@@ -44,13 +44,15 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
   "customs-invoice": {
     key: "customs-invoice",
     sources: "54 per-order customs invoice workbooks (SUMMARY / PAYMENT INVOICE / per-market / BL DRAFT / CUSTOM INVOICE).",
-    status: "requirements-only",
+    status: "partial",
     scope: [
-      "Generate a per-order invoice workbook keyed by Invoice Number + market code.",
-      "Carry Contract No, Exp No + dates, buyer/consignee/cargo-delivery addresses per market.",
-      "Produce BL DRAFT and customs-invoice sheets from the same order dataset.",
+      "Build a per-order/per-market invoice keyed by Invoice Number + market code.",
+      "Fixed exporter (Ananta) + buyer (H&M GBC); per-market cargo-delivery from reference data.",
+      "HS-coded line items; amount = qty × unit price; totalQty / totalValue computed.",
+      "Validation + fail-closed review routing; invoice document rendered on the job.",
+      "Invoice-build implemented + tested; xlsx export (SUMMARY/BL DRAFT sheets) still a gated step.",
     ],
-    openQuestions: ["Invoice numbering rule", "Per-market consignee master-data source", "Amendment handling"],
+    openQuestions: ["Invoice numbering rule", "Per-market consignee master-data source (Q-CI-01)", "Amendment handling"],
   },
   "pdf-rename": {
     key: "pdf-rename",

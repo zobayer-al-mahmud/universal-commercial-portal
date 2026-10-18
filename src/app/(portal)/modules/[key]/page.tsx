@@ -6,6 +6,7 @@ import { MODULE_CATALOG } from "@/server/modules/catalog";
 import { IntakeForm } from "@/components/IntakeForm";
 import { RenameForm } from "@/components/RenameForm";
 import { ScheduleForm } from "@/components/ScheduleForm";
+import { CustomsInvoiceForm } from "@/components/CustomsInvoiceForm";
 
 export const dynamic = "force-dynamic";
 
@@ -71,6 +72,13 @@ export default async function ModulePage({ params }: { params: { key: string } }
         <div className="mb-6">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">Build week schedule from orders</h3>
           <ScheduleForm />
+        </div>
+      ) : null}
+
+      {module.key === "customs-invoice" ? (
+        <div className="mb-6">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">Generate customs invoice</h3>
+          <CustomsInvoiceForm />
         </div>
       ) : null}
 

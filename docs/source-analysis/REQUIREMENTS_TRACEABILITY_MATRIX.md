@@ -31,6 +31,10 @@ documented scope, not code.
 | Shipment schedule: order→market expansion, value=PCS×FOB | Week `Summary` layout | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |
 | Shipment schedule: sequential invoice allocation (Q-SS-01) | observed invoice sequence | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |
 | Shipment schedule: persistence + review routing | — | `src/server/shipment-schedule/intake.ts` | verified live (UI) |
+| Customs invoice: build, amount=qty×price, totals | sample 45238 NH.xlsx | `src/server/customs-invoice/build.ts` | `tests/customs-invoice.test.ts` |
+| Customs invoice: per-market consignee resolution (Q-CI-01) | per-market invoice sheets | `build.ts` + `intake.ts` (reference data) | `tests/customs-invoice.test.ts` |
+| Customs invoice: validation + fail-closed review | — | `build.ts` + `intake.ts` | `tests/customs-invoice.test.ts` + live |
+| Customs invoice: rendered invoice document | workbook layout | `src/app/(portal)/jobs/[id]/page.tsx` | verified live (UI) |
 
 Legend: "verified live (mock)" = exercised through the running app against the mock
 adapter; "manual (UI)" = behaviour confirmed through the UI, not yet an automated test.
