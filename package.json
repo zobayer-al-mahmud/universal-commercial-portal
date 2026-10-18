@@ -1,0 +1,50 @@
+{
+  "name": "ananta-universal-commercial-portal",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ananta Universal Commercial Portal (UCP) — internal commercial automation portal for Ananta Garments Ltd.",
+  "comment": "Scripts call node entrypoints directly because the install path contains spaces, which breaks the .bin cmd shims on Windows.",
+  "scripts": {
+    "dev": "node node_modules/next/dist/bin/next dev",
+    "build": "node node_modules/next/dist/bin/next build",
+    "start": "node node_modules/next/dist/bin/next start",
+    "lint": "node node_modules/next/dist/bin/next lint",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "test": "node node_modules/vitest/vitest.mjs run",
+    "test:watch": "node node_modules/vitest/vitest.mjs",
+    "db:generate": "node node_modules/prisma/build/index.js generate",
+    "db:push": "node node_modules/prisma/build/index.js db push",
+    "db:migrate": "node node_modules/prisma/build/index.js migrate dev",
+    "db:seed": "node node_modules/tsx/dist/cli.mjs prisma/seed.ts",
+    "db:reset": "node node_modules/prisma/build/index.js migrate reset --force",
+    "setup": "node node_modules/prisma/build/index.js migrate deploy && node node_modules/tsx/dist/cli.mjs prisma/seed.ts"
+  },
+  "prisma": {
+    "seed": "node node_modules/tsx/dist/cli.mjs prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "5.22.0",
+    "bcryptjs": "2.4.3",
+    "exceljs": "4.4.0",
+    "jose": "5.9.6",
+    "next": "14.2.33",
+    "pdf-parse": "1.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "zod": "3.23.8"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "2.4.6",
+    "@types/node": "20.17.6",
+    "@types/pdf-parse": "1.1.4",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "autoprefixer": "10.4.20",
+    "postcss": "8.4.49",
+    "prisma": "5.22.0",
+    "tailwindcss": "3.4.15",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3",
+    "vitest": "2.1.5"
+  }
+}

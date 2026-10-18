@@ -1,0 +1,271 @@
+// Ananta Universal Commercial Portal — data model
+// Dev provider: SQLite (self-contained, no external service).
+// Portable to PostgreSQL for staging/production (see docs/architecture/DATA_MODEL.md).
+// Note: JSON columns are stored as String (SQLite has no native JSON type);
+//       enums are modelled as String with documented allowed values.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Access control (SRS §10, Common Requirements)
+// ---------------------------------------------------------------------------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  isActive     Boolean  @default(true)
+  roleId       String
+  role         Role     @relation(fields: [roleId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  reviewTickets ReviewTicket[] @relation("AssignedReviewer")
+
+  @@index([roleId])
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique // ADMIN | COMMERCIAL | MERCHANDISER | REVIEWER | VIEWER
+  description String
+  permissions RolePermission[]
+  users       User[]
+  createdAt   DateTime         @default(now())
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique // e.g. "job.read", "job.retry", "review.approve", "admin.users"
+  description String
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+// ---------------------------------------------------------------------------
+// Portal modules (the nine source areas) — drives navigation + status
+// ---------------------------------------------------------------------------
+
+model Module {
+  key         String   @id // sales-contract | shipment-schedule | customs-invoice | pdf-rename | booking-correction | hm-portal | bb-portal | damco-portal | common
+  name        String
+  sortOrder   Int
+  description String
+  status      String   @default("active") // active | planned | blocked
+  createdAt   DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Document intake + immutable archival (SRS §6, §9.1)
+// ---------------------------------------------------------------------------
+
+model SourceDocument {
+  id           String   @id @default(cuid())
+  jobId        String?
+  job          Job?     @relation(fields: [jobId], references: [id])
+  kind         String // msg | pdf-purchase-order | pdf-size-colour | pdf-country | xlsx | pdf-generic | unknown
+  originalName String
+  sha256       String   @unique
+  sizeBytes    Int
+  mimeDetected String
+  storagePath  String // immutable archive location (outside repo)
+  receivedAt   DateTime @default(now())
+  metadataJson String   @default("{}")
+
+  @@index([jobId])
+  @@index([sha256])
+}
+
+// ---------------------------------------------------------------------------
+// Durable job ledger + state machine (SRS §5.7)
+// ---------------------------------------------------------------------------
+
+model Job {
+  id             String   @id @default(cuid())
+  module         String // module key
+  type           String // e.g. "order-package", "rename-batch"
+  businessKey    String? // e.g. OrderNo / batch id — used for idempotency locking
+  status         String   @default("received") // received|classified|extracted|reconciled|portal_in_progress|verified|queued|failed|duplicate|draft
+  priority       Int      @default(5)
+  attempts       Int      @default(0)
+  leasedBy       String?
+  leaseExpiresAt DateTime?
+  lastError      String?
+  payloadJson    String   @default("{}")
+  resultJson     String   @default("{}")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  documents     SourceDocument[]
+  stageEvents   JobStageEvent[]
+  poRows        PoExtractionRow[]
+  contractRows  SalesContractRow[]
+  reviewTickets ReviewTicket[]
+
+  @@index([module, status])
+  @@index([businessKey])
+}
+
+model JobStageEvent {
+  id        String   @id @default(cuid())
+  jobId     String
+  job       Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  stage     String
+  status    String // started | ok | failed | skipped
+  message   String?
+  actor     String   @default("system")
+  dataJson  String   @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([jobId])
+}
+
+// ---------------------------------------------------------------------------
+// Sales Contract Creation — destination records (SRS §C)
+// ---------------------------------------------------------------------------
+
+// PO EXTRACTION sheet — 22 columns, one row per Planning Market x TOD (SRS §C.2.1)
+model PoExtractionRow {
+  id                  String  @id @default(cuid())
+  jobId               String
+  job                 Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  sl                  Int
+  dateOfOrder         String?
+  orderNo             String
+  productNo           String?
+  productName         String?
+  productDescription  String?
+  season              String?
+  customsCustomerGroup String?
+  typeOfConstruction  String?
+  noOfPieces          Int?
+  invoiceAveragePrice Float?
+  currency            String?
+  timeOfDelivery      String?
+  planningMarketA     String?
+  planningMarketB     String?
+  quantity            Int?
+  termsOfDelivery     String?
+  transportBy         String?
+  source              String?
+  message             String  @default("")
+  success             Boolean @default(false)
+  createdAt           DateTime @default(now())
+
+  @@index([jobId])
+  @@index([orderNo])
+}
+
+// Per-contract tab row — append-only (SRS §C.2.2, BR-SC-21)
+model SalesContractRow {
+  id                 String   @id @default(cuid())
+  jobId              String
+  job                Job      @relation(fields: [jobId], references: [id])
+  blockContractRef   String // AGL/H&M/<NN>/<YYYY>
+  commercialContRef  String // AGL/H&M/<NN>-A/<YYYY>
+  revision           Int
+  orderNo            String
+  styleNo            String
+  description        String
+  orderQty           Int
+  totalQtyWithPackSet Int
+  unitPrice          Float
+  value              Float
+  timeOfDelivery     String
+  packSet            Int      @default(1)
+  remarks            String   @default("")
+  supersedesRowId    String? // for appended adjustment rows (BR-SC-21)
+  createdAt          DateTime @default(now())
+
+  @@index([jobId])
+  @@index([orderNo])
+  @@index([blockContractRef])
+}
+
+// ---------------------------------------------------------------------------
+// Human review queue (SRS §6.7, SC-FR-015)
+// ---------------------------------------------------------------------------
+
+model ReviewTicket {
+  id             String   @id @default(cuid())
+  jobId          String
+  job            Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  module         String
+  reasonCode     String // MISSING_PDF | INVALID_PO_NUMBER | FIELD_CONFLICT | POTENTIAL_DUPLICATE | AMENDMENT | SCHEMA_DRIFT | SCANNED_PDF_OCR_REQUIRED | BUSINESS_DECISION_PENDING | ...
+  reason         String
+  status         String   @default("open") // open | in_review | resolved | rejected
+  contextJson    String   @default("{}")
+  assignedToId   String?
+  assignedTo     User?    @relation("AssignedReviewer", fields: [assignedToId], references: [id])
+  resolution     String?
+  resolvedAt     DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([module, status])
+  @@index([jobId])
+}
+
+// ---------------------------------------------------------------------------
+// Append-only audit trail (SRS §E-11, SC-NFR-07)
+// ---------------------------------------------------------------------------
+
+model AuditEvent {
+  id         String   @id @default(cuid())
+  entityType String // job | review | user | document | contract | integration | auth
+  entityId   String
+  action     String
+  actor      String   @default("system")
+  dataJson   String   @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Reference / mapping data (SRS §5.5, §C.3 enums) — configurable, audited
+// ---------------------------------------------------------------------------
+
+model ReferenceData {
+  id        String   @id @default(cuid())
+  type      String // planning-market | buyer-code | product-description | customer-group | currency | incoterm | transport
+  code      String
+  value     String
+  metaJson  String   @default("{}")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@unique([type, code])
+  @@index([type])
+}
+
+// ---------------------------------------------------------------------------
+// Integration adapter registry + health (SRS §9, §5.8)
+// ---------------------------------------------------------------------------
+
+model IntegrationAdapter {
+  key           String   @id // ucp-sales-contract | hm-portal | bb-portal | damco-portal
+  name          String
+  mode          String   @default("mock") // mock | dryrun | live
+  status        String   @default("not_configured") // not_configured | ok | degraded | down
+  lastCheckedAt DateTime?
+  message       String   @default("")
+  updatedAt     DateTime @updatedAt
+}

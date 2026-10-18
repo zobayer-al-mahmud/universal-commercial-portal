@@ -1,0 +1,46 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# next.js
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# testing
+/coverage
+
+# local env & secrets — NEVER commit real credentials
+.env
+.env.local
+.env*.local
+*.pem
+
+# database (SQLite dev file) and generated prisma client
+/prisma/dev.db
+/prisma/dev.db-journal
+/src/generated
+
+# runtime data: intake, archive, processed job artifacts (may contain business data)
+/var/
+/storage/
+/uploads/
+
+# logs
+*.log
+npm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+
+# source business documents must never be committed into the repo
+/Assets/*.xlsx
+/Assets/*.pdf
+/Assets/*.msg

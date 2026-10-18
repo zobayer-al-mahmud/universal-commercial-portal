@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ananta: #3c6da5;
+}
+
+html,
+body {
+  padding: 0;
+  margin: 0;
+  background: #f4f6f9;
+  color: #23272b;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-slate-200 bg-white shadow-sm;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition;
+  }
+  .btn-primary {
+    @apply btn bg-ananta text-white hover:bg-ananta-600 disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+  }
+  .label {
+    @apply block text-sm font-medium text-slate-600;
+  }
+  .input {
+    @apply mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-ananta focus:outline-none focus:ring-1 focus:ring-ananta;
+  }
+  .badge {
+    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .th {
+    @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500;
+  }
+  .td {
+    @apply px-3 py-2 text-sm text-slate-700 align-top;
+  }
+}
