@@ -11,7 +11,7 @@ const prisma = new PrismaClient();
 
 const MODULES = [
   { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Intake H&M Order Packages, extract & reconcile POs into Sales Contract records (SRS UCP-SRS-SC-001)." },
-  { key: "shipment-schedule", name: "Week Wise Shipment Schedule Creation", sortOrder: 2, status: "planned", description: "Build weekly cut-off shipment schedules from PO / booking data." },
+  { key: "shipment-schedule", name: "Week Wise Shipment Schedule Creation", sortOrder: 2, status: "active", description: "Build weekly cut-off shipment schedules (per-market invoice lines) from confirmed orders." },
   { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 3, status: "planned", description: "Generate per-market customs invoice workbooks (SUMMARY / PAYMENT INVOICE / BL DRAFT)." },
   { key: "pdf-rename", name: "PDF File Rename", sortOrder: 4, status: "active", description: "Extract FCR / Bill-of-Export fields from scanned PDFs and rename by business key." },
   { key: "booking-correction", name: "Booking Correction", sortOrder: 5, status: "planned", description: "Match original vs corrected booking/packing-list docs; verify on the Damco portal." },

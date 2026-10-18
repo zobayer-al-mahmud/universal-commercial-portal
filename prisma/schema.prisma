@@ -118,6 +118,7 @@ model Job {
   contractRows  SalesContractRow[]
   reviewTickets ReviewTicket[]
   renameItems   RenameItem[]
+  scheduleLines ShipmentScheduleLine[]
 
   @@index([module, status])
   @@index([businessKey])
@@ -220,6 +221,41 @@ model RenameItem {
 
   @@index([jobId])
   @@index([targetName])
+}
+
+// ---------------------------------------------------------------------------
+// Week Wise Shipment Schedule — per-market invoice line (module 2)
+// Mirrors the Week workbook "Summary" grain: one line per order x market, with a
+// sequential invoice number and a cut-off assignment.
+// ---------------------------------------------------------------------------
+
+model ShipmentScheduleLine {
+  id            String   @id @default(cuid())
+  jobId         String
+  job           Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  weekNo        Int
+  firstCutOff   String
+  secondCutOff  String
+  buyerCode     String
+  contractNo    String
+  contractDate  String
+  orderNo       String
+  style         String
+  composition   String
+  incoterm      String
+  transport     String
+  pcs           Int
+  fob           Float
+  value         Float
+  marketCode    String
+  invoiceNo     String
+  cutOff        String // "1st" | "2nd"
+  message       String  @default("")
+  success       Boolean @default(true)
+  createdAt     DateTime @default(now())
+
+  @@index([jobId])
+  @@index([orderNo])
 }
 
 // ---------------------------------------------------------------------------

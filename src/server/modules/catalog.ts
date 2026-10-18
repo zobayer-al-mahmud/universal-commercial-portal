@@ -31,13 +31,15 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
   "shipment-schedule": {
     key: "shipment-schedule",
     sources: "307 PO/booking PDFs under week folders; Week 43/44 schedule workbooks; code lookup tabs.",
-    status: "requirements-only",
+    status: "partial",
     scope: [
-      "Weekly 'Week NN 1st cut off DD.MM.YYYY 2nd DD.MM.YYYY' schedule workbook.",
-      "Summary columns: Buyer Code, Cont.No., Date, OrderNo, PCS, STYLE, FOB, COMPOSITION, CAT, HTS, value, INVOICE, market allocations.",
-      "Planning-market → country/port lookup (2 DIGIT / TEXT TO / code tabs).",
+      "Parse 'Week NN 1st cut off DD.MM.YYYY 2nd DD.MM.YYYY' titles into a week definition.",
+      "Expand each order into one line per market (Summary grain); value = PCS × FOB.",
+      "Allocate sequential invoice numbers across the week's market lines (Q-SS-01).",
+      "Validate OrderNo / Contract Ref / PCS / FOB; route hard failures to review.",
+      "Schedule-build implemented + tested; booking-confirmation PDF parsing and port/country lookup pending.",
     ],
-    openQuestions: ["Cut-off assignment rule", "Invoice-number allocation per market", "Air vs Sea split rule"],
+    openQuestions: ["Cut-off (1st/2nd) assignment rule", "Invoice-number allocation per market (Q-SS-01)", "Air vs Sea split rule"],
   },
   "customs-invoice": {
     key: "customs-invoice",

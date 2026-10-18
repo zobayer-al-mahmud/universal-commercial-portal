@@ -27,6 +27,10 @@ documented scope, not code.
 | PDF rename: invoice→target rule (Q-PR-01) | observed renamed outputs | `rename.ts` `computeRenameTarget` | `tests/pdf-rename.test.ts` |
 | PDF rename: collision detection, no overwrite | preserve-originals policy | `rename.ts` `buildRenamePlan` | `tests/pdf-rename.test.ts` |
 | PDF rename: batch persistence + review routing | — | `src/server/pdf-rename/intake.ts` | verified live (UI) |
+| Shipment schedule: week-title parse | Week workbook names | `src/server/shipment-schedule/schedule.ts` `parseWeekTitle` | `tests/shipment-schedule.test.ts` |
+| Shipment schedule: order→market expansion, value=PCS×FOB | Week `Summary` layout | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |
+| Shipment schedule: sequential invoice allocation (Q-SS-01) | observed invoice sequence | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |
+| Shipment schedule: persistence + review routing | — | `src/server/shipment-schedule/intake.ts` | verified live (UI) |
 
 Legend: "verified live (mock)" = exercised through the running app against the mock
 adapter; "manual (UI)" = behaviour confirmed through the UI, not yet an automated test.

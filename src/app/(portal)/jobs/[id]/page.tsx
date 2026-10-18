@@ -15,6 +15,7 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       contractRows: true,
       reviewTickets: true,
       renameItems: { orderBy: { createdAt: "asc" } },
+      scheduleLines: { orderBy: { createdAt: "asc" } },
     },
   });
   if (!job) notFound();
@@ -129,6 +130,39 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
                       : "bg-slate-100 text-slate-600"}`}>{r.status}</span>
                   </td>
                   <td className="td text-xs text-slate-500">{r.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {job.scheduleLines.length > 0 ? (
+        <section className="card mt-6 overflow-x-auto">
+          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
+            Week {job.scheduleLines[0].weekNo} schedule ({job.scheduleLines.length} lines · cut-offs {job.scheduleLines[0].firstCutOff} / {job.scheduleLines[0].secondCutOff})
+          </div>
+          <table className="w-full">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="th">Buyer</th><th className="th">Order No</th><th className="th">Style</th>
+                <th className="th">PCS</th><th className="th">FOB</th><th className="th">Value</th>
+                <th className="th">Market</th><th className="th">Invoice</th><th className="th">Cut-off</th><th className="th">OK</th>
+              </tr>
+            </thead>
+            <tbody>
+              {job.scheduleLines.map((l) => (
+                <tr key={l.id} className="border-t border-slate-50">
+                  <td className="td text-xs">{l.buyerCode}</td>
+                  <td className="td font-mono text-xs">{l.orderNo}</td>
+                  <td className="td text-xs">{l.style}</td>
+                  <td className="td">{l.pcs}</td>
+                  <td className="td">{l.fob}</td>
+                  <td className="td">{l.value}</td>
+                  <td className="td font-mono text-xs">{l.marketCode}</td>
+                  <td className="td font-mono text-xs">{l.invoiceNo || "—"}</td>
+                  <td className="td text-xs">{l.cutOff}</td>
+                  <td className="td">{l.success ? "✓" : "✗"}</td>
                 </tr>
               ))}
             </tbody>
