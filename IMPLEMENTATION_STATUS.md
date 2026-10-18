@@ -10,7 +10,7 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 | B. Project foundation | ✅ Done | Next.js + Prisma + SQLite; migration applied; auth + RBAC; health probes; config validation |
 | C. Shared workflow infra | ✅ Done | Document intake + hashing, job ledger + state machine, review queue, audit trail, reference data, adapter interface |
 | D. Module vertical slices | 🟡 Partial | 5 of 9 modules functional (Sales Contract, PDF-rename, Shipment Schedule, Customs Invoice, Booking Correction) — implemented + tested; H&M / BB / Damco portals blocked (no source files) |
-| E. Cross-module workflow | 🟠 Specified | Dependency map documented; gating implemented within Sales Contract only |
+| E. Cross-module workflow | 🟡 Implemented | Confirm contract → schedule-from-contracts → invoice-from-line pipeline wired, with handoff links (scheduledJobId / invoicedJobId) preventing double-processing; verified live end-to-end |
 | F. QA / hardening | 🟡 Partial | Unit tests + typecheck + build pass; live-integration tests out of scope (gated) |
 
 ## Per-module
@@ -31,11 +31,11 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 
 | Check | Result |
 |-------|--------|
-| `npm run test` (Vitest) | ✅ PASS — 52/52 (sales-contract pipeline, pdf-rename, shipment-schedule, customs-invoice, booking-correction) |
+| `npm run test` (Vitest) | ✅ PASS — 55/55 (pipeline, pdf-rename, shipment-schedule, customs-invoice, booking-correction, cross-module handoffs) |
 | `npm run typecheck` (tsc) | ✅ PASS — exit 0 |
 | `npm run build` (next build) | ✅ PASS — 13 routes compiled, types valid |
-| DB migrate + seed | ✅ PASS — 5 migrations (init, rename, schedule, customs-invoice, booking-correction) applied; roles/modules/admin/reference seeded |
-| Live app smoke test (port 3300) | ✅ PASS — Sales Contract intake → draft + mock UCP read-back, missing-PDF → queued review, PDF-rename plan, Week 43 schedule, Customs Invoice 45901 NH (total USD 825), Booking Correction 698757 VN (3 allowed changes, mock Damco verify), job detail views, review-queue |
+| DB migrate + seed | ✅ PASS — 6 migrations (init, rename, schedule, customs-invoice, booking-correction, crossmodule-links) applied; roles/modules/admin/reference seeded |
+| Live app smoke test (port 3300) | ✅ PASS — per-module slices + full cross-module chain: confirmed contract 644637-8756 → Week 43 schedule (invoices 66000/66001, markets OW/CL) → customs invoice 66000 OW (qty 2500, USD 26250 carried through; missing OW consignee flagged for review) |
 | Live external integrations | ⛔ NOT RUN — disabled by design (mock); require authorization |
 
 ## Known limitations

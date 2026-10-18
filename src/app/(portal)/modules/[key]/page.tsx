@@ -8,6 +8,9 @@ import { RenameForm } from "@/components/RenameForm";
 import { ScheduleForm } from "@/components/ScheduleForm";
 import { CustomsInvoiceForm } from "@/components/CustomsInvoiceForm";
 import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
+import { ScheduleFromContracts } from "@/components/ScheduleFromContracts";
+import { listSchedulableContracts, listInvoiceableScheduleLines } from "@/server/handoffs/service";
+import { generateInvoiceFromLineAction } from "@/app/actions/handoffs";
 
 export const dynamic = "force-dynamic";
 
@@ -70,17 +73,63 @@ export default async function ModulePage({ params }: { params: { key: string } }
       ) : null}
 
       {module.key === "shipment-schedule" ? (
-        <div className="mb-6">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700">Build week schedule from orders</h3>
-          <ScheduleForm />
-        </div>
+        <>
+          <div className="mb-6">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">① From confirmed Sales Contracts</h3>
+            <p className="mb-3 text-xs text-slate-400">Handoff 1: schedule orders drawn from confirmed contract rows (markets from PO extraction).</p>
+            <ScheduleFromContracts contracts={await listSchedulableContracts()} />
+          </div>
+          <div className="mb-6">
+            <h3 className="mb-3 text-sm font-semibold text-slate-700">Or build week schedule from a pasted orders CSV</h3>
+            <ScheduleForm />
+          </div>
+        </>
       ) : null}
 
       {module.key === "customs-invoice" ? (
-        <div className="mb-6">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700">Generate customs invoice</h3>
-          <CustomsInvoiceForm />
-        </div>
+        <>
+          <div className="mb-6">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">① From shipment schedule lines</h3>
+            <p className="mb-3 text-xs text-slate-400">Handoff 2: generate an invoice from a schedule line&apos;s allocated invoice number.</p>
+            {await (async () => {
+              const lines = await listInvoiceableScheduleLines();
+              if (lines.length === 0)
+                return <div className="card p-4 text-sm text-slate-400">No invoiceable schedule lines yet. Build a schedule (from confirmed contracts) first.</div>;
+              return (
+                <div className="card overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-slate-50">
+                      <tr><th className="th">Invoice No</th><th className="th">Market</th><th className="th">Order</th><th className="th">Style</th><th className="th">PCS</th><th className="th">FOB</th><th className="th">Contract</th><th className="th"></th></tr>
+                    </thead>
+                    <tbody>
+                      {lines.map((l) => (
+                        <tr key={l.id} className="border-t border-slate-50">
+                          <td className="td font-mono text-xs">{l.invoiceNo}</td>
+                          <td className="td font-mono text-xs">{l.marketCode}</td>
+                          <td className="td font-mono text-xs">{l.orderNo}</td>
+                          <td className="td text-xs">{l.style}</td>
+                          <td className="td">{l.pcs}</td>
+                          <td className="td">{l.fob}</td>
+                          <td className="td font-mono text-xs">{l.contractNo}</td>
+                          <td className="td">
+                            <form action={generateInvoiceFromLineAction}>
+                              <input type="hidden" name="lineId" value={l.id} />
+                              <button className="btn-ghost text-xs">Generate invoice</button>
+                            </form>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+          <div className="mb-6">
+            <h3 className="mb-3 text-sm font-semibold text-slate-700">Or generate a customs invoice manually</h3>
+            <CustomsInvoiceForm />
+          </div>
+        </>
       ) : null}
 
       {module.key === "booking-correction" ? (

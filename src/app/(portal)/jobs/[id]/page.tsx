@@ -2,6 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge } from "@/components/ui";
+import { getSessionUser, userHasPermission } from "@/lib/auth";
+import { PERMISSIONS } from "@/lib/permissions";
+import { confirmContractAction } from "@/app/actions/handoffs";
 
 export const dynamic = "force-dynamic";
 
@@ -22,13 +25,38 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
   });
   if (!job) notFound();
 
+  const user = await getSessionUser();
+  const openReviewCount = job.reviewTickets.filter((t) => t.status === "open").length;
+  const canConfirm =
+    job.module === "sales-contract" &&
+    job.status === "draft" &&
+    openReviewCount === 0 &&
+    job.contractRows.length > 0 &&
+    userHasPermission(user, PERMISSIONS.CONTRACT_APPROVE);
+
   return (
     <div>
       <PageHeader
         title={`Job ${job.id.slice(0, 8)}`}
         subtitle={`${job.module} · ${job.type} · key ${job.businessKey ?? "—"}`}
-        actions={<StatusBadge status={job.status} />}
+        actions={
+          <div className="flex items-center gap-2">
+            <StatusBadge status={job.status} />
+            {canConfirm ? (
+              <form action={confirmContractAction}>
+                <input type="hidden" name="jobId" value={job.id} />
+                <button className="btn-primary text-xs">Confirm for scheduling</button>
+              </form>
+            ) : null}
+          </div>
+        }
       />
+      {job.module === "sales-contract" && job.status === "confirmed" ? (
+        <div className="mb-4 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
+          Contract confirmed. Its orders are available in the{" "}
+          <Link href="/modules/shipment-schedule" className="font-medium underline">Shipment Schedule</Link> module.
+        </div>
+      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="card p-5">

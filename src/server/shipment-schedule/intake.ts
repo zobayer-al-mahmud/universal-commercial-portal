@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { parseCsvRecords } from "@/lib/csv";
 import { buildSchedule, parseWeekTitle } from "./schedule";
-import type { ScheduleOrderInput } from "./types";
+import type { ScheduleOrderInput, WeekDefinition } from "./types";
 
 const MODULE = "shipment-schedule";
 
@@ -41,37 +41,16 @@ export interface ScheduleIntakeResult {
 }
 
 /**
- * Ingest a week title + orders CSV, build the schedule, and persist it as a job
- * with per-market ShipmentScheduleLine rows. Fail-closed on hard validation
- * failures (no invoice numbers allocated for bad rows).
+ * Build a schedule from already-prepared orders and persist it (job + lines +
+ * tickets + audit). Shared by the CSV intake and the Sales-Contract handoff.
  */
-export async function intakeWeekSchedule(
-  weekTitle: string,
-  csvText: string,
-  opts: { actor?: string; invoiceStart?: number } = {},
+export async function persistSchedule(
+  week: WeekDefinition,
+  orders: ScheduleOrderInput[],
+  opts: { actor?: string; invoiceStart?: number; sourceName: string; sourceKind: string; sourceHash: string },
 ): Promise<ScheduleIntakeResult> {
   const actor = opts.actor ?? "system";
-  const week = parseWeekTitle(weekTitle);
-  if (!week) throw new Error(`Could not parse week title: "${weekTitle}"`);
-
-  const records = parseCsvRecords(csvText);
-  if (records.length === 0) throw new Error("No order rows parsed from CSV.");
-  const orders = toOrders(records);
   const result = buildSchedule(week, orders, { invoiceStart: opts.invoiceStart });
-
-  const hash = createHash("sha256").update(`${weekTitle}\n${csvText}`, "utf8").digest("hex");
-  const existing = await prisma.sourceDocument.findUnique({ where: { sha256: hash } });
-  if (existing?.jobId) {
-    const job = await prisma.job.findUnique({ where: { id: existing.jobId } });
-    return {
-      jobId: existing.jobId,
-      weekNo: week.weekNo,
-      duplicate: true,
-      status: job?.status ?? "duplicate",
-      summary: result.summary,
-      reviewTicketCount: 0,
-    };
-  }
 
   const job = await prisma.job.create({
     data: {
@@ -87,11 +66,11 @@ export async function intakeWeekSchedule(
   await prisma.sourceDocument.create({
     data: {
       jobId: job.id,
-      kind: "csv",
-      originalName: `${weekTitle}.csv`,
-      sha256: hash,
-      sizeBytes: Buffer.byteLength(csvText),
-      mimeDetected: "text/csv",
+      kind: opts.sourceKind,
+      originalName: opts.sourceName,
+      sha256: opts.sourceHash,
+      sizeBytes: Buffer.byteLength(opts.sourceName),
+      mimeDetected: opts.sourceKind === "csv" ? "text/csv" : "application/json",
       storagePath: `./var/storage/shipment-schedule/${job.id}`,
       metadataJson: JSON.stringify({ week }),
     },
@@ -158,4 +137,43 @@ export async function intakeWeekSchedule(
     summary: result.summary,
     reviewTicketCount,
   };
+}
+
+/**
+ * Ingest a week title + orders CSV, build the schedule, and persist it.
+ * Idempotent on the (title + CSV) content hash.
+ */
+export async function intakeWeekSchedule(
+  weekTitle: string,
+  csvText: string,
+  opts: { actor?: string; invoiceStart?: number } = {},
+): Promise<ScheduleIntakeResult> {
+  const week = parseWeekTitle(weekTitle);
+  if (!week) throw new Error(`Could not parse week title: "${weekTitle}"`);
+
+  const records = parseCsvRecords(csvText);
+  if (records.length === 0) throw new Error("No order rows parsed from CSV.");
+  const orders = toOrders(records);
+
+  const hash = createHash("sha256").update(`${weekTitle}\n${csvText}`, "utf8").digest("hex");
+  const existing = await prisma.sourceDocument.findUnique({ where: { sha256: hash } });
+  if (existing?.jobId) {
+    const job = await prisma.job.findUnique({ where: { id: existing.jobId } });
+    return {
+      jobId: existing.jobId,
+      weekNo: week.weekNo,
+      duplicate: true,
+      status: job?.status ?? "duplicate",
+      summary: { orders: records.length, lines: 0, totalPcs: 0, totalValue: 0, invoiceFrom: null, invoiceTo: null },
+      reviewTicketCount: 0,
+    };
+  }
+
+  return persistSchedule(week, orders, {
+    actor: opts.actor,
+    invoiceStart: opts.invoiceStart,
+    sourceName: `${weekTitle}.csv`,
+    sourceKind: "csv",
+    sourceHash: hash,
+  });
 }

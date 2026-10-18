@@ -43,5 +43,22 @@ flowchart TD
    produced upstream.
 4. **Booking correction** requires an existing **Damco booking** to correct.
 
-The portal enforces this today only within the Sales Contract module; cross-module
-gating is specified here and scheduled per module.
+## Implemented handoffs (Milestone E)
+
+The first two handoffs are wired and enforced in code (`src/server/handoffs/`):
+
+- **Confirm gate:** a Sales Contract job can be **confirmed** only when it is a
+  draft with no open review tickets (`confirmContractJob`). Confirming sets
+  `SalesContractRow.confirmed = true` and the job status to `confirmed`.
+- **Handoff 1 — Contract → Schedule:** `buildScheduleFromContracts` draws orders
+  from confirmed, not-yet-scheduled contract rows, pulling the per-order markets
+  from the `PoExtractionRow`s, and stamps `SalesContractRow.scheduledJobId` so a
+  row cannot be scheduled twice.
+- **Handoff 2 — Schedule → Invoice:** `generateInvoiceFromLine` builds a customs
+  invoice from a schedule line's allocated invoice number and stamps
+  `ShipmentScheduleLine.invoicedJobId` to prevent double-invoicing.
+
+Verified live end-to-end: contract 644637-8756 → Week 43 schedule (invoice 66000,
+market OW) → customs invoice 66000 OW, with qty/price/description carried through.
+
+Handoffs 3 (invoice/export → PDF rename) and 4 (booking) remain specified, not wired.

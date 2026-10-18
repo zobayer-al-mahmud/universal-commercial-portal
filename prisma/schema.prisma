@@ -195,6 +195,8 @@ model SalesContractRow {
   packSet            Int      @default(1)
   remarks            String   @default("")
   supersedesRowId    String? // for appended adjustment rows (BR-SC-21)
+  confirmed          Boolean  @default(false) // approved contract (cross-module gate)
+  scheduledJobId     String? // shipment-schedule job this row fed (handoff 1)
   createdAt          DateTime @default(now())
 
   @@index([jobId])
@@ -254,6 +256,7 @@ model ShipmentScheduleLine {
   cutOff        String // "1st" | "2nd"
   message       String  @default("")
   success       Boolean @default(true)
+  invoicedJobId String? // customs-invoice job this line fed (handoff 2)
   createdAt     DateTime @default(now())
 
   @@index([jobId])
