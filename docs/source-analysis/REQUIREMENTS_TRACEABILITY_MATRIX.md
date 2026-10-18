@@ -23,6 +23,10 @@ documented scope, not code.
 | Job state machine (§5.7) | SRS §5.7 | `Job.status` + `JobStageEvent` | verified live (job detail) |
 | Server-side authz (SRS §10) | SRS §10 | `src/lib/auth.ts`, `permissions.ts`, action guards | manual (role gating) |
 | Health probes (§5.11) | SRS §5.11 | `src/app/api/healthz`, `/readyz` | manual (HTTP) |
+| PDF rename: CSV field schemas (module 4) | FCR / Bill-of-Export CSVs | `src/server/pdf-rename/{types,parse-csv}.ts` | `tests/pdf-rename.test.ts` |
+| PDF rename: invoice→target rule (Q-PR-01) | observed renamed outputs | `rename.ts` `computeRenameTarget` | `tests/pdf-rename.test.ts` |
+| PDF rename: collision detection, no overwrite | preserve-originals policy | `rename.ts` `buildRenamePlan` | `tests/pdf-rename.test.ts` |
+| PDF rename: batch persistence + review routing | — | `src/server/pdf-rename/intake.ts` | verified live (UI) |
 
 Legend: "verified live (mock)" = exercised through the running app against the mock
 adapter; "manual (UI)" = behaviour confirmed through the UI, not yet an automated test.

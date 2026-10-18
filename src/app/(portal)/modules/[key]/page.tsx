@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge, Empty } from "@/components/ui";
 import { MODULE_CATALOG } from "@/server/modules/catalog";
 import { IntakeForm } from "@/components/IntakeForm";
+import { RenameForm } from "@/components/RenameForm";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,13 @@ export default async function ModulePage({ params }: { params: { key: string } }
         <div className="mb-6">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">Order Package intake</h3>
           <IntakeForm />
+        </div>
+      ) : null}
+
+      {module.key === "pdf-rename" ? (
+        <div className="mb-6">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">Rename plan from extraction CSV</h3>
+          <RenameForm />
         </div>
       ) : null}
 

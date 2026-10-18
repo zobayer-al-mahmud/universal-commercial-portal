@@ -117,6 +117,7 @@ model Job {
   poRows        PoExtractionRow[]
   contractRows  SalesContractRow[]
   reviewTickets ReviewTicket[]
+  renameItems   RenameItem[]
 
   @@index([module, status])
   @@index([businessKey])
@@ -196,6 +197,29 @@ model SalesContractRow {
   @@index([jobId])
   @@index([orderNo])
   @@index([blockContractRef])
+}
+
+// ---------------------------------------------------------------------------
+// PDF File Rename — per-file rename plan (module 4)
+// Input PDFs are renamed from an opaque scan name to a business key (invoice no).
+// Originals are preserved; the plan is a preview until an authorised apply step.
+// ---------------------------------------------------------------------------
+
+model RenameItem {
+  id           String   @id @default(cuid())
+  jobId        String
+  job          Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  docType      String // fcr | bill-of-export
+  originalName String
+  targetName   String?
+  businessKey  String? // raw invoice value the target is derived from
+  status       String   @default("planned") // planned | collision | skipped | needs_review
+  reason       String   @default("")
+  rowJson      String   @default("{}")
+  createdAt    DateTime @default(now())
+
+  @@index([jobId])
+  @@index([targetName])
 }
 
 // ---------------------------------------------------------------------------

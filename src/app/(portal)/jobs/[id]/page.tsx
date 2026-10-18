@@ -14,6 +14,7 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       poRows: { orderBy: { sl: "asc" } },
       contractRows: true,
       reviewTickets: true,
+      renameItems: { orderBy: { createdAt: "asc" } },
     },
   });
   if (!job) notFound();
@@ -95,6 +96,39 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
                   <td className="td text-xs">{r.timeOfDelivery ?? "—"}</td>
                   <td className="td">{r.success ? "✓" : "✗"}</td>
                   <td className="td text-xs text-rose-600">{r.message}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      ) : null}
+
+      {job.renameItems.length > 0 ? (
+        <section className="card mt-6 overflow-x-auto">
+          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
+            Rename plan ({job.renameItems.length} files · preview, originals preserved)
+          </div>
+          <table className="w-full">
+            <thead className="bg-slate-50">
+              <tr>
+                <th className="th">Original</th><th className="th">→ Target</th>
+                <th className="th">Invoice key</th><th className="th">Status</th><th className="th">Note</th>
+              </tr>
+            </thead>
+            <tbody>
+              {job.renameItems.map((r) => (
+                <tr key={r.id} className="border-t border-slate-50">
+                  <td className="td font-mono text-xs">{r.originalName}</td>
+                  <td className="td font-mono text-xs">{r.targetName ?? "—"}</td>
+                  <td className="td font-mono text-xs">{r.businessKey ?? "—"}</td>
+                  <td className="td">
+                    <span className={`badge ${
+                      r.status === "planned" ? "bg-green-100 text-green-800"
+                      : r.status === "collision" ? "bg-rose-100 text-rose-800"
+                      : r.status === "needs_review" ? "bg-amber-100 text-amber-800"
+                      : "bg-slate-100 text-slate-600"}`}>{r.status}</span>
+                  </td>
+                  <td className="td text-xs text-slate-500">{r.reason}</td>
                 </tr>
               ))}
             </tbody>

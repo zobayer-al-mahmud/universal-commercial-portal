@@ -9,7 +9,7 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 | A. Source analysis | ✅ Done | 835 files inventoried + hashed; SRS + checklist + modules 1–5 analyzed; decision register written |
 | B. Project foundation | ✅ Done | Next.js + Prisma + SQLite; migration applied; auth + RBAC; health probes; config validation |
 | C. Shared workflow infra | ✅ Done | Document intake + hashing, job ledger + state machine, review queue, audit trail, reference data, adapter interface |
-| D. Module vertical slices | 🟡 Partial | Sales Contract complete; PDF-rename partial; others requirements/blocked |
+| D. Module vertical slices | 🟡 Partial | Sales Contract complete; PDF-rename plan/preview implemented + tested; shipment/customs/booking requirements-only; portals blocked |
 | E. Cross-module workflow | 🟠 Specified | Dependency map documented; gating implemented within Sales Contract only |
 | F. QA / hardening | 🟡 Partial | Unit tests + typecheck + build pass; live-integration tests out of scope (gated) |
 
@@ -20,7 +20,7 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 | 1. Sales Contract | ✅ Implemented | Intake, 3-PDF rule, parse/normalize/validate, per-contract aggregation, review routing, idempotency, mock UCP save + read-back, audit, UI | Q-SC-01..12; real PO-PDF/MSG extraction (no samples) |
 | 2. Shipment Schedule | 🟠 Requirements-only | Scope + field layout + lookups documented | Cut-off/invoice allocation rules; implementation |
 | 3. Customs Invoice | 🟠 Requirements-only | Workbook structure documented | Numbering, consignee master data, impl |
-| 4. PDF Rename | 🟡 Partial | FCR (34) + Bill-of-Export (39) field schemas captured | Canonical filename rule; rename execution |
+| 4. PDF Rename | 🟡 Implemented (preview) | CSV ingest (FCR 34 / Bill-of-Export 39 fields), deterministic rename-plan (invoice→target), collision + failed-extraction handling, review routing, UI + job plan view | On-disk rename **execution** (gated preview); canonical filename rule (Q-PR-01) |
 | 5. Booking Correction | 🟠 Requirements-only | Keys + Damco URL documented | Correction rules; Damco field map; impl |
 | 6. H&M Portal | ⛔ Blocked | Adapter registered (not configured) | No source files; credentials + field lists |
 | 7. Bangladesh Bank | ⛔ Blocked | Adapter registered | No source files; draft/dry-run only |
@@ -31,11 +31,11 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 
 | Check | Result |
 |-------|--------|
-| `npm run test` (Vitest) | ✅ PASS — 26/26 (parse, normalize, validate, reconcile, pipeline) |
+| `npm run test` (Vitest) | ✅ PASS — 35/35 (parse, normalize, validate, reconcile, pipeline, pdf-rename) |
 | `npm run typecheck` (tsc) | ✅ PASS — exit 0 |
 | `npm run build` (next build) | ✅ PASS — 13 routes compiled, types valid |
-| DB migrate + seed | ✅ PASS — `20261018061213_init` applied; roles/modules/admin seeded |
-| Live app smoke test (port 3300) | ✅ PASS — login, dashboard counts, Sales Contract intake → draft job with PO rows + aggregated contract row + mock UCP read-back, job detail, review-queue badge |
+| DB migrate + seed | ✅ PASS — `20261018061213_init` + `20261018063528_add_rename_item` applied; roles/modules/admin seeded |
+| Live app smoke test (port 3300) | ✅ PASS — login, dashboard counts, Sales Contract intake → draft + mock UCP read-back, missing-PDF → queued review, PDF-rename plan (CSV → targets, skip failed), job detail views, review-queue |
 | Live external integrations | ⛔ NOT RUN — disabled by design (mock); require authorization |
 
 ## Known limitations
