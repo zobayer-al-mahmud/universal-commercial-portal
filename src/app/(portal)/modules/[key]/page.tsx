@@ -7,6 +7,7 @@ import { IntakeForm } from "@/components/IntakeForm";
 import { RenameForm } from "@/components/RenameForm";
 import { ScheduleForm } from "@/components/ScheduleForm";
 import { CustomsInvoiceForm } from "@/components/CustomsInvoiceForm";
+import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
 
 export const dynamic = "force-dynamic";
 
@@ -79,6 +80,13 @@ export default async function ModulePage({ params }: { params: { key: string } }
         <div className="mb-6">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">Generate customs invoice</h3>
           <CustomsInvoiceForm />
+        </div>
+      ) : null}
+
+      {module.key === "booking-correction" ? (
+        <div className="mb-6">
+          <h3 className="mb-3 text-sm font-semibold text-slate-700">Compare original vs corrected booking</h3>
+          <BookingCorrectionForm />
         </div>
       ) : null}
 

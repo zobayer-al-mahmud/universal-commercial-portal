@@ -35,6 +35,10 @@ documented scope, not code.
 | Customs invoice: per-market consignee resolution (Q-CI-01) | per-market invoice sheets | `build.ts` + `intake.ts` (reference data) | `tests/customs-invoice.test.ts` |
 | Customs invoice: validation + fail-closed review | — | `build.ts` + `intake.ts` | `tests/customs-invoice.test.ts` + live |
 | Customs invoice: rendered invoice document | workbook layout | `src/app/(portal)/jobs/[id]/page.tsx` | verified live (UI) |
+| Booking correction: parse + original↔corrected diff | packing-list keys | `src/server/booking-correction/diff.ts` | `tests/booking-correction.test.ts` |
+| Booking correction: locked vs allowed field classification | identity-field rule | `diff.ts` (LOCKED_FIELDS) | `tests/booking-correction.test.ts` |
+| Booking correction: approval gate + review routing | SRS §7.6 | `src/server/booking-correction/intake.ts` | verified live (UI) |
+| Booking correction: Damco SO verify (gated, mock) | Damco SO view URL | `src/server/integrations/damco-adapter.ts` | verified live (mock) |
 
 Legend: "verified live (mock)" = exercised through the running app against the mock
 adapter; "manual (UI)" = behaviour confirmed through the UI, not yet an automated test.

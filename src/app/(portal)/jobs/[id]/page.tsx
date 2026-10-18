@@ -17,6 +17,7 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       renameItems: { orderBy: { createdAt: "asc" } },
       scheduleLines: { orderBy: { createdAt: "asc" } },
       customsInvoices: true,
+      bookingCorrections: true,
     },
   });
   if (!job) notFound();
@@ -213,6 +214,47 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
                 </tr>
               </tbody>
             </table>
+          </section>
+        );
+      })}
+
+      {job.bookingCorrections.map((bc) => {
+        let changes: { field: string; label: string; oldValue: string; newValue: string; allowed: boolean }[] = [];
+        try { changes = JSON.parse(bc.changesJson); } catch { /* ignore */ }
+        return (
+          <section key={bc.id} className="card mt-6 p-5">
+            <div className="mb-3 flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-700">Booking correction {bc.bookingKey}</h3>
+              <span className={`badge ${bc.damcoVerified ? "bg-green-100 text-green-800" : "bg-slate-100 text-slate-600"}`}>
+                Damco {bc.damcoVerified ? "verified (mock)" : "not verified"}
+              </span>
+            </div>
+            <p className="mb-3 text-xs text-slate-500">
+              SO {bc.soNumber || "—"} · {bc.allowedCount} allowed / {bc.disallowedCount} disallowed · {bc.damcoMessage}
+            </p>
+            {changes.length === 0 ? (
+              <p className="text-sm text-slate-400">No field changes between the two bookings.</p>
+            ) : (
+              <table className="w-full">
+                <thead className="bg-slate-50">
+                  <tr><th className="th">Field</th><th className="th">Original</th><th className="th">Corrected</th><th className="th">Classification</th></tr>
+                </thead>
+                <tbody>
+                  {changes.map((c, i) => (
+                    <tr key={i} className="border-t border-slate-50">
+                      <td className="td">{c.label}</td>
+                      <td className="td font-mono text-xs text-slate-500">{c.oldValue || "∅"}</td>
+                      <td className="td font-mono text-xs">{c.newValue || "∅"}</td>
+                      <td className="td">
+                        <span className={`badge ${c.allowed ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`}>
+                          {c.allowed ? "allowed · needs approval" : "locked · disallowed"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </section>
         );
       })}

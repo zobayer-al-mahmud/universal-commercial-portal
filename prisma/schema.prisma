@@ -120,6 +120,7 @@ model Job {
   renameItems    RenameItem[]
   scheduleLines  ShipmentScheduleLine[]
   customsInvoices CustomsInvoice[]
+  bookingCorrections BookingCorrection[]
 
   @@index([module, status])
   @@index([businessKey])
@@ -296,6 +297,36 @@ model CustomsInvoice {
 
   @@index([jobId])
   @@index([invoiceKey])
+}
+
+// ---------------------------------------------------------------------------
+// Booking Correction — original vs corrected booking diff (module 5)
+// Matched by OrderNo + market; field-level changes classified allowed/locked.
+// Damco portal verification is gated (mock/dryrun; live blocked).
+// ---------------------------------------------------------------------------
+
+model BookingCorrection {
+  id              String   @id @default(cuid())
+  jobId           String
+  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  orderNo         String
+  market          String
+  marketCode      String
+  soNumber        String   @default("")
+  bookingKey      String // "<orderNo> <market>"
+  changeCount     Int
+  allowedCount    Int
+  disallowedCount Int
+  changesJson     String   @default("[]") // [{field, oldValue, newValue, allowed}]
+  status          String   @default("draft") // draft | queued
+  message         String   @default("")
+  damcoVerified   Boolean  @default(false)
+  damcoRef        String   @default("")
+  damcoMessage    String   @default("")
+  createdAt       DateTime @default(now())
+
+  @@index([jobId])
+  @@index([bookingKey])
 }
 
 // ---------------------------------------------------------------------------

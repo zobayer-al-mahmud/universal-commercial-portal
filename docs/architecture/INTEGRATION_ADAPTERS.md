@@ -24,6 +24,13 @@ Set globally via `INTEGRATION_MODE`.
 3. **Post-write read-back (§7.4, SC-NFR-09):** reads the destination record and diffs
    every mapped field; any diff blocks the `verified` transition.
 
+## Damco adapter (read-only SO verify)
+
+`src/server/integrations/damco-adapter.ts` implements `verifyBookingOnDamco(soNumber)`.
+In `mock` it simulates an SO read-back (used by Booking Correction to verify the SO
+before any change); `dryrun` logs intent; `live` fails closed (no credentials / field
+map — Q-PORT-01). Applying a correction to the portal is a separate gated step.
+
 ## Portal adapters (H&M / Bangladesh Bank / Damco)
 
 Registered in `IntegrationAdapter` with status `not_configured`. No interactions are

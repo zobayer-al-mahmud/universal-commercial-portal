@@ -17,7 +17,7 @@ fail-closed external integrations.
 | PDF File Rename | 🟡 CSV → rename-plan preview implemented + tested; on-disk apply gated |
 | Week Wise Shipment Schedule | 🟡 schedule build (order→market lines, invoices) implemented + tested |
 | Customs Invoice Generation | 🟡 per-order invoice build (consignee, HS line items, totals) implemented + tested |
-| Booking Correction | 🟠 requirements captured, not implemented |
+| Booking Correction | 🟡 original↔corrected diff + approval gate + mock Damco verify implemented + tested |
 | H&M / Bangladesh Bank / Damco portals | ⛔ blocked (no source files; credentials required) |
 
 See [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for detail.

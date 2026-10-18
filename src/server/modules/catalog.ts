@@ -68,14 +68,16 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
   },
   "booking-correction": {
     key: "booking-correction",
-    sources: "7 packing-list PDFs; Damco Shipper Portal URL + credentials (checklist).",
-    status: "requirements-only",
+    sources: "7 packing-list PDFs (OrderNo market marketcode); Damco Shipper Portal URL + credentials (checklist).",
+    status: "partial",
     scope: [
-      "Match original vs corrected booking/packing-list documents by Order + market.",
-      "Define allowed corrections and an approval gate.",
-      "Verify the correction on the Damco portal (post-action read-back).",
+      "Match original vs corrected booking by OrderNo + market; field-level diff.",
+      "Classify changes: locked identity fields (disallowed) vs allowed-correctable fields.",
+      "Approval gate for allowed corrections; disallowed changes route to review.",
+      "Read-only Damco SO verification (mock); applying the correction to the portal is gated.",
+      "Diff + verify implemented + tested; packing-list PDF parsing and live Damco apply pending.",
     ],
-    openQuestions: ["Allowed correction fields", "Damco portal field map", "Approval policy"],
+    openQuestions: ["Full allowed-correction field set", "Damco portal field map (Q-PORT-01)", "Approval policy for live apply"],
   },
   "hm-portal": {
     key: "hm-portal",
