@@ -35,13 +35,20 @@ describe("buildScheduleWorkbook", () => {
 });
 
 describe("buildCustomsInvoiceWorkbook", () => {
-  it("produces INVOICE and SUMMARY sheets with the totals", async () => {
+  it("produces INVOICE, SUMMARY and BL DRAFT sheets with the totals", async () => {
     const buf = await buildCustomsInvoiceWorkbook(INVOICE);
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(buf);
     expect(wb.getWorksheet("INVOICE")).toBeTruthy();
     const sum = wb.getWorksheet("SUMMARY")!;
-    const invoiceRow = sum.getRow(2);
-    expect(String(invoiceRow.getCell(2).value)).toBe("66000 OW");
+    expect(String(sum.getRow(2).getCell(2).value)).toBe("66000 OW");
+
+    const bl = wb.getWorksheet("BL DRAFT");
+    expect(bl).toBeTruthy();
+    // The BL DRAFT must carry the shipper, the negotiating bank, and the invoice key.
+    const text = bl!.getSheetValues().flat().map((v) => String(v ?? "")).join(" | ");
+    expect(text).toContain("ANANTA GARMENTS LIMITED");
+    expect(text).toContain("PRIME BANK LTD.");
+    expect(text).toContain("66000 OW");
   });
 });
