@@ -14,6 +14,7 @@ fail-closed external integrations.
 |------|--------|
 | Platform (auth, RBAC, jobs, review queue, audit, dashboard) | ✅ implemented |
 | Cross-module pipeline (contract → schedule → invoice) | ✅ wired + verified end-to-end |
+| .xlsx export (schedule + customs invoice) | ✅ authenticated downloads from the job pages |
 | Sales Contract Creation (intake → extract → reconcile → draft → mock UCP) | ✅ implemented + tested |
 | PDF File Rename | 🟡 CSV → rename-plan preview implemented + tested; on-disk apply gated |
 | Week Wise Shipment Schedule | 🟡 schedule build (order→market lines, invoices) implemented + tested |

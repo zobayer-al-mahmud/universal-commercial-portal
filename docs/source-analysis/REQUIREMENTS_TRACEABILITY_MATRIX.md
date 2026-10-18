@@ -43,6 +43,9 @@ documented scope, not code.
 | Milestone E: contract → schedule handoff | CROSS_MODULE_WORKFLOW_MAP | `handoffs/map.ts` + `service.ts` `buildScheduleFromContracts` | `tests/handoffs.test.ts` + live |
 | Milestone E: schedule → invoice handoff | CROSS_MODULE_WORKFLOW_MAP | `handoffs/map.ts` + `service.ts` `generateInvoiceFromLine` | `tests/handoffs.test.ts` + live |
 | Milestone E: no double-processing | idempotency | `scheduledJobId` / `invoicedJobId` link fields | verified live |
+| Export: shipment schedule .xlsx (Summary layout) | Week workbook | `src/server/export/schedule-workbook.ts` + `/api/export/schedule/[jobId]` | `tests/export.test.ts` + live |
+| Export: customs invoice .xlsx (INVOICE+SUMMARY) | invoice workbooks | `src/server/export/customs-invoice-workbook.ts` + `/api/export/customs-invoice/[jobId]` | `tests/export.test.ts` + live |
+| Export: auth-guarded downloads | SRS §10 | route handlers (JOB_READ check) | verified live |
 
 Legend: "verified live (mock)" = exercised through the running app against the mock
 adapter; "manual (UI)" = behaviour confirmed through the UI, not yet an automated test.

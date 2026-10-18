@@ -169,8 +169,11 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
 
       {job.scheduleLines.length > 0 ? (
         <section className="card mt-6 overflow-x-auto">
-          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
-            Week {job.scheduleLines[0].weekNo} schedule ({job.scheduleLines.length} lines · cut-offs {job.scheduleLines[0].firstCutOff} / {job.scheduleLines[0].secondCutOff})
+          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+            <span className="text-sm font-semibold text-slate-700">
+              Week {job.scheduleLines[0].weekNo} schedule ({job.scheduleLines.length} lines · cut-offs {job.scheduleLines[0].firstCutOff} / {job.scheduleLines[0].secondCutOff})
+            </span>
+            <a href={`/api/export/schedule/${job.id}`} className="btn-ghost text-xs">⬇ Download .xlsx</a>
           </div>
           <table className="w-full">
             <thead className="bg-slate-50">
@@ -207,7 +210,10 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
           <section key={inv.id} className="card mt-6 p-5">
             <div className="mb-3 flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-700">Customs Invoice {inv.invoiceKey}</h3>
-              <span className="badge bg-amber-100 text-amber-800">draft document</span>
+              <div className="flex items-center gap-2">
+                <a href={`/api/export/customs-invoice/${job.id}`} className="btn-ghost text-xs">⬇ Download .xlsx</a>
+                <span className="badge bg-amber-100 text-amber-800">draft document</span>
+              </div>
             </div>
             <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
               <div><div className="font-medium text-slate-500">Exporter</div>{inv.exporterName}</div>
