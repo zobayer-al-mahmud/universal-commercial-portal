@@ -14,7 +14,7 @@ const MODULES = [
   { key: "shipment-schedule", name: "Week Wise Shipment Schedule Creation", sortOrder: 2, status: "active", description: "Build weekly cut-off shipment schedules (per-market invoice lines) from confirmed orders." },
   { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 3, status: "active", description: "Generate per-order/per-market customs invoices (header, consignee, HS-coded line items, totals)." },
   { key: "pdf-rename", name: "PDF File Rename", sortOrder: 4, status: "active", description: "Extract FCR / Bill-of-Export fields from scanned PDFs and rename by business key." },
-  { key: "booking-correction", name: "Booking Correction", sortOrder: 5, status: "active", description: "Diff original vs corrected bookings (locked identity vs allowed fields); approval + Damco verify (mock)." },
+  { key: "booking-correction", name: "Booking Correction", sortOrder: 5, status: "active", description: "Batch packing-list PDFs → extract Gross Weight/Cartons/Quantity + PO/country → Damco search → match 3 values → CONFIRMED-status validation → verified PDF. Plus original↔corrected field diff. Live portal gated." },
   { key: "hm-portal", name: "H&M Portal", sortOrder: 6, status: "blocked", description: "H&M Supplier Portal interactions. Blocked: no source files; credentials & field lists required." },
   { key: "bb-portal", name: "Bangladesh Bank Portal", sortOrder: 7, status: "blocked", description: "Bangladesh Bank EXP portal. Blocked: no source files; banking actions are draft/dry-run only." },
   { key: "damco-portal", name: "Damco Portal", sortOrder: 8, status: "blocked", description: "Damco Shipper Portal booking/correction. Blocked: no source files; field lists required." },
@@ -25,7 +25,7 @@ const ADAPTERS = [
   { key: "ucp-sales-contract", name: "UCP Sales Contract", message: "Mock adapter (Q-SC-11: API vs browser unconfirmed)." },
   { key: "hm-portal", name: "H&M Supplier Portal", message: "Not configured. Requires authorised credentials." },
   { key: "bb-portal", name: "Bangladesh Bank EXP Portal", message: "Not configured. Banking actions default to draft/dry-run." },
-  { key: "damco-portal", name: "Damco Shipper Portal", message: "Not configured. Requires authorised credentials." },
+  { key: "damco-portal", name: "Damco Shipper Portal", message: "Booking Correction uses this adapter (mock/dryrun). Live search/confirmation gated on DAMCO_LIVE_ENABLED + env credentials." },
 ];
 
 // Observed sample reference values (NOT confirmed closed lists — see Q-SC-03/06).

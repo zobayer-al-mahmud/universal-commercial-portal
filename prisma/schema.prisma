@@ -335,6 +335,108 @@ model BookingCorrection {
 }
 
 // ---------------------------------------------------------------------------
+// Booking Correction — batch PDF → extract → Damco search → match → verify
+// (module 5, DAMCO workflow). A batch holds many uploaded packing-list PDFs;
+// each becomes one BookingDocument carried through the state machine. Original
+// uploads are preserved; generated/corrected PDFs are stored separately.
+// ---------------------------------------------------------------------------
+
+model BookingBatch {
+  id            String   @id @default(cuid())
+  createdBy     String   @default("system") // actor email
+  company       String   @default("ANANTA GARMENTS LIMITED")
+  buyer         String   @default("H&M HENNES & MAURITZ GBC AB")
+  damcoMode     String   @default("mock") // mock | dryrun | live
+  totalDocs     Int      @default(0)
+  completedDocs Int      @default(0)
+  failedDocs    Int      @default(0)
+  reviewDocs    Int      @default(0)
+  status        String   @default("uploaded") // uploaded | processing | completed | partial | failed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  documents BookingDocument[]
+
+  @@index([status])
+}
+
+model BookingDocument {
+  id           String       @id @default(cuid())
+  batchId      String
+  batch        BookingBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  serial       Int
+  originalName String
+  sha256       String
+  sizeBytes    Int
+  storagePath  String // immutable original upload (outside repo)
+
+  // company / buyer snapshot (traceability)
+  company String @default("")
+  buyer   String @default("")
+
+  // extraction (source label + page + confidence + normalized stored in JSON)
+  poNumber              String  @default("")
+  countryCode           String  @default("")
+  marketCode            String  @default("")
+  extractedGrossWeight  String  @default("")
+  extractedCartons      String  @default("")
+  extractedQuantity     String  @default("")
+  extractionJson        String  @default("{}")
+  extractionConfidence  Float   @default(0)
+  manualCorrected       Boolean @default(false)
+  correctedBy           String?
+
+  // Damco search + booking read-back
+  bookingRef         String @default("") // SO number / booking reference
+  bookingGrossWeight String @default("")
+  bookingCartons     String @default("")
+  bookingQuantity    String @default("")
+  candidatesJson     String @default("[]") // candidate bookings from search
+
+  // matching (§9)
+  matchOutcome String @default("") // MATCHED | MISMATCH | NEEDS_REVIEW | SEARCH_FAILED
+  matchJson    String @default("{}") // per-field comparison + diffs
+
+  // status validation (§11)
+  headingStatus String @default("") // CONFIRMED | REQUESTED | ...
+  fieldStatus   String @default("")
+  finalStatus   String @default("") // CONFIRMED | REQUESTED | STATUS_MISMATCH | NEEDS_REVIEW
+
+  // generated / corrected PDFs (stored separately)
+  generatedPdfPath String?
+  correctedPdfPath String?
+
+  // lifecycle (§13 state machine)
+  state       String    @default("UPLOADED")
+  error       String    @default("")
+  warning     String    @default("")
+  attempts    Int       @default(0)
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  events BookingDocEvent[]
+
+  @@index([batchId])
+  @@index([sha256])
+  @@index([state])
+}
+
+model BookingDocEvent {
+  id        String          @id @default(cuid())
+  docId     String
+  doc       BookingDocument @relation(fields: [docId], references: [id], onDelete: Cascade)
+  stage     String
+  status    String // started | ok | failed | skipped
+  message   String?
+  actor     String          @default("system")
+  dataJson  String          @default("{}")
+  createdAt DateTime        @default(now())
+
+  @@index([docId])
+}
+
+// ---------------------------------------------------------------------------
 // Human review queue (SRS §6.7, SC-FR-015)
 // ---------------------------------------------------------------------------
 
