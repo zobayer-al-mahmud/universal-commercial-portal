@@ -221,6 +221,8 @@ model RenameItem {
   status       String   @default("planned") // planned | collision | skipped | needs_review
   reason       String   @default("")
   rowJson      String   @default("{}")
+  applied      Boolean  @default(false) // true once copied to the output dir
+  appliedPath  String? // output path of the renamed copy
   createdAt    DateTime @default(now())
 
   @@index([jobId])

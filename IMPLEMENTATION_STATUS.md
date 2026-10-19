@@ -20,7 +20,7 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 | 1. Sales Contract | ✅ Implemented | Intake, 3-PDF rule, parse/normalize/validate, per-contract aggregation, review routing, idempotency, mock UCP save + read-back, audit, UI | Q-SC-01..12; real PO-PDF/MSG extraction (no samples) |
 | 2. Shipment Schedule | 🟡 Implemented (build + export) | Week-title parse, order→per-market expansion, value=PCS×FOB, sequential invoice allocation, validation + review routing, UI + job view, **.xlsx download** (Summary layout) | Booking-confirmation PDF parsing; port/country lookup; cut-off/invoice rules (Q-SS-01) |
 | 3. Customs Invoice | 🟡 Implemented (build + export) | Per-order/market invoice build: fixed exporter/buyer, market-resolved consignee, HS-coded line items, amount=qty×price, totals, review routing, rendered doc, **.xlsx download** (INVOICE + SUMMARY + BL DRAFT) | numbering + consignee master data (Q-CI-01) |
-| 4. PDF Rename | 🟡 Implemented (preview) | CSV ingest (FCR 34 / Bill-of-Export 39 fields), deterministic rename-plan (invoice→target), collision + failed-extraction handling, review routing, UI + job plan view | On-disk rename **execution** (gated preview); canonical filename rule (Q-PR-01) |
+| 4. PDF Rename | 🟡 Implemented (plan + gated apply) | CSV ingest (FCR 34 / Bill-of-Export 39 fields), deterministic rename-plan, collision/failed handling, review routing, UI; **gated on-disk apply** copies planned scans to an output dir (dry-run default, permission-gated, originals preserved, never overwrites) | canonical filename rule (Q-PR-01) |
 | 5. Booking Correction | 🟡 Implemented (diff+verify) | Original↔corrected booking diff, locked-identity vs allowed-field classification, approval-gated corrections, review routing, mock Damco SO verification, diff view | Packing-list PDF parsing; live Damco apply (Q-PORT-01) |
 | 6. H&M Portal | ⛔ Blocked | Adapter registered (not configured) | No source files; credentials + field lists |
 | 7. Bangladesh Bank | ⛔ Blocked | Adapter registered | No source files; draft/dry-run only |
@@ -31,10 +31,11 @@ Updated: 2026-10-18. Statuses reflect what is actually implemented and verified.
 
 | Check | Result |
 |-------|--------|
-| `npm run test` (Vitest) | ✅ PASS — 57/57 (pipeline, pdf-rename, shipment-schedule, customs-invoice, booking-correction, handoffs, xlsx export) |
+| `npm run test` (Vitest) | ✅ PASS — 59/59 (pipeline, pdf-rename + apply, shipment-schedule, customs-invoice, booking-correction, handoffs, xlsx export) |
 | `npm run typecheck` (tsc) | ✅ PASS — exit 0 |
 | `npm run build` (next build) | ✅ PASS — routes compiled (incl. /api/export/*), types valid |
-| .xlsx export (live) | ✅ PASS — authenticated downloads return valid .xlsx (ZIP magic PK): Week-43 schedule 7 KB, customs-invoice 66000 OW 8 KB |
+| .xlsx export (live) | ✅ PASS — authenticated downloads return valid .xlsx (ZIP magic PK): Week-43 schedule 7 KB, customs-invoice 66000 OW 9.3 KB (INVOICE + SUMMARY + BL DRAFT) |
+| PDF-rename apply (live) | ✅ PASS — dry-run then apply on job cmvdgfu8: copied 1 (1).pdf→64931.pdf, 1 (2).pdf→64883.pdf to output dir; originals unchanged; skipped the failed-extraction row |
 | DB migrate + seed | ✅ PASS — 6 migrations (init, rename, schedule, customs-invoice, booking-correction, crossmodule-links) applied; roles/modules/admin/reference seeded |
 | Live app smoke test (port 3300) | ✅ PASS — per-module slices + full cross-module chain: confirmed contract 644637-8756 → Week 43 schedule (invoices 66000/66001, markets OW/CL) → customs invoice 66000 OW (qty 2500, USD 26250 carried through; missing OW consignee flagged for review) |
 | Live external integrations | ⛔ NOT RUN — disabled by design (mock); require authorization |

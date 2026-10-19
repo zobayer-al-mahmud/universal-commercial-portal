@@ -27,6 +27,7 @@ documented scope, not code.
 | PDF rename: invoice→target rule (Q-PR-01) | observed renamed outputs | `rename.ts` `computeRenameTarget` | `tests/pdf-rename.test.ts` |
 | PDF rename: collision detection, no overwrite | preserve-originals policy | `rename.ts` `buildRenamePlan` | `tests/pdf-rename.test.ts` |
 | PDF rename: batch persistence + review routing | — | `src/server/pdf-rename/intake.ts` | verified live (UI) |
+| PDF rename: gated apply (copy, no overwrite, originals preserved) | preserve-originals policy | `src/server/pdf-rename/apply.ts` `resolveApplyActions` / `applyRenameBatch` | `tests/rename-apply.test.ts` + live |
 | Shipment schedule: week-title parse | Week workbook names | `src/server/shipment-schedule/schedule.ts` `parseWeekTitle` | `tests/shipment-schedule.test.ts` |
 | Shipment schedule: order→market expansion, value=PCS×FOB | Week `Summary` layout | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |
 | Shipment schedule: sequential invoice allocation (Q-SS-01) | observed invoice sequence | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |

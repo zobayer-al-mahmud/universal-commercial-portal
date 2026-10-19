@@ -16,7 +16,7 @@ fail-closed external integrations.
 | Cross-module pipeline (contract → schedule → invoice) | ✅ wired + verified end-to-end |
 | .xlsx export (schedule + customs invoice) | ✅ authenticated downloads from the job pages |
 | Sales Contract Creation (intake → extract → reconcile → draft → mock UCP) | ✅ implemented + tested |
-| PDF File Rename | 🟡 CSV → rename-plan preview implemented + tested; on-disk apply gated |
+| PDF File Rename | 🟡 CSV → rename-plan + gated on-disk apply (copy, originals preserved) implemented + tested |
 | Week Wise Shipment Schedule | 🟡 schedule build (order→market lines, invoices) implemented + tested |
 | Customs Invoice Generation | 🟡 per-order invoice build (consignee, HS line items, totals) implemented + tested |
 | Booking Correction | 🟡 original↔corrected diff + approval gate + mock Damco verify implemented + tested |

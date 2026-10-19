@@ -5,6 +5,7 @@ import { PageHeader, StatusBadge } from "@/components/ui";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { confirmContractAction } from "@/app/actions/handoffs";
+import { RenameApply } from "@/components/RenameApply";
 
 export const dynamic = "force-dynamic";
 
@@ -137,7 +138,10 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       {job.renameItems.length > 0 ? (
         <section className="card mt-6 overflow-x-auto">
           <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
-            Rename plan ({job.renameItems.length} files · preview, originals preserved)
+            Rename plan ({job.renameItems.length} files · {job.renameItems.filter((r) => r.applied).length} applied · originals preserved)
+          </div>
+          <div className="border-b border-slate-100 bg-slate-50">
+            <RenameApply jobId={job.id} canApply={userHasPermission(user, PERMISSIONS.RENAME_APPLY)} />
           </div>
           <table className="w-full">
             <thead className="bg-slate-50">

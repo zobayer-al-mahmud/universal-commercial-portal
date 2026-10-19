@@ -9,6 +9,8 @@ const schema = z.object({
   AUTH_SECRET: z.string().min(16, "AUTH_SECRET must be at least 16 chars"),
   SESSION_TTL_HOURS: z.coerce.number().int().positive().default(12),
   STORAGE_ROOT: z.string().default("./var/storage"),
+  // Read-only directory holding the scanned PDFs for the PDF-rename apply step.
+  RENAME_INPUT_DIR: z.string().optional().or(z.literal("")),
   INTEGRATION_MODE: z.enum(["mock", "dryrun", "live"]).default("mock"),
   AUTO_SUBMIT: z
     .enum(["true", "false"])
