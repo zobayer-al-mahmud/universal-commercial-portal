@@ -164,11 +164,19 @@ shared-state "bad XRef entry" flakiness under batch concurrency (that is why 614
 - Security: portal credentials in the checklist .docx were exposed in a shared doc — rotate them; never copy them into the repo.
 
 ## 11. Git / remote
-- Branch `main`; remote `origin` = `https://github.com/zobayer-al-mahmud/universal-commercial-portal` (pushed 2026-10-19 at commit `aef10bc`, 10 commits).
+- Current branch `feature/booking-correction-damco`; remote `origin` = `https://github.com/zobayer-al-mahmud/universal-commercial-portal`.
+  Pushed 2026-10-20 at commit `4d36356` (branch tracks `origin/feature/booking-correction-damco`; no PR opened yet — `gh` CLI not
+  installed in this environment). `main` is separate and last at `aef10bc`; this branch has not been merged into it.
 - Only the `AUCP` folder is the repo; source folders 1–9 and the checklist are **not** in it. `.gitignore` excludes `.env`, `/var/`, `prisma/dev.db`, `node_modules`.
-- Everything in §8, plus `MEMORY.md` and the `CLAUDE.md` edit, is local only (not on GitHub). Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
+- Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
 ## 12. Session log (newest first)
+- 2026-10-20: restarted the dev server (stale `.next` after a prior crash — deleted it, relaunched with
+  `node node_modules/next/dist/bin/next dev -p 3300` since `npm run dev` is blocked by PowerShell execution policy
+  here), verified login + dashboard render. Then committed and pushed the SRS-addendum work described in the entry
+  below (it was sitting uncommitted) to `origin/feature/booking-correction-damco` at `4d36356`, after re-running
+  typecheck (0 errors) and tests (119/119) as a gate. Reviewed the diff first — no secrets, `.env`/`var`/`dev.db`
+  correctly excluded. Not merged into `main`; no PR opened (`gh` not installed here).
 - 2026-10-19 (Oct-2026 SRS addendum — Module Enhancements): implemented from `UCP_Modified_SRS_Module_Enhancements_Oct_2026.docx`
   (read via a Python docx-text extractor; no pandoc/soffice in this env). Two explicitly handwritten-requested gaps built end-to-end:
   **(A) Sales Contract bulk multi-PDF batch (§3)** — new models SalesContractBatch/Item; pure classifier `batch-classify.ts`
