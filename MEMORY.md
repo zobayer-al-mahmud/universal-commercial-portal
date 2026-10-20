@@ -209,9 +209,11 @@ live search→compare→PDF path is NOT wired. The mock pipeline remains fully w
 - Security: portal credentials in the checklist .docx were exposed in a shared doc — rotate them; never copy them into the repo.
 
 ## 11. Git / remote
-- Current branch `feature/booking-correction-damco`; remote `origin` = `https://github.com/zobayer-al-mahmud/universal-commercial-portal`.
-  Pushed 2026-10-20 at commit `4d36356` (branch tracks `origin/feature/booking-correction-damco`; no PR opened yet — `gh` CLI not
-  installed in this environment). `main` is separate and last at `aef10bc`; this branch has not been merged into it.
+- `feature/booking-correction-damco` (last at `b0516da`) was merged into `main` on 2026-10-20 via merge commit `9418ea8`
+  (no-ff, no conflicts; typecheck + 119/119 tests re-run clean on `main` post-merge) and pushed to
+  `origin/main` (`https://github.com/zobayer-al-mahmud/universal-commercial-portal`). Current checkout: `main`.
+  No PR was opened (`gh` CLI not installed here) — this was a direct local merge + push, done on explicit user request.
+  The feature branch still exists (local + `origin/feature/booking-correction-damco`) but all its work is now on `main` too.
 - Only the `AUCP` folder is the repo; source folders 1–9 and the checklist are **not** in it. `.gitignore` excludes `.env`, `/var/`, `prisma/dev.db`, `node_modules`.
 - Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
