@@ -13,6 +13,28 @@ export interface ModuleCatalogEntry {
 }
 
 export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
+  "hm-sales-contract": {
+    key: "hm-sales-contract",
+    sources: "H&M supplier-generated three-PDF set per PO (643159 sample): PurchaseOrder, SizePerColourBreakdown, TotalCountryBreakdown. Destination: `H&M` worksheet of `new-up coming shipment -HM-2015 to 2026(AutoRecovered).xlsx` (A..U columns, ~12k existing rows).",
+    status: "implemented",
+    scope: [
+      "Per-PO three-PDF upload → immutable storage → text extraction (never invents values).",
+      "Three-way match on Order No (primary); Product No / Option No / Supplier Code / Article No as warnings.",
+      "Cross-document reconciliation: PO market-sum vs PO total, Country breakdown vs PO per-market, Size breakdown vs PO per-market, size-sum vs market total.",
+      "A..U mapping that follows the LIVE template convention (one anchor row per PO; per-market qty encoded in column O).",
+      "Append-only user edits per row; blanks stay distinct from user-cleared values.",
+      "Workbook writer never modifies the user's template (copyFile → append → save as `SalesContract_<ref>_<ts>.xlsx`).",
+      "Preserves the H&M sheet's `=G*I` and `=S*G` formulas on anchor rows.",
+      "Blocked sets (Order No mismatch) emit no rows — no silent combination.",
+    ],
+    openQuestions: [
+      "BR-HM-01: Does column B (Date) come from Order Date, Sales Contract issue date, or TOD?",
+      "BR-HM-02: Column H (Style No.) — approved to substitute Product Name?",
+      "BR-HM-03: Column J (Item Des.) composition is not in any of the three PDFs — approved source?",
+      "BR-HM-04: Column S (pack/set) default — 1 (live template) or blank until set?",
+      "BR-HM-05: Column A / D (Marchent / commercial Cont.No.) numbering rule.",
+    ],
+  },
   "sales-contract": {
     key: "sales-contract",
     sources: "SRS_Sales_Contract_Creation.docx (UCP-SRS-SC-001); 26 Order Package .msg + 2 workbooks.",

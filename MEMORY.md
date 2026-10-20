@@ -2,7 +2,7 @@
 
 > Read this first, then inspect the files named below. Keep it current (rules at the bottom).
 > **Never put secrets here.** Credentials live only in the git-ignored `.env`.
-> Last updated: 2026-10-19 (all facts below were verified on that date unless marked UNVERIFIED).
+> Last updated: 2026-10-20 (all facts below were verified on that date unless marked UNVERIFIED).
 
 ## 1. What this is
 **Ananta Universal Commercial Portal (AUCP / "UCP")** — internal web app that automates the commercial
@@ -218,6 +218,130 @@ live search→compare→PDF path is NOT wired. The mock pipeline remains fully w
 - Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
 ## 12. Session log (newest first)
+- 2026-10-20 (Generic Sales Contract bulk-batch parser fix + rich extraction UI):
+  User reported that uploading the three real 643159 H&M PDFs to the generic
+  `/sales-contract` bulk-batch dropped all three into `NEEDS_REVIEW` with
+  `SCHEMA_DRIFT: Purchase Order text did not match the expected market-row layout`.
+  **Root cause**: `src/server/sales-contract/parse.ts :: parsePoText` was written
+  against the SRS §C.3 "normalised pdftotext" layout (`PM-A (PM-B) qty price date`
+  on one line); the real H&M supplier PDF uses a concatenated layout
+  (`29 Jun, 2026OE (OLCEU)3 54487%`), and the Size/Country breakdown PDFs are
+  not Purchase Orders at all. All three were being pushed through the same PO
+  regex, finding zero rows, and firing SCHEMA_DRIFT.
+  **Fix** (uncommitted):
+    - `src/server/sales-contract/parse.ts` — `parsePoText` now auto-detects the
+      H&M `Purchase Order – Online` banner and delegates to the H&M PO parser
+      (`parseHmPurchaseOrderToRawRows`), converting its `HmPoMarketRow[]` back
+      to the generic `RawPoMarketRow[]` shape so normalize/validate/reconcile
+      unchanged. New export `classifyHmDoc(text, filename)` returns
+      `"PurchaseOrder" | "SizePerColourBreakdown" | "TotalCountryBreakdown" | "Unknown"`.
+      New export `summariseExtraction(text, filename)` returns a per-file
+      extraction summary (every header field + per-market rows + totals + notes).
+    - `src/server/sales-contract/batch.ts` — classifies kind first; for a
+      Size/Country PDF it skips the PO pipeline and emits the honest
+      `NOT_A_PURCHASE_ORDER` reason instead of SCHEMA_DRIFT, with a pointer to
+      the `/hm-sales-contract` three-PDF workflow. The item's `extractionJson`
+      now carries the rich summary (used by the batch UI expander).
+    - `src/components/SalesBatchItemDetail.tsx` (NEW) — expandable per-file
+      detail: shows every extracted field + value, PO rows table, totals,
+      kind badge, and the detected validation reasons separately from the
+      row-level Decision/State/Write/Notes. Fulfils user spec item 4.
+    - `src/app/(portal)/sales-contract/[batchId]/page.tsx` — adds a secondary
+      row per batch item hosting the expander.
+    - `tests/sales-contract-hm-batch.test.ts` (NEW, 9 tests) — regression on
+      the three real 643159 PDFs through the generic pipeline:
+      classifyHmDoc / parsePoText (4 markets, correct qty, no SCHEMA_DRIFT),
+      runPipeline end-to-end (outcome `draft`, 4 poRows, 1 contract row with
+      orderQty 4078), and summariseExtraction (header fields, Size/Country
+      per-market/per-size qtys, notes).
+  **Gates**: `npm run test` 155/155 (was 146 — +9 regression); `npm run typecheck`
+  exit 0; `npm run build` compiled all routes (`/sales-contract/[batchId]`
+  grew from 199 B to 1.67 kB with the client expander). No new migration, no
+  env changes. Existing batch items already in the DB keep their old
+  `extractionJson` (no `summary` field) — hitting ↻ Retry re-runs them through
+  the new parser and populates the summary. Dev-server stale `.next` caveat
+  still applies if it was running during the build (§10).
+- 2026-10-20 (H&M Sales Contract — Phase B shipped, full UI + API + DB):
+  Phase A (extractor + writer + 27 tests) now has its DB / server-action / API /
+  UI around it. The feature is end-to-end usable from the portal: /hm-sales-contract →
+  create contract → upload three PDFs per PO → review editable A..U preview → download .xlsx.
+  - Files added / modified (uncommitted; see `git status`):
+    - Prisma: `prisma/schema.prisma` + migration `20261020043245_add_hm_sales_contract` →
+      4 new models: `HmSalesContract`, `HmSalesContractPo`, `HmSalesContractPdf`,
+      `HmSalesContractRowEdit`. 11 migrations total, DB in sync.
+    - Env: `src/lib/env.ts` + `.env.example` → new keys
+      `HM_SALES_CONTRACT_TEMPLATE_PATH` (REQUIRED for the download route; blank
+      by default — the writer never overwrites the template, only reads it),
+      `HM_SALES_CONTRACT_MAX_FILE_MB` (default 20).
+    - Server: `src/server/hm-sales-contract/intake.ts` → `createHmContract`,
+      `uploadHmPdfSet`, `processHmPoSet` (text → parsers → match → recon →
+      map-to-rows → persist as JSON blobs on `HmSalesContractPo`),
+      `updateHmContractHeader`, `recordHmRowEdit`, `buildOverridesForContract`,
+      `loadContractSets`.
+    - Server action: `src/app/actions/hm-sales-contract.ts` →
+      `createHmSalesContractAction` (JOB_CREATE), `updateHmHeaderAction`,
+      `editHmRowAction` (append-only row override), `deleteHmPoAction`.
+    - API routes:
+      - `POST /api/hm-sales-contract/[id]/upload` — multipart with three named
+        File fields `PurchaseOrder`, `SizePerColourBreakdown`, `TotalCountryBreakdown`.
+      - `GET /api/hm-sales-contract/[id]/download` — writes to
+        `${STORAGE_ROOT}/hm-sales-contract/${id}/exports/SalesContract_<ref>_<ts>.xlsx`
+        and streams the file. Returns 400 if `HM_SALES_CONTRACT_TEMPLATE_PATH`
+        is unset or no PO sets uploaded.
+    - UI:
+      - `src/app/(portal)/hm-sales-contract/page.tsx` — list + "+ New Sales Contract" (server action redirects to detail).
+      - `src/app/(portal)/hm-sales-contract/[id]/page.tsx` — detail: header form, upload form, PO sets with editable preview + Download button (gated on template env + READY rows).
+      - `src/components/HmSalesContractHeader.tsx` — A/B/C/D/E/P/Q/S editor (blank-by-default, unresolved rules BR-HM-01..05 cited on-screen).
+      - `src/components/HmSalesContractUpload.tsx` — three named dropzones per PO + drag-drop auto-sort by filename.
+      - `src/components/HmSalesContractPreview.tsx` — per-PO editable table showing extracted / user-edited / blank-source distinctly; append-only edits via `editHmRowAction`.
+    - Catalog + nav: `prisma/seed.ts` adds `hm-sales-contract` module; `src/server/modules/catalog.ts` adds a `hm-sales-contract` entry with scope + BR-HM-01..05 open questions; `src/app/(portal)/modules/[key]/page.tsx` shows a direct link from the module card to `/hm-sales-contract`.
+  - Verification gates: `npm run test` 146/146 (unchanged — the UI/API layer is covered by typecheck + build); `npm run typecheck` exit 0; `npm run build` compiled ALL routes incl. the two new API routes and two new pages; `npm run db:migrate` + `npm run db:seed` succeeded (admin bootstrap re-ran OK).
+  - Env note the user needs to set BEFORE first download:
+    `HM_SALES_CONTRACT_TEMPLATE_PATH="D:/UCP — REQUIRED DATA & FILES/1. Sales Contract Creation/new-up coming shipment -HM-2015 to 2026(AutoRecovered).xlsx"`
+  - **Dev server caveat**: `next build` was run while the dev server (:3300) was still bound. Per §10, if the user hits unstyled Times-New-Roman pages, stop the dev server, delete `.next` (git-ignored, generated), restart. Normal next-dev HMR will otherwise pick up the new files on save.
+  - Nothing committed. Stage selectively (never `.env`, `var/`, `prisma/dev.db`).
+    `var/hm-smoke.ts` is a dev-only end-to-end scratch under the git-ignored var/
+    folder — leave it or delete; it hit a tsx/Node 24 vs `generator-function`
+    incompat and the unit tests are the authoritative verification.
+- 2026-10-20 (H&M Sales Contract — three-PDF-set extractor, Phase A — PURE LOGIC ONLY):
+  built the backend module `src/server/hm-sales-contract/` end-to-end for the user's new
+  "upload PO + Size/Colour + Country breakdown PDFs per PO → fill the A–U columns of the
+  live `H&M` worksheet → download" workflow. Scope decisions documented in
+  `docs/modules/hm-sales-contract.md` (mapping + 5 unresolved rules BR-HM-01..05 covering
+  Date column source, Style No. substitution, Item Des. composition, pack/set default, and
+  contract-no numbering — each kept blank by default so no business value is invented).
+  Deliberately split into two phases: **Phase A done here** = pure extractor + validator +
+  mapper + workbook writer + tests; **Phase B next** = Prisma models, server action, UI,
+  intake wiring.
+  - Files added (uncommitted):
+    - `src/server/hm-sales-contract/{types,parse-po,parse-size-breakdown,parse-country-breakdown,match,validate,map-to-rows,write-xlsx,index}.ts`
+    - `tests/hm-sales-contract.test.ts` (27 tests) + `tests/fixtures/hm-643159-{po,size,country}.txt`
+      (verbatim pdf-parse output of the three real 643159 PDFs the user attached)
+    - `docs/modules/hm-sales-contract.md`
+  - Key parser facts learned from the real PDFs that are not in the SRS:
+    - pdf-parse flattens the two-column layout as "all N labels in order, then all N values
+      in order". The parser extracts headers by locating the ordered label block then
+      reading the N following lines.
+    - Market table rows are concatenated: `29 Jun, 2026OE (OLCEU)3 54487%`. Qty/pct boundary
+      is ambiguous on small-qty rows (`2506%` → 25/06 vs 250/6); resolved by enumerating
+      splits per row and picking the combination whose qty sum equals the unambiguous PO
+      `Total:` row (4078 for 643159). No value is silently altered — unresolvable splits
+      fall back to the best-score combo + raise QTY_MISMATCH via the reconciler.
+    - Country breakdown codeB characters are letters+dashes only (never digits), so the
+      row regex excludes digits in the codeB class or it will swallow the first qty digit.
+  - Key mapping convention (established from the LIVE `H&M` sheet, not just the spec text):
+    one anchor row per PO with G=total/M=`=G*I`/R=`=S*G` formulas; subsequent delivery/
+    market rows leave G/M/R blank and encode the per-market qty inside column O as free
+    text: `"<TOD> <code> (<codeB>) <qty> <pct>%"`. The workbook writer never overwrites
+    the user's template — it `copyFile`s it to a new path and appends to that.
+  - Verification: `npm run test` 146/146 (was 119); `npm run typecheck` exit 0; no DB
+    migration yet (Phase B). Dev server not restarted (no runtime code paths added).
+  - Next session (Phase B): add `HmSalesContract`, `HmSalesContractItem`, `HmSalesContractPdf`
+    Prisma models (or extend `SalesContractBatch` with a kind="hm-three-pdf"); add
+    `src/app/actions/hm-sales-contract.ts` + `src/app/(portal)/hm-sales-contract/**` pages;
+    build editable preview table showing extracted / user-edited / blank-source distinct;
+    wire the writer to download via `/api/export/hm-sales-contract/<id>`. Nothing is
+    committed; stage selectively (never `.env`, `var/`, `prisma/dev.db`).
 - 2026-10-20 (live Damco auto-login): built the visible-browser live path (`damco-browser.ts`, `damco-auth.ts`) and
   DEMONSTRATED real auto-login against the production Damco portal (AUTHENTICATED → Dashboard; creds from env, no bypass).
   Discovered real login + dashboard + search selectors (see §8a). Applied `add_damco_live_run` migration; typecheck exit 0.

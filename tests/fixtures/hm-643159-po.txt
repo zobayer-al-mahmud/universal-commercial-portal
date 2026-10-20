@@ -1,0 +1,73 @@
+
+
+Purchase Order – Online
+H&MSupplier Original CONFIDENTIAL
+Order No:
+PT Prod No:
+Date of Order:
+Supplier Code:
+Supplier Name:
+Option No:
+Development No:
+643159-8756
+95320
+20 Apr, 2026
+0197
+ANANTA GARMENTS LTD.
+SQ0174829
+0001732C
+Product No:
+Product Name:
+Product Description:
+Season:
+Customs Customer Group:
+Type of Construction:
+0803160
+Slim denim
+Jeans - Garment Lower body
+4-2026
+Boys
+Woven
+Country of Production:
+Country of Delivery:
+Country of Origin:
+Terms of Payment:
+Bangladesh
+Bangladesh
+Bangladesh
+EOM+63
+No of Pieces:
+Sales Mode:
+1
+Single
+Terms of Delivery
+OE, OF, LH, OD
+Transport by Sea, Packing Mode Flat, FCA according to the latest edition of Incoterms at the order placement date.
+Ship by nominated Transport Service Provider and named place according to ODI (Origin Delivery Information).
+Time of DeliveryPlanning MarketsQuantity% Total Qty
+29 Jun, 2026OE (OLCEU)3 54487%
+13 Jul, 2026LH (OLEEU)2506%
+20 Jul, 2026OF (OLSEU)2747%
+24 Aug, 2026OD (OL-ME)10<1%
+Total:4 078100%
+Quantity per Article
+Article NoH&M Colour CodePT Article NumberColourOption NoCostQty/Article
+05175-90103Denim Blue LightSQ0174829 (V1)6.15 USD4 078
+Total Quantity:4 078
+Invoice Average PriceCountry
+6.18 USDOE, OF, LH, OD
+By accepting and performing under this Order, the Supplier acknowledges:
+(i) that he has recieved H&M Standard Purchase Conditions including the other standard conditions referred to therein; and
+(ii) that the Conditions apply to the sale and purchase of Goods comprised in this Order; and
+(iii) that the Supplier is bound by the terms set forth in the said Conditions.
+Puls Trading Far East Ltd, buying agent for, and part of The H&M Group
+Address:19F Tower 6, China Hong Kong City
+33 Canton Road
+Tsim Sha Tsui, Kowloon
+Hong Kong
+Telephone:+852 2736 6688
+Created:
+20 Apr, 2026
+9:12 AM
+Version Number: 01
+Page: 1/1

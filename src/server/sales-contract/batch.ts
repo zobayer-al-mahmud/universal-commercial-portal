@@ -5,8 +5,9 @@ import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { audit } from "@/lib/audit";
 import { parsePdfText } from "@/server/pdf/parse-pdf";
-import { extractOrderNumbers } from "./parse";
+import { classifyHmDoc, extractOrderNumbers, summariseExtraction } from "./parse";
 import { runPipeline } from "./pipeline";
+import type { PipelineResult } from "./types";
 import {
   classifyBatchItem,
   type ExistingContractMatch,
@@ -182,12 +183,41 @@ export async function processSalesBatchItem(
     // OrderNos: from the embedded text AND the filename (BR-SC-19). Never invented.
     const orderNumbers = [...new Set([...extractOrderNumbers(text), ...extractOrderNumbers(item.originalName)])];
 
-    // Reuse the pure pipeline for PO-row parse + validation (attachment gate off).
+    // Classify the PDF kind so a Size / Country breakdown never gets pushed
+    // through the PO parser (which would emit a misleading SCHEMA_DRIFT —
+    // see docs/modules/hm-sales-contract.md). We still produce a rich field
+    // extraction summary for the UI even when the document cannot by itself
+    // draft a Sales Contract row.
+    const kind = classifyHmDoc(text, item.originalName);
+    const extractionSummary = summariseExtraction(text, item.originalName);
+
+    // The PO pipeline is only meaningful for Purchase Order PDFs. For a known
+    // Size or Country breakdown we skip it and emit an honest reason instead
+    // of running a regex against the wrong document shape.
     const subject = [item.originalName, orderNumbers.join(", ")].filter(Boolean).join(" ");
-    const pipeline = runPipeline(
-      { subject, poText: text, attachments: [item.originalName] },
-      { skipAttachmentCheck: true },
-    );
+    const pipeline: PipelineResult =
+      kind === "SizePerColourBreakdown" || kind === "TotalCountryBreakdown"
+        ? {
+            orderNumbers,
+            attachmentCheck: { expected: [], present: [kind], missing: [], ok: true },
+            poRows: [],
+            contractRows: [],
+            reviewReasons: [
+              {
+                code: "NOT_A_PURCHASE_ORDER",
+                reason:
+                  kind === "SizePerColourBreakdown"
+                    ? "This PDF is a Size / Colour Breakdown — upload it with the Purchase Order and the Total Country Breakdown via the H&M Sales Contract workflow at /hm-sales-contract."
+                    : "This PDF is a Total Country Breakdown — upload it with the Purchase Order and the Size / Colour Breakdown via the H&M Sales Contract workflow at /hm-sales-contract.",
+                severity: "hard",
+              },
+            ],
+            outcome: "queued",
+          }
+        : runPipeline(
+            { subject, poText: text, attachments: [item.originalName] },
+            { skipAttachmentCheck: true },
+          );
 
     const jobId = await batchJobId(item.batchId, actor);
     // Persist PO EXTRACTION rows for this item (append-only, incl. failed rows).
@@ -218,6 +248,12 @@ export async function processSalesBatchItem(
     }
 
     const extractionJson = JSON.stringify({
+      // Rich, human-readable summary for the batch UI (see
+      // src/app/(portal)/sales-contract/[batchId]/page.tsx). This is what the
+      // "Show extracted fields" expander renders.
+      kind,
+      summary: extractionSummary,
+      // Pipeline-shape data retained for existing consumers.
       orderNumbers,
       poRowCount: pipeline.poRows.length,
       contractRows: pipeline.contractRows.map((c) => ({ orderNo: c.orderNo, orderQty: c.orderQty, value: c.value, unitPrice: c.unitPrice })),

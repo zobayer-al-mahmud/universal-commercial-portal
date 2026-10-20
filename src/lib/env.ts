@@ -63,6 +63,16 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+
+  // --- H&M Sales Contract three-PDF-set workflow (module 1 Oct-2026) ---------
+  // The user's live Sales Contract workbook. The writer NEVER modifies this
+  // file; it is only read and copyFile'd to a new output path. Leave blank to
+  // force the user to upload the template themselves.
+  HM_SALES_CONTRACT_TEMPLATE_PATH: z
+    .string()
+    .optional()
+    .or(z.literal("")),
+  HM_SALES_CONTRACT_MAX_FILE_MB: z.coerce.number().positive().default(20),
 });
 
 const parsed = schema.safeParse(process.env);

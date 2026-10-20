@@ -5,6 +5,7 @@ import { PageHeader, StatusBadge, Stat } from "@/components/ui";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { retrySalesItemAction, reprocessSalesBatchAction } from "@/app/actions/sales-contract-batch";
+import { SalesBatchItemDetail, type SalesBatchItemExtraction } from "@/components/SalesBatchItemDetail";
 
 export const dynamic = "force-dynamic";
 
@@ -84,33 +85,46 @@ export default async function SalesContractBatchPage({ params }: { params: { bat
             </tr>
           </thead>
           <tbody>
-            {items.map((it) => (
-              <tr key={it.id} className="border-t border-slate-50 align-top">
-                <td className="td">{it.serial}</td>
-                <td className="td max-w-[180px] truncate" title={it.originalName}>{it.originalName}</td>
-                <td className="td font-mono">{it.orderNumbers || "—"}</td>
-                <td className="td">{it.poRowCount || (it.textChars < 40 ? "NOT EXTRACTED" : "0")}</td>
-                <td className="td font-mono text-[11px]">
-                  {it.targetContractRef || "—"}
-                  {it.buyerCode ? <span className="text-slate-400"> · {it.buyerCode}</span> : null}
-                  {it.proposed ? <span className="ml-1 badge bg-sky-100 text-sky-700">proposed</span> : null}
-                </td>
-                <td className="td">{it.decision ? <span className={`badge ${DECISION_TONE[it.decision] ?? "bg-slate-100 text-slate-600"}`}>{it.decision}</span> : "—"}</td>
-                <td className="td"><span className={`badge ${tone(it.state)}`}>{it.state}</span></td>
-                <td className="td">{it.blockWrite ? <span className="text-rose-700">blocked</span> : <span className="text-green-700">allowed</span>}</td>
-                <td className="td max-w-[280px] whitespace-normal text-slate-600">{it.reasons || it.error || "—"}</td>
-                <td className="td text-slate-400">{it.processedAt ? it.processedAt.toISOString().slice(5, 16).replace("T", " ") : "—"}</td>
-                <td className="td">
-                  {canRetry && RETRYABLE.includes(it.state) ? (
-                    <form action={retrySalesItemAction}>
-                      <input type="hidden" name="itemId" value={it.id} />
-                      <input type="hidden" name="batchId" value={batch.id} />
-                      <button className="text-ananta hover:underline">↻ Retry</button>
-                    </form>
-                  ) : "—"}
-                </td>
-              </tr>
-            ))}
+            {items.flatMap((it) => {
+              let detail: SalesBatchItemExtraction | null = null;
+              try { detail = JSON.parse(it.extractionJson || "null") as SalesBatchItemExtraction; } catch { detail = null; }
+              return [
+                (
+                  <tr key={`${it.id}-row`} className="border-t border-slate-50 align-top">
+                    <td className="td">{it.serial}</td>
+                    <td className="td max-w-[180px] truncate" title={it.originalName}>{it.originalName}</td>
+                    <td className="td font-mono">{it.orderNumbers || "—"}</td>
+                    <td className="td">{it.poRowCount || (it.textChars < 40 ? "NOT EXTRACTED" : "0")}</td>
+                    <td className="td font-mono text-[11px]">
+                      {it.targetContractRef || "—"}
+                      {it.buyerCode ? <span className="text-slate-400"> · {it.buyerCode}</span> : null}
+                      {it.proposed ? <span className="ml-1 badge bg-sky-100 text-sky-700">proposed</span> : null}
+                    </td>
+                    <td className="td">{it.decision ? <span className={`badge ${DECISION_TONE[it.decision] ?? "bg-slate-100 text-slate-600"}`}>{it.decision}</span> : "—"}</td>
+                    <td className="td"><span className={`badge ${tone(it.state)}`}>{it.state}</span></td>
+                    <td className="td">{it.blockWrite ? <span className="text-rose-700">blocked</span> : <span className="text-green-700">allowed</span>}</td>
+                    <td className="td max-w-[280px] whitespace-normal text-slate-600">{it.reasons || it.error || "—"}</td>
+                    <td className="td text-slate-400">{it.processedAt ? it.processedAt.toISOString().slice(5, 16).replace("T", " ") : "—"}</td>
+                    <td className="td">
+                      {canRetry && RETRYABLE.includes(it.state) ? (
+                        <form action={retrySalesItemAction}>
+                          <input type="hidden" name="itemId" value={it.id} />
+                          <input type="hidden" name="batchId" value={batch.id} />
+                          <button className="text-ananta hover:underline">↻ Retry</button>
+                        </form>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ),
+                (
+                  <tr key={`${it.id}-detail`} className="border-t border-slate-50 bg-slate-50/40">
+                    <td colSpan={11} className="px-4 py-2">
+                      <SalesBatchItemDetail data={detail} />
+                    </td>
+                  </tr>
+                ),
+              ];
+            })}
           </tbody>
         </table>
       </section>

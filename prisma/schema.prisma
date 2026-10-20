@@ -539,6 +539,99 @@ model BookingDocEvent {
 }
 
 // ---------------------------------------------------------------------------
+// H&M Sales Contract — three-PDF-set per PO, A–U template export (module 1 Oct-2026).
+// One Sales Contract groups many POs; each PO carries three uploaded PDFs
+// (PurchaseOrder, SizePerColourBreakdown, TotalCountryBreakdown) which are
+// three-way matched and cross-reconciled. Edits are kept distinct from the
+// extracted source values (append-only HmSalesContractRowEdit).
+// ---------------------------------------------------------------------------
+
+model HmSalesContract {
+  id               String   @id @default(cuid())
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  createdBy        String   @default("system")
+  status           String   @default("draft") // draft | ready | exported
+  // Sales Contract-level header (editable in UI; never auto-filled from a PDF
+  // field the user did not approve as the source for that column — see BR-HM-01..05).
+  marchentContNo   String   @default("") // column A
+  contractDate     String   @default("") // column B  (stored as raw string; the sheet accepts text)
+  buyerCode        String   @default("") // column C
+  commercialContNo String   @default("") // column D
+  commercialDate   String   @default("") // column E
+  merchandiserName String   @default("") // column Q
+  packSet          String   @default("") // column S  (template convention shows "1"; left blank by default per spec rule 3-S / BR-HM-04)
+  remarksDefault   String   @default("") // column P default
+  pos              HmSalesContractPo[]
+
+  @@index([status])
+}
+
+model HmSalesContractPo {
+  id          String   @id @default(cuid())
+  contractId  String
+  contract    HmSalesContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  // Identity (not always known at upload: filled after extraction).
+  orderNo     String   @default("")
+  // State machine for the three-PDF set.
+  state       String   @default("UPLOADED") // UPLOADED | EXTRACTING | READY | BLOCKED | FAILED
+  // Decision + traceability.
+  blockWrite  Boolean  @default(false)      // true when match fails — no rows generated
+  reasons     String   @default("")         // newline-joined human-readable notes
+  matchJson   String   @default("{}")       // HmSetMatch
+  reconJson   String   @default("{}")       // HmReconciliation
+  poJson      String   @default("{}")       // HmPoExtract (raw extraction, kept for audit)
+  sizeJson    String   @default("{}")       // HmSizeBreakdownExtract
+  countryJson String   @default("{}")       // HmCountryBreakdownExtract
+  rowsJson    String   @default("[]")       // HmTemplateRow[] (what will be written)
+  error       String   @default("")
+  warning     String   @default("")
+  attempts    Int      @default(0)
+  processedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  pdfs  HmSalesContractPdf[]
+  edits HmSalesContractRowEdit[]
+
+  @@unique([contractId, orderNo])
+  @@index([contractId])
+  @@index([state])
+}
+
+model HmSalesContractPdf {
+  id           String   @id @default(cuid())
+  poId         String
+  po           HmSalesContractPo @relation(fields: [poId], references: [id], onDelete: Cascade)
+  kind         String   // "PurchaseOrder" | "SizePerColourBreakdown" | "TotalCountryBreakdown"
+  originalName String
+  sha256       String
+  sizeBytes    Int
+  storagePath  String   // immutable original upload (outside repo)
+  createdAt    DateTime @default(now())
+
+  @@unique([poId, kind]) // one PDF per kind per PO
+  @@index([sha256])
+}
+
+// Append-only override: a user edit to a specific generated row's cell(s).
+// Blank-because-source-does-not-contain stays distinct from a user-cleared
+// cell — the overridesJson records every explicit edit, including setting a
+// cell to "" (treated as "user cleared", not as "source does not contain").
+model HmSalesContractRowEdit {
+  id            String   @id @default(cuid())
+  poId          String
+  po            HmSalesContractPo @relation(fields: [poId], references: [id], onDelete: Cascade)
+  marketCode    String   // the row's market code (OE, OF, OD, LH, ...)
+  // JSON blob of partial HmFlatCells overrides for A..U cells on this row.
+  overridesJson String
+  editedBy      String
+  editedAt      DateTime @default(now())
+
+  @@index([poId])
+}
+
+// ---------------------------------------------------------------------------
 // Human review queue (SRS §6.7, SC-FR-015)
 // ---------------------------------------------------------------------------
 

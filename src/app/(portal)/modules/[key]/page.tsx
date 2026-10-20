@@ -60,6 +60,16 @@ export default async function ModulePage({ params }: { params: { key: string } }
         </div>
       ) : null}
 
+      {module.key === "hm-sales-contract" ? (
+        <div className="mb-6">
+          <h3 className="mb-1 text-sm font-semibold text-slate-700">H&amp;M Sales Contract — three-PDF-set workflow</h3>
+          <p className="mb-3 text-xs text-slate-400">
+            Upload the three H&amp;M PDFs per PO (PurchaseOrder, SizePerColourBreakdown, TotalCountryBreakdown), group many POs under one Sales Contract, review the extracted A..U rows and download a workbook that appends to a copy of the live template. See <code>docs/modules/hm-sales-contract.md</code> for the mapping and the five unresolved rules.
+          </p>
+          <Link href="/hm-sales-contract" className="btn-primary text-xs">Open H&amp;M Sales Contracts →</Link>
+        </div>
+      ) : null}
+
       {module.key === "sales-contract" ? (
         <>
           <div className="mb-6">

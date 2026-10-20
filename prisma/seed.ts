@@ -11,6 +11,7 @@ const prisma = new PrismaClient();
 
 const MODULES = [
   { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Intake H&M Order Packages, extract & reconcile POs into Sales Contract records (SRS UCP-SRS-SC-001)." },
+  { key: "hm-sales-contract", name: "H&M Sales Contract (3-PDF set)", sortOrder: 1, status: "active", description: "Three-PDF-set-per-PO workflow: upload PurchaseOrder + SizePerColourBreakdown + TotalCountryBreakdown → three-way match → A..U template rows → one downloadable workbook per contract." },
   { key: "shipment-schedule", name: "Week Wise Shipment Schedule Creation", sortOrder: 2, status: "active", description: "Build weekly cut-off shipment schedules (per-market invoice lines) from confirmed orders." },
   { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 3, status: "active", description: "Generate per-order/per-market customs invoices (header, consignee, HS-coded line items, totals)." },
   { key: "pdf-rename", name: "PDF File Rename", sortOrder: 4, status: "active", description: "Extract FCR / Bill-of-Export fields from scanned PDFs and rename by business key." },

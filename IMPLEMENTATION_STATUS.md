@@ -1,6 +1,6 @@
 # Implementation Status
 
-Updated: 2026-10-19. Statuses reflect what is actually implemented and verified.
+Updated: 2026-10-20. Statuses reflect what is actually implemented and verified.
 
 ## Milestones
 
@@ -17,7 +17,7 @@ Updated: 2026-10-19. Statuses reflect what is actually implemented and verified.
 
 | Module | Status | Implemented | Blocked / pending |
 |--------|--------|-------------|-------------------|
-| 1. Sales Contract | ✅ Implemented | Intake, 3-PDF rule, parse/normalize/validate, per-contract aggregation, review routing, idempotency, mock UCP save + read-back, audit, UI | Q-SC-01..12; real PO-PDF/MSG extraction (no samples) |
+| 1. Sales Contract | ✅ Implemented | Intake, 3-PDF rule, parse/normalize/validate, per-contract aggregation, review routing, idempotency, mock UCP save + read-back, audit, UI. **NEW (2026-10-20): H&M three-PDF-set workflow** — end-to-end feature: extractor (`src/server/hm-sales-contract/` parses real supplier PO + Size/Colour + Country breakdown layouts, three-way matches, cross-reconciles qty sums, maps to the A–U columns of the live `H&M` worksheet), Prisma models (`HmSalesContract`, `HmSalesContractPo`, `HmSalesContractPdf`, `HmSalesContractRowEdit`), server action, upload + download API routes, portal UI (`/hm-sales-contract`) with editable preview that marks extracted vs user-edited vs blank-source distinctly. Writer appends to a **copy** of the user's template (never overwrites). 27 tests on the real 643159 PDFs; typecheck + full build green. See `docs/modules/hm-sales-contract.md` for the mapping + 5 unresolved rules (BR-HM-01..05) | Q-SC-01..12; BR-HM-01..05; real PO-PDF/MSG extraction (bulk) |
 | 2. Shipment Schedule | 🟡 Implemented (build + export) | Week-title parse, order→per-market expansion, value=PCS×FOB, sequential invoice allocation, validation + review routing, UI + job view, **.xlsx download** (Summary layout) | Booking-confirmation PDF parsing; port/country lookup; cut-off/invoice rules (Q-SS-01) |
 | 3. Customs Invoice | 🟡 Implemented (build + export) | Per-order/market invoice build: fixed exporter/buyer, market-resolved consignee, HS-coded line items, amount=qty×price, totals, review routing, rendered doc, **.xlsx download** (INVOICE + SUMMARY + BL DRAFT) | numbering + consignee master data (Q-CI-01) |
 | 4. PDF Rename | 🟡 Implemented (plan + gated apply) | CSV ingest (FCR 34 / Bill-of-Export 39 fields), deterministic rename-plan, collision/failed handling, review routing, UI; **gated on-disk apply** copies planned scans to an output dir (dry-run default, permission-gated, originals preserved, never overwrites) | canonical filename rule (Q-PR-01) |
