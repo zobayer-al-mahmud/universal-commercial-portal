@@ -27,7 +27,9 @@ Fuller explanation: `docs/source-analysis/CROSS_MODULE_WORKFLOW_MAP.md`, `docs/F
 - ADR: `docs/architecture/architecture-decisions/ADR-0001-stack.md`. Project rules: `CLAUDE.md` (read it).
 
 ## 3. Paths & layout (project root = this folder)
-- Absolute path: `D:\UCP — REQUIRED DATA & FILES\AUCP` (git repo root is **this** folder).
+- Absolute path: **`D:\UCP\universal-commercial-portal`** as of 2026-10-20 (fresh checkout; no spaces/em-dash, so Git Bash works here).
+  Previously `D:\UCP — REQUIRED DATA & FILES\AUCP`. The source-evidence folders are NOT next to this new path — paths in this file
+  pointing at `..\5. Booking Correction\…` or `D:/UCP — REQUIRED DATA & FILES/…` (e.g. `HM_SALES_CONTRACT_TEMPLATE_PATH`) refer to the old location.
 - Parent folder `D:\UCP — REQUIRED DATA & FILES\` holds the read-only **source evidence** (folders `1.`–`9.` + checklist .docx).
   **Never modify or commit those.** The checklist .docx contains plaintext portal passwords → must be rotated (user informed).
 - `src/app/(portal)/**` UI pages · `src/app/actions/**` server actions · `src/app/api/**` (healthz, readyz, export/*, booking/*)
@@ -220,6 +222,96 @@ live search→compare→PDF path is NOT wired. The mock pipeline remains fully w
 - Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
 ## 12. Session log (newest first)
+- 2026-10-20 (Sales Contract Creation — Process button + master Excel list, uncommitted follow-up):
+  Added the two gaps the user's follow-up spec called out:
+    - Renamed the submit button on `SalesContractPickBatch` to `▶ Process N PDF(s) → selected contract`
+      (was "Upload & process …") so the "Process" wording the user asked for is literally in the UI.
+    - New section ② "Sales Contract master Excel files" below the upload card on `/modules/sales-contract`:
+      a per-contract table (ref · Buyer Code · POs · master filename pattern · last updated · ⬇ Download .xlsx).
+      Rows with 0 POs show "No POs yet" instead of a download button. Reads from `HmSalesContract` with
+      `_count.pos` + the most recently updated PO's `updatedAt`.
+    - The old legacy sections ("Bulk PDF upload" + "Single Order Package intake" + the recent-batches
+      table) are preserved but moved behind collapsible `<details>` elements as sections ③/④, so the
+      new flow is the primary visible one and nothing was removed.
+    - SWC refused to parse the inline `typeof existing[number]` helper params in a server component
+      (tsc parsed them fine); refactored to pre-computed `masterRows` with precomputed display strings.
+  Verification gates:
+    - `npm run typecheck` — exit 0 (both before and after the refactor).
+    - `npm run test` — 172/172 (unchanged; new UI covered by typecheck + dev-server compile).
+    - Dev server :3300 (ANOTHER chat's instance died — I restarted on :3300 after deleting the stale
+      `.next` per §10). Current compile green: `GET /modules/sales-contract 307` (redirect to login,
+      expected unauthenticated), `Compiled in …ms` with no errors in the latest log window. User asked
+      to verify in their own Chrome at localhost:3300 (same URL).
+    - `npm run build` — still SKIPPED while the dev server is running on :3300 (§10 rule).
+- 2026-10-20 (Sales Contract Creation — pick-a-contract + max-3-PDF batch, uncommitted):
+  Added a new "⓪ Pick a Sales Contract → upload up to 3 PDFs" section at the top of
+  `/modules/sales-contract` (the "Sales Contract Creation" card). The user asked for:
+  (1) contract selection BEFORE uploading PDFs; (2) max 3 PDFs per batch; (3) one master
+  Excel per contract; (4) one row per unique PO (merge same-PO PDFs, split different-PO
+  PDFs); (5) never silently overwrite — flag conflicts; (6) verification UI.
+  The backend reuses the H&M three-PDF-set tables (HmSalesContract /
+  HmSalesContractPo / HmSalesContractPdf) because the real supplier PDFs ARE H&M and
+  that is the only working per-PO/per-contract infrastructure — building a parallel
+  generic schema would duplicate the whole writer/parser stack. The UI/entry point lives
+  on the generic Sales Contract Creation module page; the master-workbook download link
+  points directly at `/api/hm-sales-contract/{id}/download` so the user never has to
+  navigate to the H&M page.
+  Files added (uncommitted):
+    - `src/server/hm-sales-contract/batch-upload.ts` — new `uploadHmBatch(contractId, files)`
+      with pure helpers (`extractOrderNo`, `groupByOrderNo`, `detectRowConflicts`,
+      `validateBatchFiles`, `MAX_PDFS_PER_BATCH`). Does: validate (max 3, PDF-only, size,
+      header, duplicate kind) → parse text + extract orderNo per file → group by orderNo →
+      for each group `findOrCreate HmSalesContractPo(contractId, orderNo)`, upsert its
+      PDFs by kind, re-extract across EVERY stored PDF for the PO, compare new rows vs
+      previous rows for conflict detection. On conflict: state=NEEDS_REVIEW,
+      blockWrite=true, PREVIOUS rowsJson is preserved (never silently overwritten),
+      reasons blob lists each differing field.
+    - `src/app/actions/sales-contract-pick.ts` — `pickAndUploadSalesContractAction`
+      (useFormState). Handles both "pick existing" (contractId) and "create new"
+      (marchentContNo) modes; requires JOB_CREATE; returns per-PO result for the UI.
+    - `src/components/SalesContractPickBatch.tsx` — client component: existing-contracts
+      dropdown + inline "➕ Create new" (just marchentContNo) + three named dropzones
+      (PurchaseOrder / Size / Country) + submit + result panel (per-PO orderNo, action
+      [created / merged / conflict / failed], state, kinds, rowCount, reasons) + direct
+      Download .xlsx link.
+    - `tests/sales-contract-pick-batch.test.ts` — 17 pure tests covering:
+      Order No extraction (3 real H&M fixtures + "never invents" + regex fallback),
+      grouping (same-PO consolidation, different-PO separation, unidentifiable bucket),
+      conflict detection (first upload = no conflict, idempotent re-upload = no conflict,
+      marketQuantity/fob diff = conflict, missing-market = conflict, additive-market = not
+      a conflict), file validation (max-3 cap, non-PDF reject, missing %PDF reject,
+      duplicate kind reject, valid 3-PDF accept), per-contract isolation guarantee note.
+  Files edited (uncommitted):
+    - `src/app/(portal)/modules/[key]/page.tsx` — added the SalesContractPickBatch
+      section at the top of the sales-contract branch; existing bulk-batch and single
+      intake form stay as sections ① and ②.
+  Verification gates:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — **172/172 passed** (was 155; +17 regression tests from
+      sales-contract-pick-batch.test.ts).
+    - `npm run build` — SKIPPED because the dev server (:3300) is bound by ANOTHER chat
+      and both share `.next`. Per §10, do not run `next build` while a dev server runs.
+      Verify the build after stopping that server.
+    - Browser verification SKIPPED for the same reason — the Browser pane in this
+      session cannot reach another chat's dev server. Verify by hard-reloading
+      `http://localhost:3300/modules/sales-contract` (HMR picks the new files up); the
+      "⓪ Pick a Sales Contract → upload up to 3 PDFs" card should appear above the
+      existing "① Bulk PDF upload" card.
+  Notes:
+    - No DB migration (reuses `HmSalesContract*` tables already applied).
+    - No new env keys (reuses `HM_SALES_CONTRACT_TEMPLATE_PATH` /
+      `HM_SALES_CONTRACT_MAX_FILE_MB`).
+    - Nothing committed. Stage selectively (never `.env`, `var/`, `prisma/dev.db`).
+    - Open architectural call for the user: this new flow sits on the H&M backend
+      because H&M is AGL's only buyer. If a non-H&M buyer appears, we would then split
+      out a generic sales-contract per-PO/per-contract schema; today that would be
+      duplicated-for-nobody code.
+- 2026-10-20 (fresh checkout at `D:\UCP\universal-commercial-portal`): reviewed this file and ran the app. Checkout had no
+  `node_modules`, `.next` or `prisma/dev.db` (only `.env` present). Ran `npm install` (360 pkgs; npm audit reports 19 vulns incl.
+  next@14.2.33 security advisory — not addressed), `npm run db:migrate` (fresh dev.db, all 11 migrations + seed OK — old test data
+  is NOT in this DB), typecheck exit 0, tests 155/155. Dev server started via launch config `aucp-dev` on :3300; `/api/readyz` →
+  ready/db ok; login page renders styled. Note: local `.env` has `DAMCO_LIVE_ENABLED="true"` (INTEGRATION_MODE=mock).
+  `.env.example` shows as modified in git but the diff is line-endings only.
 - 2026-10-20 (commit + push): restarted the dev server (recurring stale-`.next` crash whenever another session's
   edits land while it's running — now fixed each time by deleting `.next` and relaunching with
   `node node_modules/next/dist/bin/next dev -p 3300`). Reviewed the H&M Sales Contract module + Sales Contract
