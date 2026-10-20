@@ -19,6 +19,11 @@ export function StatusBadge({ status }: { status: string }) {
     blocked: "bg-rose-100 text-rose-800",
     not_configured: "bg-slate-100 text-slate-600",
     mock: "bg-sky-100 text-sky-800",
+    completed: "bg-green-100 text-green-800",
+    partial: "bg-amber-100 text-amber-800",
+    needs_review: "bg-amber-100 text-amber-800",
+    processing: "bg-sky-100 text-sky-800",
+    uploaded: "bg-sky-100 text-sky-800",
   };
   return <span className={`badge ${map[status] ?? "bg-slate-100 text-slate-600"}`}>{status}</span>;
 }

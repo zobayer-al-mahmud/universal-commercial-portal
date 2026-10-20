@@ -19,8 +19,8 @@ fail-closed external integrations.
 | PDF File Rename | 🟡 CSV → rename-plan + gated on-disk apply (copy, originals preserved) implemented + tested |
 | Week Wise Shipment Schedule | 🟡 schedule build (order→market lines, invoices) implemented + tested |
 | Customs Invoice Generation | 🟡 per-order invoice build (consignee, HS line items, totals) implemented + tested |
-| Booking Correction | 🟡 original↔corrected diff + approval gate + mock Damco verify implemented + tested |
-| H&M / Bangladesh Bank / Damco portals | ⛔ blocked (no source files; credentials required) |
+| Booking Correction (DAMCO) | ✅ batch PDF → extract 3 values → Damco search → match → CONFIRMED validation → verified PDF; + original↔corrected diff. Implemented + tested. Live portal gated |
+| H&M / Bangladesh Bank portals | ⛔ blocked (no source files; credentials required) |
 
 See [`IMPLEMENTATION_STATUS.md`](./IMPLEMENTATION_STATUS.md) for detail.
 
@@ -82,6 +82,23 @@ Health probes: `GET /api/healthz`, `GET /api/readyz`.
    (qty summed, value computed), and a mock UCP save + read-back. Remove a PDF from
    the attachment list or break the PO number to see it routed to the **Review Queue**
    instead — no destination write happens for a failed record.
+
+## Try the Booking Correction (DAMCO) flow
+
+1. Sign in → **Modules → Booking Correction**.
+2. Under **① Batch booking correction**, drag in several packing-list PDFs
+   (the 7 samples in `../5. Booking Correction/PACKING LIST` work), keep the default
+   company/buyer, and click **Upload & process**.
+3. Open the batch dashboard: each document is extracted (Gross Weight / Cartons /
+   Quantity + PO + country), searched on the Damco Shipper Portal (mock by default),
+   matched, status-validated, and — only when all three values match **and** the
+   booking is CONFIRMED — a verified PDF is produced and offered for download
+   (individually or as a batch ZIP).
+4. Documents with ambiguous carton/quantity totals land in **NEEDS_REVIEW**; a
+   reviewer corrects the values inline and the document is reprocessed. A REQUESTED
+   booking is never reported as confirmed.
+
+Full guide, env vars, and portal limitations: [`docs/modules/booking-correction.md`](./docs/modules/booking-correction.md).
 
 ## Key files
 

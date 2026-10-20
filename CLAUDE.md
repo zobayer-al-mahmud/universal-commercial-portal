@@ -5,6 +5,11 @@ Ananta Universal Commercial Portal: a Next.js 14 + TypeScript modular monolith t
 automates AGL's commercial workflows (Sales Contract first). Built from the read-only
 source set in `D:\UCP — REQUIRED DATA & FILES` (folders 1–9 + checklist).
 
+## Handover file (mandatory)
+Read `MEMORY.md` before starting work, then inspect the code/`git status`. Update it after every
+significant change or decision, and immediately if work is interrupted. Never store secrets in it.
+Never mark a task done without running tests/typecheck.
+
 ## Non-negotiables
 - **Never modify the source folders** (`1.`–`9.`, the checklist). They are read-only
   evidence. This app lives only under `AUCP/`.

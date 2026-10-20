@@ -4,7 +4,7 @@ import { parseBookingText, diffBookings } from "@/server/booking-correction/diff
 const ORIGINAL = `Order No: 698757
 Market: VN
 Market Code: VNW221
-SO Number: 61954434
+SO Number: SO-SAMPLE-001
 Cartons: 120
 PCS: 2400
 Gross Weight: 864.55

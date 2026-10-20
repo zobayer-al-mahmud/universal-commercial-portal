@@ -7,7 +7,7 @@ import { bookingCorrectionAction, type BookingActionState } from "@/app/actions/
 const ORIGINAL = `Order No: 698757
 Market: VN
 Market Code: VNW221
-SO Number: 61954434
+SO Number: SO-SAMPLE-001
 Style: Sample Denim Trouser
 Cartons: 120
 PCS: 2400
@@ -17,7 +17,7 @@ Container No: SEKU5903184`;
 const CORRECTED = `Order No: 698757
 Market: VN
 Market Code: VNW221
-SO Number: 61954434
+SO Number: SO-SAMPLE-001
 Style: Sample Denim Trouser
 Cartons: 118
 PCS: 2400
