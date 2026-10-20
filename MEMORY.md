@@ -209,15 +209,24 @@ live search→compare→PDF path is NOT wired. The mock pipeline remains fully w
 - Security: portal credentials in the checklist .docx were exposed in a shared doc — rotate them; never copy them into the repo.
 
 ## 11. Git / remote
-- `feature/booking-correction-damco` (last at `b0516da`) was merged into `main` on 2026-10-20 via merge commit `9418ea8`
-  (no-ff, no conflicts; typecheck + 119/119 tests re-run clean on `main` post-merge) and pushed to
-  `origin/main` (`https://github.com/zobayer-al-mahmud/universal-commercial-portal`). Current checkout: `main`.
-  No PR was opened (`gh` CLI not installed here) — this was a direct local merge + push, done on explicit user request.
-  The feature branch still exists (local + `origin/feature/booking-correction-damco`) but all its work is now on `main` too.
+- Working directly on `main` now (current HEAD `5de0d6b`), pushed to `origin/main`
+  (`https://github.com/zobayer-al-mahmud/universal-commercial-portal`). History: `feature/booking-correction-damco`
+  (last at `b0516da`) was merged into `main` on 2026-10-20 via merge commit `9418ea8` (no-ff, no conflicts, gates
+  clean), then the H&M Sales Contract 3-PDF-set module landed straight on `main` at `5de0d6b` (typecheck 0,
+  155/155 tests). No PR workflow is in use (`gh` CLI not installed here) — commits go straight to `main` on
+  explicit user request each time. The feature branch still exists (local + `origin/feature/booking-correction-damco`)
+  but is behind `main` now; treat `main` as the source of truth going forward.
 - Only the `AUCP` folder is the repo; source folders 1–9 and the checklist are **not** in it. `.gitignore` excludes `.env`, `/var/`, `prisma/dev.db`, `node_modules`.
 - Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
 ## 12. Session log (newest first)
+- 2026-10-20 (commit + push): restarted the dev server (recurring stale-`.next` crash whenever another session's
+  edits land while it's running — now fixed each time by deleting `.next` and relaunching with
+  `node node_modules/next/dist/bin/next dev -p 3300`). Reviewed the H&M Sales Contract module + Sales Contract
+  batch-parser fixes described below for secrets and for the "never modify source folders" rule (confirmed: the
+  xlsx writer only reads `HM_SALES_CONTRACT_TEMPLATE_PATH` and always copies to a new file under
+  `STORAGE_ROOT/hm-sales-contract/**`, never back to the template). Re-ran typecheck (0) and tests (155/155),
+  committed (`5de0d6b`) and pushed straight to `origin/main`.
 - 2026-10-20 (Generic Sales Contract bulk-batch parser fix + rich extraction UI):
   User reported that uploading the three real 643159 H&M PDFs to the generic
   `/sales-contract` bulk-batch dropped all three into `NEEDS_REVIEW` with
