@@ -120,7 +120,7 @@ Also added this session (uncommitted): `src/types/pdf-parse-lib.d.ts` — ambien
 | Extraction on the 7 REAL packing-list PDFs (`..\5. Booking Correction\PACKING LIST\`) | **PASS** — PO/country/market + Gross Weight + Cartons + Quantity now extract correctly on ALL 7 (total-row parser; see findings below); no manual correction needed |
 | Full pipeline end-to-end (createBookingBatch → processBatch on all 7 real PDFs) | **PASS** (tsx smoke, 2026-10-19): 2 MATCHED→CONFIRMED→COMPLETED on clean extraction; after inline review-corrections all branches exercised — REQUESTED→PORTAL_AUTH_REQUIRED, gross MISMATCH, no-results SEARCH_FAILED, multiple-candidate resolution by country+values, valid batch ZIP (completed PDFs only) |
 | Booking batch UI in browser (admin login → batch dashboard → downloads) | **PASS** — signed in as admin, `/booking/<batchId>` renders full results table + match tables + review editor + integrity messaging; in-page fetch of `/generated`, `/zip`, `/failed-report` → 200 with application/pdf, application/zip, text/csv |
-| Live Damco | **NOT RUN** — fail-closed by design |
+| Live Damco | **AUTO-LOGIN VERIFIED (2026-10-20)** — real visible-browser login against the production portal succeeded; see §8a |
 
 **Real-PDF findings (2026-10-19, UPDATED after carton/qty fix):** PO, country, market code and Gross Weight extract correctly on all 7.
 Cartons/Quantity are concatenated on the "Ctns/Col | Qty/Col" total row (e.g. `Total6151`); `parseCtnsQtyTable` now splits them
@@ -132,7 +132,52 @@ fires on layouts the parser cannot resolve. Also: `pdf-parse` calls are serializ
 shared-state "bad XRef entry" flakiness under batch concurrency (that is why 614275 previously failed to extract). Tests: 97/97.
 **Improvement idea (optional):** positional text via `pagerender` for multi-article tables; current parser targets the single-article total row.
 
+## 8a. LIVE DAMCO automation — visible browser auto-login (2026-10-20, IN PROGRESS)
+Authorised by the user (full permission from the authority; high-volume daily processing). Live mode now drives a REAL,
+VISIBLE local browser and logs in automatically from server-side env credentials. No mock/fake data on the live path.
+
+**New files (uncommitted):**
+- `src/server/integrations/damco-browser.ts` — launches ONE visible local browser (Brave/Chrome/Edge via `DAMCO_BROWSER_PATH`,
+  auto-detects Brave) with a persistent profile (`var/damco-session/profile`, git-ignored) + loopback-only DevTools port
+  (`DAMCO_CDP_PORT`, default 9333). Playwright attaches over CDP. Window is never hidden, never auto-closed mid-run.
+- `src/server/integrations/damco-auth.ts` — `ensureAuthenticated()`: reuses an existing session, else fills the real ADFS login
+  form and submits, verifies via an authenticated-page indicator. Detects CAPTCHA/MFA/errors and reports (never bypasses).
+  Credentials read ONLY from env; never logged/returned/screenshotted.
+- `scripts/damco/{browser,inspect,login-check,search-probe}.ts` — dev tools for launching + read-only DOM discovery.
+
+**Env (in `.env`, git-ignored; added to `.env.example` as blanks):** `DAMCO_USERNAME`, `DAMCO_PASSWORD`, `DAMCO_LIVE_ENABLED=true`,
+`DAMCO_BROWSER_PATH`, `DAMCO_CDP_PORT`, `DAMCO_SESSION_DIR`, `DAMCO_NAV_TIMEOUT_MS`. `env.ts` updated (removed headless flag — live is always visible).
+Playwright 1.49.1 installed (+ bundled Chromium, unused — its launch hit a Windows side-by-side error, so we drive the installed Brave instead).
+
+**Migration (applied):** `add_damco_live_run` — `BookingBatch.{liveStatus,liveStep,liveDocId,liveMessage,liveStartedAt,liveUpdatedAt}`
+and `BookingDocument.{liveStep,searchCriteria,portalValuesJson,portalPdfPath,portalPdfSha256}`. 10 migrations total, DB up to date.
+
+**Real-portal evidence (2026-10-20):**
+- Auto-login: `scripts/damco/login-check.ts` → `OUTCOME: AUTHENTICATED`, URL `…/ViewDashboardAction.action`, title "Dashboard".
+  Credentials filled from env, form submitted, reached authenticated Dashboard. NO CAPTCHA/MFA observed for this account.
+- Portal is ADFS-federated: entry URL → `auth.damco.com/adfs/ls`. Login selectors (verified):
+  `#ctl00_ContentPlaceHolder1_UsernameTextBox`, `…PasswordTextBox`, `…SubmitButton`.
+- Dashboard (verified): Shipper dropdown `#finalShipperList` (options incl. `ANANTA GARMENTS LIMITED [BDANANTAGAVDR]`,
+  `ANANTA SPORTSWEAR LIMITED [BDANANTASPVDR]`), Consignee `#finalConsigneeList`, doc-type `#searchDocumentType`
+  (incl. "Booking / Booking Confirmation"). NOTE: the real portal DOES have `SearchAction.action` (the earlier "no SearchAction
+  deep-link" note was wrong for the real site).
+- Search page `SearchAction.action` (verified): PO `#searchPO_PO_No`, Place-of-delivery `#searchPO_POD`,
+  Booked-status `#searchPO_booked_status`, shipper/consignee dropdowns, records `#recordToShow`, Search `#searchPObtn`
+  (onclick `validateShipperPO('userType')`), Clear `#cancelbtn`, More filters `#moreBtn`.
+- Typecheck of new modules: exit 0.
+
+**BLOCKER (needs user):** running the actual PO search / results-read / PDF-download against the live portal was DENIED by the
+Claude Code auto-mode classifier ("Security Weaken") when attempted via `scripts/damco/search-probe.ts`. Auto-login ran; the
+follow-on automated search did not. To proceed, the user must either add a PowerShell permission rule (or run outside auto mode),
+or run the probe themselves. Until then the results-table + booking-detail + Generate-PDF selectors are NOT yet discovered, so the
+live search→compare→PDF path is NOT wired. The mock pipeline remains fully working for tests.
+
 ### Next actions (in order)
+0. (NEW, 2026-10-20) Unblock the live search probe (permission rule / non-auto run) → run `scripts/damco/search-probe.ts <PO>`
+   to capture the results-table headers/rows + the booking-open + Generate-PDF controls. Then build `damco-live.ts` driver
+   (select shipper/consignee → PO* + POD* search → read booking values → open booking → download the genuine portal PDF),
+   wire it into `batch.ts` live mode behind a single-run queue, add the Start-DAMCO-Processing action + live progress UI,
+   then run the mandatory acceptance test (1 booking, then a 10–15 batch incl. mismatch + session-expiry).
 1. ✅ DONE (2026-10-19): end-to-end pipeline smoke on the 7 real PDFs + browser login + batch dashboard + authenticated
    downloads all verified (see table above). Only remaining UI gap: driving the drag/drop file picker in-browser (the
    programmatic file-dialog is awkward to automate) — the upload path was instead verified via `createBookingBatch`/`processBatch`.
@@ -171,6 +216,11 @@ shared-state "bad XRef entry" flakiness under batch concurrency (that is why 614
 - Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
 ## 12. Session log (newest first)
+- 2026-10-20 (live Damco auto-login): built the visible-browser live path (`damco-browser.ts`, `damco-auth.ts`) and
+  DEMONSTRATED real auto-login against the production Damco portal (AUTHENTICATED → Dashboard; creds from env, no bypass).
+  Discovered real login + dashboard + search selectors (see §8a). Applied `add_damco_live_run` migration; typecheck exit 0.
+  BLOCKED: the live PO-search probe was denied by the auto-mode classifier ("Security Weaken"); results-read/PDF selectors not
+  yet captured, so the live search→compare→PDF path is not wired. Nothing committed. User informed; awaiting unblock decision.
 - 2026-10-20: restarted the dev server (stale `.next` after a prior crash — deleted it, relaunched with
   `node node_modules/next/dist/bin/next dev -p 3300` since `npm run dev` is blocked by PowerShell execution policy
   here), verified login + dashboard render. Then committed and pushed the SRS-addendum work described in the entry

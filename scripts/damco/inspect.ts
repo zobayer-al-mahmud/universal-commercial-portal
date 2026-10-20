@@ -12,6 +12,8 @@ const args = process.argv.slice(2);
 const li = args.indexOf("--label");
 const label = li >= 0 && args[li + 1] ? args[li + 1].replace(/[^\w-]/g, "_") : "snapshot";
 const waitLogin = args.includes("--wait-login");
+const gi = args.indexOf("--goto");
+const gotoRel = gi >= 0 && args[gi + 1] ? args[gi + 1] : "";
 
 function sanitizeUrl(u: string): string {
   return u.replace(/;jsessionid=[^?#/]*/gi, "").split(/[?#]/)[0];
@@ -94,6 +96,12 @@ async function main() {
     const pages = browser.contexts().flatMap((c) => c.pages());
     const page = pages.find((p) => /damco|maersk/i.test(p.url())) ?? pages[0];
     if (!page) throw new Error("No open page in the Damco browser.");
+
+    if (gotoRel) {
+      const target = /^https?:/i.test(gotoRel) ? gotoRel : `https://booking.damco.com/ShipperPortalWeb/${gotoRel}`;
+      await page.goto(target, { waitUntil: "domcontentloaded" });
+      await page.waitForTimeout(1500);
+    }
 
     if (waitLogin) {
       const deadline = Date.now() + 15 * 60_000;
