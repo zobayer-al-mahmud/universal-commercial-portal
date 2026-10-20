@@ -9,6 +9,7 @@ import { ScheduleForm } from "@/components/ScheduleForm";
 import { CustomsInvoiceForm } from "@/components/CustomsInvoiceForm";
 import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
 import { BookingBatchUpload } from "@/components/BookingBatchUpload";
+import { SalesContractBatchUpload } from "@/components/SalesContractBatchUpload";
 import { ScheduleFromContracts } from "@/components/ScheduleFromContracts";
 import { listSchedulableContracts, listInvoiceableScheduleLines } from "@/server/handoffs/service";
 import { generateInvoiceFromLineAction } from "@/app/actions/handoffs";
@@ -60,10 +61,51 @@ export default async function ModulePage({ params }: { params: { key: string } }
       ) : null}
 
       {module.key === "sales-contract" ? (
-        <div className="mb-6">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700">Order Package intake</h3>
-          <IntakeForm />
-        </div>
+        <>
+          <div className="mb-6">
+            <h3 className="mb-1 text-sm font-semibold text-slate-700">① Bulk PDF upload (multiple POs)</h3>
+            <p className="mb-3 text-xs text-slate-400">
+              Upload many H&amp;M PO / supporting PDFs in one operation → each is extracted, cross-matched against existing
+              contracts and classified (existing / new / duplicate / amendment / review) in a unified row-based table.
+              Verified existing contracts are reused; unresolved numbering / Buyer-Code rules block new-contract creation.
+            </p>
+            <SalesContractBatchUpload />
+          </div>
+          {await (async () => {
+            const batches = await prisma.salesContractBatch.findMany({ orderBy: { createdAt: "desc" }, take: 8 });
+            if (batches.length === 0) return null;
+            return (
+              <div className="mb-6">
+                <h3 className="mb-3 text-sm font-semibold text-slate-700">Recent batches</h3>
+                <div className="card overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-slate-50">
+                      <tr><th className="th">Batch</th><th className="th">Files</th><th className="th">Drafted</th><th className="th">Review</th><th className="th">Blocked</th><th className="th">Failed</th><th className="th">Status</th><th className="th">Created</th></tr>
+                    </thead>
+                    <tbody>
+                      {batches.map((b) => (
+                        <tr key={b.id} className="border-t border-slate-50">
+                          <td className="td font-mono"><Link href={`/sales-contract/${b.id}`} className="text-ananta hover:underline">{b.id.slice(0, 8)}</Link></td>
+                          <td className="td">{b.totalItems}</td>
+                          <td className="td text-green-700">{b.draftedItems}</td>
+                          <td className="td text-amber-700">{b.reviewItems}</td>
+                          <td className="td text-amber-700">{b.blockedItems}</td>
+                          <td className="td text-rose-700">{b.failedItems}</td>
+                          <td className="td"><StatusBadge status={b.status} /></td>
+                          <td className="td text-slate-400">{b.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+          <div className="mb-6">
+            <h3 className="mb-3 text-sm font-semibold text-slate-700">② Or intake a single Order Package (subject + PO text)</h3>
+            <IntakeForm />
+          </div>
+        </>
       ) : null}
 
       {module.key === "pdf-rename" ? (

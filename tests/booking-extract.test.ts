@@ -1,9 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { extractBookingData, normalizeNumber, applyManualCorrections, parseFilenameStem } from "@/server/booking-correction/extract";
+import { extractBookingData, normalizeNumber, applyManualCorrections, parseFilenameStem, parseCtnsQtyTable } from "@/server/booking-correction/extract";
 
-// Sanitised excerpt mirroring the real H&M packing-list text layout, where the
-// carton and quantity totals are concatenated ("Total7114" = 7 ctns / 114 pcs)
-// and the detail region has 7 carton dimension rows.
+// Sanitised excerpt mirroring the real H&M packing-list text layout. The
+// "Ctns/Col | Qty/Col" table's total row concatenates both totals in the
+// extracted text ("Total7114" = 7 cartons / 114 pcs); the quantity (114) is the
+// numeric suffix shared with the article row "004046114".
 const HM_TEXT = `Packing list
 Order/Season/PM/Delivery no: 698757/4-2026/VN/1Packing list no: 88864
 Final receiver
@@ -13,17 +14,9 @@ Net:82.75
 Gross:88.61
 Ctns/ColQty/Col
 SolidAsst
+004046114
 Mixed1Pcs incl. in totals
 Total7114
-Items/Ctn
-SC5c 54*35*25 1
-SC5d 54*35*20 2
-SC5b 54*35*30 3
-SC5c 54*35*25 4
-SC5b 54*35*30 5
-SC5d 54*35*20 6
-SC5c 54*35*25 7
-Solid qty/Article
 `;
 
 const GENERIC_TEXT = `PACKING LIST
@@ -60,11 +53,36 @@ describe("extractBookingData — H&M packing list", () => {
     expect(r.grossWeight!.confidence).toBeGreaterThan(0.9);
   });
 
-  it("splits the concatenated carton/qty total but flags it for review", () => {
+  it("resolves the concatenated carton/qty total confidently (no review flag)", () => {
     expect(r.cartons?.normalized).toBe("7");
     expect(r.quantity?.normalized).toBe("114");
-    expect(r.reviewReasons.some((x) => x.code === "CARTON_QTY_AMBIGUOUS")).toBe(true);
+    expect(r.cartons!.confidence).toBeGreaterThanOrEqual(0.9);
+    expect(r.reviewReasons.some((x) => x.code === "CARTON_QTY_AMBIGUOUS")).toBe(false);
+    expect(r.complete).toBe(true);
   });
+});
+
+describe("parseCtnsQtyTable — real H&M total rows", () => {
+  const mk = (article: string, total: string) =>
+    `Ctns/ColQty/Col\nSolidAsst\n${article}\nMixed1Pcs incl. in totals\nTotal${total}\n`;
+  const cases: [string, string, string, string, string][] = [
+    // label, article row, total row, expected cartons, expected quantity
+    ["614275 sample (Solid 5 + Asst 1)", "001015151", "6151", "6", "151"],
+    ["613625", "0040414263", "15263", "15", "263"],
+    ["698757 CN", "0040428581", "29581", "29", "581"],
+    ["698757 PH", "004048103", "8103", "8", "103"],
+    ["698757 VN", "004046114", "7114", "7", "114"],
+    ["729708 EC", "0040715312", "16312", "16", "312"],
+    ["729715 EC", "0080814", "114", "1", "14"],
+  ];
+  for (const [label, article, total, ctn, qty] of cases) {
+    it(`splits ${label} → ${ctn} cartons / ${qty} pcs`, () => {
+      const t = parseCtnsQtyTable(mk(article, total));
+      expect(t).not.toBeNull();
+      expect(t!.cartons).toBe(ctn);
+      expect(t!.quantity).toBe(qty);
+    });
+  }
 });
 
 describe("extractBookingData — generic labels", () => {

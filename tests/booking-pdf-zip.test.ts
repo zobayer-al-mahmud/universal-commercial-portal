@@ -3,7 +3,7 @@ import { buildBookingPdf } from "@/server/booking-correction/pdf-writer";
 import { buildZip } from "@/server/booking-correction/zip";
 
 describe("buildBookingPdf", () => {
-  const pdf = buildBookingPdf({ title: "BOOKING CONFIRMED", lines: ["SO Number: 61954434", "Gross Weight: 88.61 kg"], footer: "test" });
+  const pdf = buildBookingPdf({ title: "BOOKING CONFIRMED", lines: ["SO Number: SO-SAMPLE-001", "Gross Weight: 88.61 kg"], footer: "test" });
 
   it("produces a valid PDF header and trailer", () => {
     expect(pdf.subarray(0, 5).toString("latin1")).toBe("%PDF-");
@@ -13,7 +13,7 @@ describe("buildBookingPdf", () => {
   it("embeds the heading and values as text", () => {
     const text = pdf.toString("latin1");
     expect(text).toContain("BOOKING CONFIRMED");
-    expect(text).toContain("61954434");
+    expect(text).toContain("SO-SAMPLE-001");
   });
 
   it("is readable/valid per pdfIsReadable (parses + has a page)", async () => {

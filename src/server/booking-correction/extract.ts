@@ -48,6 +48,63 @@ function firstMatch(text: string, re: RegExp): string {
   return m ? m[1].trim() : "";
 }
 
+/** Longest common trailing-digit run of two numeric strings. */
+function commonNumericSuffix(a: string, b: string): string {
+  let i = a.length - 1, j = b.length - 1, n = 0;
+  while (i >= 0 && j >= 0 && a[i] === b[j]) { i--; j--; n++; }
+  return n ? b.slice(b.length - n) : "";
+}
+
+export interface CtnsQtyTable {
+  cartons: string;
+  quantity: string;
+  totalNum: string;
+  confidence: number;
+}
+
+/**
+ * Parse the H&M "Ctns/Col | Qty/Col" summary table from the flattened PDF text.
+ * Layout (one article shown):
+ *
+ *   Ctns/Col  Qty/Col
+ *   Solid Asst
+ *   <artno><solidCtns><qty>     e.g. "001015151" (art 00101, solid 5, qty 151)
+ *   Mixed<asstCtns> Pcs incl. in totals
+ *   Total<cartons><qty>         e.g. "Total6151"  (6 cartons, 151 pcs)
+ *
+ * The total row's carton figure is Total Cartons (Solid + Asst); the Qty/Col
+ * total is Total Quantity. Because the total row concatenates both numbers, the
+ * quantity is recovered as the numeric suffix the total row shares with the
+ * article row (which ends in the same quantity). Returns null if not found or
+ * the split is implausible.
+ */
+export function parseCtnsQtyTable(text: string): CtnsQtyTable | null {
+  const block = text.match(/Ctns?\/Col\s*Qty\/Col\s*\n\s*Solid\s*Asst([\s\S]*?)\bTotal\s*(\d+)/i);
+  if (!block) return null;
+  const totalNum = block[2];
+  if (totalNum.length < 2) {
+    // A lone total number with no carton/qty concatenation is ambiguous.
+    return null;
+  }
+  // The article row is the first all-digit line between "SolidAsst" and "Total".
+  const rows = block[1].split(/\r?\n/).map((l) => l.trim());
+  const articleNum = rows.find((l) => /^\d{4,}$/.test(l)) ?? "";
+
+  let qty = commonNumericSuffix(articleNum, totalNum);
+  // Guard against an article number whose own digits over-extend the suffix:
+  // cartons must keep at least one digit and be no larger than the quantity.
+  while (qty && (qty.length >= totalNum.length || Number(totalNum.slice(0, totalNum.length - qty.length)) > Number(qty))) {
+    qty = qty.slice(1);
+  }
+  if (!qty) return null;
+  const cartons = totalNum.slice(0, totalNum.length - qty.length);
+  if (!cartons || Number(cartons) < 1 || Number(qty) < 1) return null;
+
+  // High confidence when the article row corroborates the quantity suffix.
+  const corroborated = articleNum.endsWith(qty);
+  return { cartons: String(Number(cartons)), quantity: String(Number(qty)), totalNum, confidence: corroborated ? 0.9 : 0.6 };
+}
+
 /** Parse "<OrderNo> <COUNTRY> <MARKETCODE>" from a packing-list filename stem. */
 export function parseFilenameStem(name: string): { po: string; country: string; marketCode: string } {
   const stem = name.replace(/\.[a-z0-9]+$/i, "").trim();
@@ -110,36 +167,22 @@ export function extractBookingData(input: ExtractInput): ExtractionResult {
   const qtyLabel = text.match(/\bTotal\s*(?:Quantity|Qty|Units)\b\s*[:=]?\s*([\d.,]+)/i) || text.match(/\bQty\b\s*[:=]\s*([\d.,]+)/i);
   if (qtyLabel) quantity = { value: qtyLabel[1], normalized: normalizeNumber(qtyLabel[1]), label: "Total Quantity", page: 1, confidence: 0.9 };
 
-  // (2) H&M combined "Ctns/Col Qty/Col ... Total<cartons><qty>" token.
+  // (2) H&M "Ctns/Col | Qty/Col" summary table. The total row concatenates the
+  // two totals in the extracted text (e.g. "Total6151" = 6 cartons / 151 pcs).
+  // The Total Cartons value is the total row's carton figure (= Solid + Asst),
+  // and the Total Quantity is the Qty/Col total — which equals the quantity that
+  // also appears on the article row, so the split is the common numeric suffix
+  // of the article-row number and the total-row number.
   if (!cartons || !quantity) {
-    const combined = text.match(/Ctns?\/Col\s*Qty\/Col[\s\S]*?Total\s*(\d+)/i)?.[1];
-    if (combined) {
-      // Hint: count carton-detail rows (dimension tokens) in the detail region.
-      const start = text.indexOf("Items/Ctn");
-      const end = text.indexOf("Solid qty/Article");
-      const region = start >= 0 && end > start ? text.slice(start, end) : "";
-      const detailRows = (region.match(/\d{1,3}\*\d{1,3}\*\d{1,3}/g) ?? []).length;
-
-      let split: { c: string; q: string; conf: number } | null = null;
-      if (detailRows > 0 && combined.length > String(detailRows).length && combined.startsWith(String(detailRows))) {
-        const q = combined.slice(String(detailRows).length);
-        if (Number(q) > 0) split = { c: String(detailRows), q, conf: 0.55 };
-      }
-      if (split) {
-        if (!cartons)
-          cartons = { value: split.c, normalized: split.c, label: "Ctns/Col total (split, unverified)", page: 1, confidence: split.conf };
-        if (!quantity)
-          quantity = { value: split.q, normalized: split.q, label: "Qty/Col total (split, unverified)", page: 1, confidence: split.conf };
+    const table = parseCtnsQtyTable(text);
+    if (table) {
+      if (!cartons) cartons = { value: table.cartons, normalized: table.cartons, label: "Ctns/Col total (Solid + Asst)", page: 1, confidence: table.confidence };
+      if (!quantity) quantity = { value: table.quantity, normalized: table.quantity, label: "Qty/Col total", page: 1, confidence: table.confidence };
+      if (table.confidence < 0.8) {
         reviewReasons.push({
           code: "CARTON_QTY_AMBIGUOUS",
-          reason: `Carton/quantity totals were concatenated in the source ("Total${combined}"); auto-split to ${split.c} cartons / ${split.q} pcs is unverified — confirm in review.`,
+          reason: `Carton/quantity totals were concatenated in the source ("Total${table.totalNum}") and split to ${table.cartons} cartons / ${table.quantity} pcs with low confidence — confirm in review.`,
           severity: "pending",
-        });
-      } else {
-        reviewReasons.push({
-          code: "CARTON_QTY_AMBIGUOUS",
-          reason: `Carton and quantity totals are concatenated in the source ("Total${combined}") and cannot be split reliably; enter them manually in review.`,
-          severity: "hard",
         });
       }
     }
@@ -204,22 +247,45 @@ export function applyManualCorrections(
   return { ...base, grossWeight, cartons, quantity, poNumber, countryCode, reviewReasons, complete, confidence };
 }
 
+// pdf-parse embeds an old pdf.js that keeps module-level state; parsing several
+// documents at once in one process can corrupt it (intermittent "bad XRef
+// entry"). Serialize all parse calls through a single promise chain, and retry
+// once on failure, so batch concurrency never trips the parser.
+let pdfParseChain: Promise<unknown> = Promise.resolve();
+
+async function parsePdf(buffer: Buffer): Promise<{ text: string; numpages: number }> {
+  // Import the library module directly (not the package root): pdf-parse's
+  // index.js runs a file-reading debug branch when it thinks it is the main
+  // module, which breaks under bundlers/test runners. The lib export is clean.
+  const run = async () => {
+    const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
+    try {
+      const d = await pdfParse(buffer);
+      return { text: d.text ?? "", numpages: d.numpages ?? 1 };
+    } catch {
+      // Retry once: the failure is often transient shared-state corruption.
+      const d = await pdfParse(buffer);
+      return { text: d.text ?? "", numpages: d.numpages ?? 1 };
+    }
+  };
+  const result = pdfParseChain.then(run, run);
+  // Keep the chain alive regardless of this call's success.
+  pdfParseChain = result.then(() => undefined, () => undefined);
+  return result;
+}
+
 /**
  * PDF → ExtractionResult. Reads embedded text via pdf-parse; when the document
  * is scanned (no text) and OCR is not configured, the result is flagged
  * SCANNED_PDF_OCR_REQUIRED for review rather than guessed.
  */
 export async function extractFromPdf(buffer: Buffer, filename: string): Promise<ExtractionResult> {
-  // Import the library module directly (not the package root): pdf-parse's
-  // index.js runs a file-reading debug branch when it thinks it is the main
-  // module, which breaks under bundlers/test runners. The lib export is clean.
-  const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
   let text = "";
   let pages = 1;
   try {
-    const parsed = await pdfParse(buffer);
-    text = parsed.text ?? "";
-    pages = parsed.numpages ?? 1;
+    const parsed = await parsePdf(buffer);
+    text = parsed.text;
+    pages = parsed.numpages;
   } catch {
     // Unreadable/encrypted PDF → treat as scanned-needs-OCR via empty text.
     text = "";
@@ -245,9 +311,8 @@ export async function pdfIsReadable(buffer: Buffer): Promise<{ ok: boolean; page
   let text = "";
   let pages = ok ? pageObjs : 0;
   try {
-    const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
-    const parsed = await pdfParse(buffer);
-    text = parsed.text ?? "";
+    const parsed = await parsePdf(buffer);
+    text = parsed.text;
     if (parsed.numpages) pages = parsed.numpages;
   } catch {
     /* keep structural result */

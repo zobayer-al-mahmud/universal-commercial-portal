@@ -27,8 +27,9 @@ Branch / terminal states: `NEEDS_REVIEW`, `MISMATCH`, `STATUS_MISMATCH`,
 3. **Review & correct** (`src/components/ExtractionReview.tsx`): authorised users
    (`booking.review`) correct extracted values inline; corrections are written to the
    audit log and the document is reprocessed.
-4. **Damco search** (`src/server/integrations/damco-portal.ts`): selects the company +
-   buyer, opens the Booking tab, searches `PO*` (and `country*`), inspects results, and
+4. **Damco search** (`src/server/integrations/damco-portal.ts`): logs in at the single
+   dashboard entry URL and navigates the portal UI — selects the company + buyer, opens
+   the Booking tab, enters the wildcard terms `PO*` (and `country*`), inspects results, and
    selects the matching booking **without blind first-result selection** (PO + country +
    value agreement). Ambiguity → `NEEDS_REVIEW`; no results → `SEARCH_FAILED`.
 5. **Match** (`src/server/booking-correction/match.ts`): Gross Weight within an explicit
@@ -62,7 +63,7 @@ Branch / terminal states: `NEEDS_REVIEW`, `MISMATCH`, `STATUS_MISMATCH`,
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `INTEGRATION_MODE` | `mock` | `mock` \| `dryrun` \| `live` (see below) |
-| `DAMCO_PORTAL_URL` | `https://booking.damco.com/ShipperPortalWeb/` | Base URL for the search action |
+| `DAMCO_PORTAL_URL` | `https://booking.damco.com/ShipperPortalWeb/ViewDashboardAction.action` | The single authorised bot entry point (portal dashboard); the bot logs in here and navigates the UI — no other portal URL / booking-detail deep link is used |
 | `DAMCO_USERNAME` / `DAMCO_PASSWORD` | _(empty)_ | **Live only.** From a secrets manager — never committed, never logged |
 | `DAMCO_LIVE_ENABLED` | `false` | Must be `true` (with credentials, and `INTEGRATION_MODE=live`) to attempt a live run |
 | `DAMCO_DEFAULT_COMPANY` | `ANANTA GARMENTS LIMITED` | Default company selection |
@@ -79,7 +80,7 @@ No secret value is printed above, and none is stored in source or the database.
 - **mock** (default): deterministic, offline. The booking is derived from the extracted
   values; scenario fixtures keyed by PO exercise MATCHED / MISMATCH / REQUESTED /
   multiple / no-results paths.
-- **dryrun**: builds and records the exact search URL and steps; makes no external call.
+- **dryrun**: records the dashboard entry URL + the UI navigation steps and wildcard search terms (`PO*`, `country*`); makes no external call and constructs no deep link.
 - **live**: **fail-closed.** Requires `INTEGRATION_MODE=live` + `DAMCO_LIVE_ENABLED=true`
   + credentials in the environment. Even when enabled, this build does not drive the
   live portal (a Playwright driver plugs in at `searchDamcoBookings`) and never performs
@@ -115,11 +116,24 @@ npm run dev          # then Modules → Booking Correction
 - The generated mock booking PDF is a UCP artifact (clearly labelled as generated); it is
   not a Damco-issued document. Only a live run would retrieve the portal's own PDF.
 
+## Carton / quantity extraction
+
+The H&M "Ctns/Col | Qty/Col" summary table flattens into text with the two totals
+concatenated on the total row (e.g. `Total6151` = 6 cartons / 151 pcs). The parser
+(`parseCtnsQtyTable`) reads the total row's carton figure as **Total Cartons** (which is
+Solid + Asst) and recovers **Total Quantity** as the numeric suffix the total row shares
+with the article row (which ends in the same quantity) — so column headers and the
+"Pcs incl. in totals" note are never treated as values. Verified across all 7 sample
+packing lists: 613625 = 15/263, 614275 = 6/151, 698757 CN = 29/581, PH = 8/103,
+VN = 7/114, 729708 = 16/312, 729715 = 1/14. When a document uses explicit labels
+(`Total Cartons:`, `Total Quantity:`) those take priority. Only a layout the parser
+cannot resolve confidently falls back to review — the manual-correction + reprocess path
+is unchanged.
+
 ## Tested (2026-10-19)
 
-`npm run test` → all suites pass, including the booking-correction DAMCO suites. A live
-pipeline smoke test over the 7 sample packing lists produced: 4–5 `COMPLETED` (verified
-CONFIRMED PDFs), REQUESTED → `PORTAL_AUTH_REQUIRED`, gross-weight `MISMATCH`, no-results
-`SEARCH_FAILED`, multiple-candidate resolution by country + values, and a valid batch ZIP
-containing only completed PDFs. Ambiguous carton/quantity totals (concatenated in the
-source text) route to review and complete after an inline correction.
+`npm run test` → all suites pass (97/97), including the booking-correction DAMCO suites
+and the per-file carton/quantity split. A live pipeline smoke test over the 7 sample
+packing lists produced (no manual correction): 4 `COMPLETED` (verified CONFIRMED PDFs),
+REQUESTED → `PORTAL_AUTH_REQUIRED`, gross-weight `MISMATCH`, no-results `SEARCH_FAILED`,
+and a valid batch ZIP containing only completed PDFs.

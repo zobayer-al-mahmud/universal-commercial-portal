@@ -6,6 +6,8 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { confirmContractAction } from "@/app/actions/handoffs";
 import { RenameApply } from "@/components/RenameApply";
+import { ScheduleLineEditor } from "@/components/ScheduleLineEditor";
+import { setScheduleLineStateAction } from "@/app/actions/shipment-schedule-edit";
 
 export const dynamic = "force-dynamic";
 
@@ -19,7 +21,7 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       contractRows: true,
       reviewTickets: true,
       renameItems: { orderBy: { createdAt: "asc" } },
-      scheduleLines: { orderBy: { createdAt: "asc" } },
+      scheduleLines: { orderBy: { createdAt: "asc" }, include: { edits: { orderBy: { createdAt: "desc" } } } },
       customsInvoices: true,
       bookingCorrections: true,
     },
@@ -27,6 +29,8 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
   if (!job) notFound();
 
   const user = await getSessionUser();
+  const canEditSchedule = userHasPermission(user, PERMISSIONS.SCHEDULE_EDIT);
+  const canApproveSchedule = userHasPermission(user, PERMISSIONS.SCHEDULE_APPROVE);
   const openReviewCount = job.reviewTickets.filter((t) => t.status === "open").length;
   const canConfirm =
     job.module === "sales-contract" &&
@@ -179,17 +183,24 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
             </span>
             <a href={`/api/export/schedule/${job.id}`} className="btn-ghost text-xs">⬇ Download .xlsx</a>
           </div>
+          {canEditSchedule ? (
+            <p className="px-4 py-2 text-xs text-slate-400">
+              In-portal editing is enabled for your role. Edits are field-level validated, recorded with the editor,
+              timestamp and reason, and never alter the source PDF. PCS/FOB edits recompute the line value.
+            </p>
+          ) : null}
           <table className="w-full">
             <thead className="bg-slate-50">
               <tr>
                 <th className="th">Buyer</th><th className="th">Order No</th><th className="th">Style</th>
                 <th className="th">PCS</th><th className="th">FOB</th><th className="th">Value</th>
-                <th className="th">Market</th><th className="th">Invoice</th><th className="th">Cut-off</th><th className="th">OK</th>
+                <th className="th">Market</th><th className="th">Invoice</th><th className="th">Cut-off</th>
+                <th className="th">Edit state</th>{(canEditSchedule || canApproveSchedule) ? <th className="th">Edit</th> : null}
               </tr>
             </thead>
             <tbody>
               {job.scheduleLines.map((l) => (
-                <tr key={l.id} className="border-t border-slate-50">
+                <tr key={l.id} className="border-t border-slate-50 align-top">
                   <td className="td text-xs">{l.buyerCode}</td>
                   <td className="td font-mono text-xs">{l.orderNo}</td>
                   <td className="td text-xs">{l.style}</td>
@@ -199,7 +210,66 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
                   <td className="td font-mono text-xs">{l.marketCode}</td>
                   <td className="td font-mono text-xs">{l.invoiceNo || "—"}</td>
                   <td className="td text-xs">{l.cutOff}</td>
-                  <td className="td">{l.success ? "✓" : "✗"}</td>
+                  <td className="td">
+                    <span className={`badge ${
+                      l.editState === "approved" ? "bg-green-100 text-green-800"
+                      : l.editState === "submitted" ? "bg-sky-100 text-sky-800"
+                      : l.editState === "edited" ? "bg-amber-100 text-amber-800"
+                      : "bg-slate-100 text-slate-600"}`}>{l.editState}</span>
+                    {l.editedBy ? <div className="text-[10px] text-slate-400">{l.editedBy}</div> : null}
+                  </td>
+                  {(canEditSchedule || canApproveSchedule) ? (
+                    <td className="td">
+                      <div className="space-y-1">
+                        {canEditSchedule && l.editState !== "approved" ? (
+                          <ScheduleLineEditor
+                            lineId={l.id}
+                            current={{
+                              pcs: String(l.pcs), fob: String(l.fob), style: l.style, composition: l.composition,
+                              incoterm: l.incoterm, transport: l.transport, marketCode: l.marketCode,
+                              invoiceNo: l.invoiceNo, cutOff: l.cutOff, firstCutOff: l.firstCutOff, secondCutOff: l.secondCutOff,
+                            }}
+                          />
+                        ) : null}
+                        <div className="flex gap-2">
+                          {canEditSchedule && l.editState === "edited" ? (
+                            <form action={setScheduleLineStateAction}>
+                              <input type="hidden" name="lineId" value={l.id} />
+                              <input type="hidden" name="target" value="submitted" />
+                              <button className="text-xs text-sky-700 hover:underline">Submit</button>
+                            </form>
+                          ) : null}
+                          {canApproveSchedule && l.editState === "submitted" ? (
+                            <form action={setScheduleLineStateAction}>
+                              <input type="hidden" name="lineId" value={l.id} />
+                              <input type="hidden" name="target" value="approved" />
+                              <button className="text-xs text-green-700 hover:underline">Approve</button>
+                            </form>
+                          ) : null}
+                          {canApproveSchedule && l.editState === "approved" ? (
+                            <form action={setScheduleLineStateAction}>
+                              <input type="hidden" name="lineId" value={l.id} />
+                              <input type="hidden" name="target" value="edited" />
+                              <button className="text-xs text-slate-500 hover:underline">Reopen</button>
+                            </form>
+                          ) : null}
+                        </div>
+                        {l.edits.length > 0 ? (
+                          <details>
+                            <summary className="cursor-pointer text-[10px] text-slate-400">History ({l.edits.length})</summary>
+                            <ul className="mt-1 space-y-0.5 text-[10px] text-slate-500">
+                              {l.edits.map((e) => (
+                                <li key={e.id}>
+                                  <span className="font-mono">{e.field}</span>: {e.oldValue || "∅"} → {e.newValue || "∅"}
+                                  <span className="text-slate-400"> · {e.editor} · {e.reason}</span>
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : null}
+                      </div>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>

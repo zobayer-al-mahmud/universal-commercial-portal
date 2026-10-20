@@ -220,7 +220,7 @@ export async function processDocument(docId: string, opts: { actor?: string; for
     await setState("READY_TO_SEARCH");
     await setState("PORTAL_SEARCH");
     const search = await searchDamcoBookings({ company: doc.company, buyer: doc.buyer, extraction });
-    await docEvent(docId, "portal-search", search.ok ? "ok" : "failed", search.message, { searchUrl: search.searchUrl, mode: search.mode });
+    await docEvent(docId, "portal-search", search.ok ? "ok" : "failed", search.message, { entryUrl: search.entryUrl, poQuery: search.poQuery, countryQuery: search.countryQuery, mode: search.mode });
 
     if (search.authRequired) {
       await setState("PORTAL_AUTH_REQUIRED", { error: search.message, processedAt: new Date() });

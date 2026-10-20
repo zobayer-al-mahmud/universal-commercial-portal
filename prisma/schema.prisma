@@ -205,6 +205,70 @@ model SalesContractRow {
 }
 
 // ---------------------------------------------------------------------------
+// Sales Contract Creation — bulk PDF batch (module 1, §3 of the Oct-2026 addendum)
+// A batch holds many uploaded H&M PO / supporting PDFs; each becomes one
+// SalesContractBatchItem carried through extract → cross-match → classify.
+// Originals are preserved; destination writes stay gated behind approval.
+// ---------------------------------------------------------------------------
+
+model SalesContractBatch {
+  id            String   @id @default(cuid())
+  createdBy     String   @default("system")
+  blockRef      String   @default("") // active block contract ref if supplied
+  totalItems    Int      @default(0)
+  draftedItems  Int      @default(0)
+  reviewItems   Int      @default(0)
+  blockedItems  Int      @default(0)
+  failedItems   Int      @default(0)
+  status        String   @default("uploaded") // uploaded | processing | completed | partial | failed
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  items SalesContractBatchItem[]
+
+  @@index([status])
+}
+
+model SalesContractBatchItem {
+  id          String             @id @default(cuid())
+  batchId     String
+  batch       SalesContractBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  serial      Int
+  originalName String
+  sha256      String
+  sizeBytes   Int
+  storagePath String // immutable original upload (outside repo)
+
+  // extraction (never invented: missing values stay empty + a review reason)
+  jobId         String? // per-item Job holding PoExtractionRows + review tickets
+  orderNumbers  String  @default("") // comma-separated OrderNos read from the PDF
+  poRowCount    Int     @default(0)
+  textChars     Int     @default(0)
+  extractionJson String @default("{}")
+
+  // cross-match + classification (§3.2)
+  decision         String @default("") // EXISTING_CONTRACT | NEW_CONTRACT | DUPLICATE | AMENDMENT | NEEDS_REVIEW
+  targetContractRef String @default("") // matched existing OR proposed new ref
+  buyerCode        String @default("")
+  proposed         Boolean @default(false) // target is a proposal awaiting approval
+  blockWrite       Boolean @default(false) // AC-03: destination write blocked
+
+  // lifecycle (extraction / cross-match / approval / write states kept distinct)
+  state       String    @default("UPLOADED") // UPLOADED|EXTRACTING|EXTRACTED|CROSS_MATCHING|DRAFTED|NEEDS_REVIEW|BLOCKED|DUPLICATE|FAILED
+  reasons     String    @default("") // human-readable newline-joined notes
+  error       String    @default("")
+  warning     String    @default("")
+  attempts    Int       @default(0)
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([batchId])
+  @@index([sha256])
+  @@index([state])
+}
+
+// ---------------------------------------------------------------------------
 // PDF File Rename — per-file rename plan (module 4)
 // Input PDFs are renamed from an opaque scan name to a business key (invoice no).
 // Originals are preserved; the plan is a preview until an authorised apply step.
@@ -259,10 +323,33 @@ model ShipmentScheduleLine {
   message       String  @default("")
   success       Boolean @default(true)
   invoicedJobId String? // customs-invoice job this line fed (handoff 2)
+  // In-portal editing (§4.2): authorised edits are applied here and recorded
+  // field-by-field in ShipmentScheduleLineEdit. The source PDF is never altered.
+  editState     String  @default("original") // original | edited | submitted | approved
+  editedBy      String   @default("")
+  editedAt      DateTime?
   createdAt     DateTime @default(now())
+
+  edits ShipmentScheduleLineEdit[]
 
   @@index([jobId])
   @@index([orderNo])
+}
+
+// Field-level, append-only edit history for in-portal schedule editing (§4.2).
+// Records original value, edited value, editor, timestamp and change reason.
+model ShipmentScheduleLineEdit {
+  id        String               @id @default(cuid())
+  lineId    String
+  line      ShipmentScheduleLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  field     String
+  oldValue  String               @default("")
+  newValue  String               @default("")
+  reason    String               @default("")
+  editor    String
+  createdAt DateTime             @default(now())
+
+  @@index([lineId])
 }
 
 // ---------------------------------------------------------------------------
@@ -352,6 +439,13 @@ model BookingBatch {
   failedDocs    Int      @default(0)
   reviewDocs    Int      @default(0)
   status        String   @default("uploaded") // uploaded | processing | completed | partial | failed
+  // Live visible-browser DAMCO run (one at a time per PC).
+  liveStatus    String    @default("idle") // idle | running | paused | blocked | finished | failed
+  liveStep      String    @default("")
+  liveDocId     String?
+  liveMessage   String    @default("")
+  liveStartedAt DateTime?
+  liveUpdatedAt DateTime?
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -405,6 +499,14 @@ model BookingDocument {
   // generated / corrected PDFs (stored separately)
   generatedPdfPath String?
   correctedPdfPath String?
+
+  // Live DAMCO run: what was searched, what the portal showed, and the genuine
+  // portal-generated PDF (never a UCP-built substitute).
+  liveStep         String  @default("")
+  searchCriteria   String  @default("")
+  portalValuesJson String  @default("{}")
+  portalPdfPath    String?
+  portalPdfSha256  String  @default("")
 
   // lifecycle (§13 state machine)
   state       String    @default("UPLOADED")

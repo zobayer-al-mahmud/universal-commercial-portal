@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mockSearch, selectBooking, buildSearchUrl, type BookingCandidate } from "@/server/integrations/damco-portal";
+import { mockSearch, selectBooking, portalEntryUrl, searchTerms, type BookingCandidate } from "@/server/integrations/damco-portal";
 import type { ExtractionResult, ExtractedValue } from "@/server/booking-correction/batch-types";
 
 function val(n: string): ExtractedValue {
@@ -14,12 +14,22 @@ function ex(po: string, country: string): ExtractionResult {
 const COMPANY = "ANANTA GARMENTS LIMITED";
 const BUYER = "H&M HENNES & MAURITZ GBC AB";
 
-describe("buildSearchUrl", () => {
-  it("appends the PO wildcard and country filter", () => {
-    const u = buildSearchUrl("698757", "VN");
-    expect(u).toContain("docNumber=698757");
-    expect(decodeURIComponent(u)).toContain("698757*");
-    expect(decodeURIComponent(u)).toContain("VN*");
+describe("portal entry point + search terms", () => {
+  it("uses the single dashboard entry URL (no deep-link/SearchAction)", () => {
+    const u = portalEntryUrl();
+    expect(u).toContain("ViewDashboardAction.action");
+    expect(u).not.toContain("SearchAction");
+    expect(u).not.toContain("ViewSOAction");
+  });
+  it("builds PO and country wildcard terms (value + '*')", () => {
+    expect(searchTerms("698757", "VN")).toEqual({ poQuery: "698757*", countryQuery: "VN*" });
+    expect(searchTerms("", "")).toEqual({ poQuery: "", countryQuery: "" });
+  });
+  it("mock search carries the entry URL and wildcard terms (not a deep link)", () => {
+    const r = mockSearch({ company: COMPANY, buyer: BUYER, extraction: ex("698757", "VN") });
+    expect(r.entryUrl).toContain("ViewDashboardAction.action");
+    expect(r.poQuery).toBe("698757*");
+    expect(r.countryQuery).toBe("VN*");
   });
 });
 

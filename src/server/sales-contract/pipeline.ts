@@ -14,6 +14,13 @@ export interface PipelineOptions {
   unitPrice?: UnitPriceStrategy;
   tod?: TodStrategy;
   packSet?: number;
+  /**
+   * Skip the "three expected PDFs" Order-Package completeness gate (SC-FR-003).
+   * Used by the bulk-PDF batch (Oct-2026 addendum §3), where each file is
+   * classified independently and the three-PDF-per-order rule is not a per-file
+   * hard failure. Defaults to false (full Order-Package intake enforces it).
+   */
+  skipAttachmentCheck?: boolean;
 }
 
 /**
@@ -37,7 +44,7 @@ export function runPipeline(input: OrderPackageInput, opts: PipelineOptions = {}
   const reviewReasons: PipelineResult["reviewReasons"] = [];
 
   // Enforce "three expected PDFs" (SC-FR-003). Missing PDFs => hard queue.
-  if (!attachmentCheck.ok) {
+  if (!opts.skipAttachmentCheck && !attachmentCheck.ok) {
     reviewReasons.push({
       code: "MISSING_PDF",
       reason: `Missing required PDF(s): ${attachmentCheck.missing.join(", ")}`,

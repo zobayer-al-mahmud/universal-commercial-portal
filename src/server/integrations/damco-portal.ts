@@ -41,7 +41,9 @@ export interface DamcoSearchResult {
   authRequired: boolean; // PORTAL_AUTH_REQUIRED (gated / expired / not wired)
   candidates: BookingCandidate[];
   message: string;
-  searchUrl: string;
+  entryUrl: string; // the single authorised bot entry point (dashboard)
+  poQuery: string; // the PO wildcard term entered in the UI (PO + '*')
+  countryQuery: string; // the country wildcard term entered in the UI
 }
 
 export interface DamcoSearchInput {
@@ -50,19 +52,18 @@ export interface DamcoSearchInput {
   extraction: Pick<ExtractionResult, "poNumber" | "countryCode" | "grossWeight" | "cartons" | "quantity">;
 }
 
-/** Build the Shipper Portal search URL for a PO wildcard (PO followed by '*'). */
-export function buildSearchUrl(poNumber: string, countryCode: string): string {
-  const base = env.DAMCO_PORTAL_URL.replace(/\/+$/, "/");
-  const params = new URLSearchParams({
-    pageName: "SO",
-    days: "01DBS",
-    onChangeQckConsignee: "yes",
-    docNumber: poNumber ? `${poNumber}*` : "",
-  });
-  // The screenshot does not clearly expose a country-code field; country is
-  // carried as an advisory filter until the real field/mechanism is confirmed.
-  if (countryCode) params.set("country", `${countryCode}*`);
-  return `${base}SearchAction?${params.toString()}`;
+/**
+ * The single authorised bot entry point — the portal dashboard URL. The bot
+ * logs in here and navigates the portal UI; no other portal URL or example
+ * booking-detail deep link is constructed or retained.
+ */
+export function portalEntryUrl(): string {
+  return env.DAMCO_PORTAL_URL;
+}
+
+/** The wildcard search terms typed into the portal UI (value followed by '*'). */
+export function searchTerms(poNumber: string, countryCode: string): { poQuery: string; countryQuery: string } {
+  return { poQuery: poNumber ? `${poNumber}*` : "", countryQuery: countryCode ? `${countryCode}*` : "" };
 }
 
 // Scenario fixtures keyed by PO so every §9/§11 branch is demonstrable offline.
@@ -85,13 +86,15 @@ function soFor(po: string, country: string): string {
 /** Pure mock search — derives a booking from the extraction, applies scenario. */
 export function mockSearch(input: DamcoSearchInput): DamcoSearchResult {
   const { poNumber, countryCode } = input.extraction;
-  const searchUrl = buildSearchUrl(poNumber, countryCode);
+  const entryUrl = portalEntryUrl();
+  const { poQuery, countryQuery } = searchTerms(poNumber, countryCode);
+  const nav = { entryUrl, poQuery, countryQuery };
   if (!poNumber) {
-    return { mode: "mock", ok: false, authRequired: false, candidates: [], message: "No PO number supplied; cannot search.", searchUrl };
+    return { mode: "mock", ok: false, authRequired: false, candidates: [], message: "No PO number supplied; cannot search.", ...nav };
   }
   const scenario: Scenario = MOCK_SCENARIOS[poNumber] ?? "match";
   if (scenario === "none") {
-    return { mode: "mock", ok: true, authRequired: false, candidates: [], message: `No bookings found for PO ${poNumber}* (mock).`, searchUrl };
+    return { mode: "mock", ok: true, authRequired: false, candidates: [], message: `No bookings found for PO ${poQuery} (mock).`, ...nav };
   }
 
   const base: BookingCandidate = {
@@ -125,15 +128,17 @@ export function mockSearch(input: DamcoSearchInput): DamcoSearchResult {
     case "multiple": {
       // Two candidates sharing the PO; the matcher must pick by country + values.
       const other: BookingCandidate = { ...base, soNumber: soFor(poNumber, countryCode + "X"), countryCode: countryCode + "X", cartons: base.cartons ? String(Number(base.cartons) + 10) : "0" };
-      return { mode: "mock", ok: true, authRequired: false, candidates: [other, base], message: `2 candidate bookings for PO ${poNumber}* (mock).`, searchUrl };
+      return { mode: "mock", ok: true, authRequired: false, candidates: [other, base], message: `2 candidate bookings for PO ${poQuery} (mock).`, ...nav };
     }
   }
-  return { mode: "mock", ok: true, authRequired: false, candidates: [base], message: `1 booking for PO ${poNumber}* (mock).`, searchUrl };
+  return { mode: "mock", ok: true, authRequired: false, candidates: [base], message: `1 booking for PO ${poQuery} (mock).`, ...nav };
 }
 
 export async function searchDamcoBookings(input: DamcoSearchInput): Promise<DamcoSearchResult> {
   const mode = env.INTEGRATION_MODE;
-  const searchUrl = buildSearchUrl(input.extraction.poNumber, input.extraction.countryCode);
+  const entryUrl = portalEntryUrl();
+  const { poQuery, countryQuery } = searchTerms(input.extraction.poNumber, input.extraction.countryCode);
+  const nav = { entryUrl, poQuery, countryQuery };
 
   if (mode === "dryrun") {
     return {
@@ -142,9 +147,9 @@ export async function searchDamcoBookings(input: DamcoSearchInput): Promise<Damc
       authRequired: false,
       candidates: [],
       message:
-        `Dry-run: would select company '${input.company}' + buyer '${input.buyer}', open the Booking tab, ` +
-        `search PO '${input.extraction.poNumber}*' (country '${input.extraction.countryCode}*'), and read back the booking. No external call made.`,
-      searchUrl,
+        `Dry-run: would log in at ${entryUrl}, select company '${input.company}' + buyer '${input.buyer}', open the Booking tab, ` +
+        `search PO '${poQuery}' (country '${countryQuery}') via the portal UI, and read back the booking. No external call made.`,
+      ...nav,
     };
   }
 
@@ -161,7 +166,7 @@ export async function searchDamcoBookings(input: DamcoSearchInput): Promise<Damc
         : !hasCreds
           ? "Live mode enabled but DAMCO_USERNAME/DAMCO_PASSWORD are not configured. PORTAL_AUTH_REQUIRED."
           : "Live credentials detected, but the live portal driver is not wired in this build; a status-changing action is never performed automatically. Routed for authorised action (PORTAL_AUTH_REQUIRED).",
-      searchUrl,
+      ...nav,
     };
   }
 

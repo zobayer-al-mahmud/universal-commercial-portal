@@ -52,7 +52,9 @@ npm run build                      # next build
 ```
 - Dev URL used in testing: `http://localhost:3300` (launch config `.claude/launch.json` name `aucp-dev`). Health: `/api/healthz`, `/api/readyz`.
 - Admin login email: `admin@ananta.com.bd`; password = `BOOTSTRAP_ADMIN_PASSWORD` in local `.env` (not recorded here).
-- **The dev server is NOT running** (it was stopped; last checked 2026-10-19). Start it with the PowerShell command above (`next dev -p 3300`); check `Get-NetTCPConnection -LocalPort 3300` first.
+- Dev server: servers started as agent background tasks kept ending on their own, so it was started in a Terminal panel tab titled "AUCP dev server"
+  (tab c1, `next dev -p 3300`, readyz 200, CSS 200) — it stays up until that tab is closed / Ctrl-C. If it is down, start it with the PowerShell command above;
+  check `Get-NetTCPConnection -LocalPort 3300` first.
 
 ## 5. Config (`.env.example` is the reference; `.env` is git-ignored)
 `DATABASE_URL`, `AUTH_SECRET`, `SESSION_TTL_HOURS`, `BOOTSTRAP_ADMIN_*`, `STORAGE_ROOT`, `INTEGRATION_MODE=mock`, `AUTO_SUBMIT=false`,
@@ -65,16 +67,18 @@ npm run build                      # next build
   `20261019071632_add_booking_batch` (uncommitted). Earlier: init, add_rename_item, add_shipment_schedule_line,
   add_customs_invoice, add_booking_correction, add_crossmodule_links, add_rename_applied.
 - Models: User, Role, Permission, RolePermission, Module, SourceDocument, Job, JobStageEvent, PoExtractionRow, SalesContractRow,
-  RenameItem, ShipmentScheduleLine, CustomsInvoice, BookingCorrection, **BookingBatch, BookingDocument, BookingDocEvent (new)**,
-  ReviewTicket, AuditEvent, ReferenceData, IntegrationAdapter.
+  RenameItem, ShipmentScheduleLine, CustomsInvoice, BookingCorrection, BookingBatch, BookingDocument, BookingDocEvent,
+  ReviewTicket, AuditEvent, ReferenceData, IntegrationAdapter, **SalesContractBatch, SalesContractBatchItem, ShipmentScheduleLineEdit (new, Oct-2026 addendum)**.
+- New migration (uncommitted): `20261019115647_add_sales_batch_and_schedule_edit` (SalesContractBatch/Item + ShipmentScheduleLineEdit + schedule-line editState/editedBy/editedAt fields).
+- New permissions (seeded): `schedule.edit`, `schedule.approve` (ADMIN+COMMERCIAL; MERCHANDISER has schedule.edit).
 - Dev DB contains test data from manual/live smoke testing (contract 644637-8756, schedule Week 43, invoice 66000 OW, rename job `cmvdgfu8…`).
 - Money stored as float in SQLite (→ `NUMERIC(14,2)` when moving to Postgres).
 
 ## 7. Module status (verified against code/tests where noted)
 | # | Module | Status |
 |---|---|---|
-| 1 | Sales Contract | Implemented (mock UCP save, draft-only). No real PO-PDF/.msg extraction (only synthetic fixtures) |
-| 2 | Shipment Schedule | Implemented build + .xlsx export. Pending: booking-confirmation PDF parsing, port/country lookup, cut-off rules |
+| 1 | Sales Contract | Implemented. **NEW (Oct-2026 addendum §3): bulk multi-PDF batch** — upload many PDFs → one row per PO/document, per-file extract (never invents), cross-match existing contracts (reuse, no duplicate), block new-contract creation while numbering/Buyer-Code rules unresolved (AC-03). Plus original single Order-Package intake. Real PO-PDF layout parsing still pending (non-PO PDFs route to NEEDS_REVIEW honestly) |
+| 2 | Shipment Schedule | Implemented build + .xlsx export. **NEW (Oct-2026 addendum §4.2): in-portal editing** — role-gated field-level edits, validation, append-only edit history (original→edited, editor, time, reason), Save/Submit/Approve states; source PDF never altered. Pending: PDF upload/update comparison (§4.1), booking-confirmation PDF parsing, port/country lookup |
 | 3 | Customs Invoice | Implemented build + .xlsx (INVOICE+SUMMARY+BL DRAFT). Pending: numbering + consignee master data |
 | 4 | PDF Rename | Implemented plan + gated on-disk apply (copy, originals kept). Pending: canonical filename rule |
 | 5 | Booking Correction | Field-level diff + approval gate (committed). **Batch Damco workflow — see §8 (uncommitted, in progress)** |
@@ -113,19 +117,20 @@ Also added this session (uncommitted): `src/types/pdf-parse-lib.d.ts` — ambien
 | `prisma migrate status` | PASS — 8 migrations, DB up to date |
 | `npm run db:seed` | PASS — ran against dev DB (upserts roles/permissions incl. `booking.review/export`, admin bootstrap) |
 | `/api/healthz`, `/api/readyz` | PASS (200, db ok) on port 3300 (dev server restarted after build) |
-| Extraction on the 7 REAL packing-list PDFs (`..\5. Booking Correction\PACKING LIST\`) | **PASS** — PO/country/market + Gross Weight extract on all 7; carton/qty auto-split on the clean ones, rest → NEEDS_REVIEW (honest) |
+| Extraction on the 7 REAL packing-list PDFs (`..\5. Booking Correction\PACKING LIST\`) | **PASS** — PO/country/market + Gross Weight + Cartons + Quantity now extract correctly on ALL 7 (total-row parser; see findings below); no manual correction needed |
 | Full pipeline end-to-end (createBookingBatch → processBatch on all 7 real PDFs) | **PASS** (tsx smoke, 2026-10-19): 2 MATCHED→CONFIRMED→COMPLETED on clean extraction; after inline review-corrections all branches exercised — REQUESTED→PORTAL_AUTH_REQUIRED, gross MISMATCH, no-results SEARCH_FAILED, multiple-candidate resolution by country+values, valid batch ZIP (completed PDFs only) |
 | Booking batch UI in browser (admin login → batch dashboard → downloads) | **PASS** — signed in as admin, `/booking/<batchId>` renders full results table + match tables + review editor + integrity messaging; in-page fetch of `/generated`, `/zip`, `/failed-report` → 200 with application/pdf, application/zip, text/csv |
 | Live Damco | **NOT RUN** — fail-closed by design |
 
-**Real-PDF findings (2026-10-19):** PO, country and market code extract correctly on all 7 files; Gross Weight extracts on all 7
-(conf 0.95, label "Total weight (kg) · Gross"). Cartons/Quantity are **concatenated in the PDF's extracted text** (e.g. `Total8103`, `Total114`),
-so: 4/7 files (614275 PE, 698757 PH, 698757 VN, 729715 EC) get an *unverified auto-split* (conf 0.55, pending review reason
-`CARTON_QTY_AMBIGUOUS`); 3/7 (613625 PE `Total15263`, 698757 CN `Total29581`, 729708 EC `Total16312`) are *hard review* — cartons/quantity left empty,
-user must key them in. This matches the design note in `extract.ts` (never guess) but means most real batches need manual review of carton/qty.
-Auto-split correctness (e.g. `Total114` = 1/14 vs 11/4) could not be verified from text alone — a human must check against the PDF.
-**Improvement idea:** use pdf-parse's custom `pagerender` (or another parser) to get positional text so "Ctns/Col" and "Qty/Col" totals come out as separate columns,
-or cross-check against the per-carton rows. Not started.
+**Real-PDF findings (2026-10-19, UPDATED after carton/qty fix):** PO, country, market code and Gross Weight extract correctly on all 7.
+Cartons/Quantity are concatenated on the "Ctns/Col | Qty/Col" total row (e.g. `Total6151`); `parseCtnsQtyTable` now splits them
+reliably — Total Cartons = the total-row carton figure (Solid + Asst), Total Quantity = the numeric suffix the total row shares with the
+article row. **Verified auto-extraction (no manual correction) on all 7:** 613625=15/263, 614275=6/151, 698757 CN=29/581, PH=8/103,
+VN=7/114, 729708=16/312, 729715=1/14. Full-pipeline smoke (2026-10-19): 4 COMPLETED, plus the mock business scenarios
+(613625 REQUESTED→PORTAL_AUTH_REQUIRED, 729708 gross MISMATCH, 729715 no-results SEARCH_FAILED). `CARTON_QTY_AMBIGUOUS` now only
+fires on layouts the parser cannot resolve. Also: `pdf-parse` calls are serialized + retried once (`parsePdf`) to avoid the old pdf.js
+shared-state "bad XRef entry" flakiness under batch concurrency (that is why 614275 previously failed to extract). Tests: 97/97.
+**Improvement idea (optional):** positional text via `pagerender` for multi-article tables; current parser targets the single-article total row.
 
 ### Next actions (in order)
 1. ✅ DONE (2026-10-19): end-to-end pipeline smoke on the 7 real PDFs + browser login + batch dashboard + authenticated
@@ -149,6 +154,9 @@ or cross-check against the per-carton rows. Not started.
 ## 10. Known issues / caveats
 - Typecheck/test/build all green as of 2026-10-19 (see §8). No open code errors known.
 - Do not run `next build` while the dev server is running — both use `.next`. Stop the dev server first (as done 2026-10-19), then restart.
+  **After a `next build`, always delete `.next` before starting `next dev`**: on 2026-10-19 the dev server started on top of the production build
+  output and every page lost its CSS (`/_next/static/css/app/layout.css` → 404, unstyled Times New Roman page). Fix = stop server, delete `.next`
+  (generated, git-ignored), restart; stylesheet then returned 200.
 - **Docs updated 2026-10-19** for the batch workflow: `README.md`, `IMPLEMENTATION_STATUS.md`, `src/server/modules/catalog.ts`, and new `docs/modules/booking-correction.md` now reflect 90 tests, 8 migrations, booking-correction "implemented". Still stale: `docs/FINAL_REPORT.md`.
 - Git warns "LF will be replaced by CRLF" on several files (Windows autocrlf) — harmless.
 - Git Bash broken in this environment; use PowerShell.
@@ -161,6 +169,32 @@ or cross-check against the per-carton rows. Not started.
 - Everything in §8, plus `MEMORY.md` and the `CLAUDE.md` edit, is local only (not on GitHub). Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>`.
 
 ## 12. Session log (newest first)
+- 2026-10-19 (Oct-2026 SRS addendum — Module Enhancements): implemented from `UCP_Modified_SRS_Module_Enhancements_Oct_2026.docx`
+  (read via a Python docx-text extractor; no pandoc/soffice in this env). Two explicitly handwritten-requested gaps built end-to-end:
+  **(A) Sales Contract bulk multi-PDF batch (§3)** — new models SalesContractBatch/Item; pure classifier `batch-classify.ts`
+  (EXISTING/NEW/DUPLICATE/AMENDMENT/NEEDS_REVIEW + blockWrite for AC-03); engine `batch.ts` (store/de-dup → pdf-parse text →
+  OrderNo + PO-row extract via existing pure pipeline with new `skipAttachmentCheck` opt → cross-match existing contracts →
+  classify; independent per-file failure, idempotency, review tickets); action `sales-contract-batch.ts`; UI
+  `SalesContractBatchUpload.tsx` + dashboard `/sales-contract/[batchId]` (unified row-based table §3.3); wired into module page.
+  Shared `src/server/pdf/parse-pdf.ts` (serialized pdf-parse). **(B) Shipment Schedule in-portal editing (§4.2)** — new model
+  ShipmentScheduleLineEdit + line editState/editedBy/editedAt; pure `edit.ts` (editable vs locked fields, field-level validation,
+  PCS×FOB recompute); action `shipment-schedule-edit.ts` (role-gated edit + Submit/Approve, append-only field history, audit);
+  perms `schedule.edit`/`schedule.approve`; inline editor `ScheduleLineEditor.tsx` on `/jobs/[id]`. Gates: **typecheck 0, tests
+  119/119 (was 99; +20 pure tests in `sales-contract-batch.test.ts` + `shipment-schedule-edit.test.ts`), `next build` all routes
+  incl. `/sales-contract/[batchId]`, migration applied + seed ok**. Runtime smoke (tsx, since deleted): batch on 3 real PDFs →
+  sha256 de-dup, pdf-parse, filename OrderNo `644637-8756` cross-matched to confirmed `AGL/H&M/99/2026`, non-PO PDFs honestly
+  NEEDS_REVIEW/NOT EXTRACTED with writes blocked, idempotent reprocess. Catalog scope refreshed. **§5 Customs Invoice & §6 PDF
+  Rename**: the addendum says "no separate handwritten customization — retain existing scope"; left as-is (already batch-table +
+  collision/preview + export capable). **§7 Booking Correction**: already implemented (prior sessions). Nothing committed (not asked).
+  Note: stopped a stale undocumented `next start -p 3310` production server (PID held the Prisma engine DLL, blocking `prisma generate`);
+  it was not the documented :3300 dev server and not in a visible terminal tab. `.next` was deleted after the build per the §10 rule.
+- 2026-10-19 (revised "DEMCO" doc corrections): per `MASTER_PROMPT_DEMCO_Booking_Correction.docx` §2, changed the Damco bot entry
+  point to the single dashboard URL `…/ShipperPortalWeb/ViewDashboardAction.action` and REMOVED the fabricated `SearchAction`
+  deep-link (old `buildSearchUrl` → `portalEntryUrl()` + `searchTerms()`; the bot now navigates the UI with PO*/country* terms).
+  Removed the example booking ID 61954434 from sample data. Updated `env.ts` default, `.env.example`, `damco-portal.ts`,
+  `batch.ts` (event logs entryUrl/poQuery/countryQuery), tests, and the module doc. User chose to KEEP the "Damco" naming in
+  code/env (matches the booking.damco.com domain); the doc's "DEMCO" spelling is not adopted. Gates: typecheck 0, 99/99 tests,
+  build green, pipeline re-verified (4 COMPLETED + REQUESTED/MISMATCH/no-results branches). Uncommitted.
 - 2026-10-19 (feature build + full verification): implemented the Booking Correction DAMCO batch workflow from the MASTER PROMPT
   (extract → Damco search → match → CONFIRMED validation → verified PDF, live-gated). Added the server engine, adapter, actions,
   API routes, UI, migration, tests. Verified: typecheck exit 0, 90/90 tests, `next build` all routes, end-to-end pipeline on the
