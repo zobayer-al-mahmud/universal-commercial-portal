@@ -1,179 +1,263 @@
 import { createHash } from "crypto";
+import { mkdir, writeFile } from "fs/promises";
+import { join } from "path";
 import { prisma } from "@/lib/db";
+import { env } from "@/lib/env";
 import { audit } from "@/lib/audit";
-import { parseCsvRecords } from "@/lib/csv";
-import { buildSchedule, parseWeekTitle } from "./schedule";
-import type { ScheduleOrderInput, WeekDefinition } from "./types";
+import { parsePdfText } from "@/server/pdf/parse-pdf";
+import { parseBookingFilename } from "./parse-filename";
+import { parseBookingPdfText } from "./parse-booking-pdf";
+import { matchByOrderNoPrefix } from "./match-sales-contract";
+import type { SalesContractLookup } from "./types";
 
-const MODULE = "shipment-schedule";
-
-function pick(rec: Record<string, string>, keys: string[]): string {
-  for (const k of keys) if (rec[k] != null && rec[k] !== "") return rec[k];
-  return "";
+/**
+ * Create a brand-new Shipment Schedule with two default cut-offs ("1st cut off"
+ * and "2nd cut off"). Dates are blank until the user enters them.
+ */
+export async function createSchedule(opts: { weekTitle: string; weekNo?: number | null; actor: string }): Promise<{ id: string }> {
+  const sched = await prisma.shipmentSchedule.create({
+    data: {
+      weekTitle: opts.weekTitle.trim(),
+      weekNo: opts.weekNo ?? null,
+      createdBy: opts.actor,
+      cutoffs: {
+        create: [
+          { label: "1st cut off", date: "", sortOrder: 1 },
+          { label: "2nd cut off", date: "", sortOrder: 2 },
+        ],
+      },
+    },
+  });
+  await audit({ entityType: "shipment-schedule", entityId: sched.id, action: "schedule.created", actor: opts.actor, data: { weekTitle: opts.weekTitle } });
+  return { id: sched.id };
 }
 
-function toOrders(records: Record<string, string>[]): ScheduleOrderInput[] {
-  return records.map((r) => ({
-    buyerCode: pick(r, ["Buyer Code", "BuyerCode"]),
-    contractNo: pick(r, ["Cont.No.", "Contract No", "Cont No", "ContractNo"]),
-    contractDate: pick(r, ["Date", "Contract Date"]),
-    orderNo: pick(r, ["OrderNo.", "OrderNo", "Order No.", "Order No"]),
-    pcs: parseInt(pick(r, ["PCS", "Pcs", "Qty"]).replace(/[^\d]/g, "") || "0", 10),
-    style: pick(r, ["STYLE", "Style"]),
-    fob: parseFloat(pick(r, ["FOB", "Fob"]).replace(/[^\d.]/g, "") || "0"),
-    composition: pick(r, ["COMPOSITION", "Composition"]),
-    incoterm: pick(r, ["CAT", "Incoterm", "Terms"]) || "FCA",
-    transport: pick(r, ["HTS", "Transport"]) || "Sea",
-    markets: pick(r, ["Markets", "Market", "INVOICE"])
-      .split(/[|;]/)
-      .map((m) => m.trim())
-      .filter(Boolean),
-  }));
+export async function updateScheduleTitle(id: string, weekTitle: string, weekNo: number | null, actor: string): Promise<void> {
+  await prisma.shipmentSchedule.update({ where: { id }, data: { weekTitle: weekTitle.trim(), weekNo } });
+  await audit({ entityType: "shipment-schedule", entityId: id, action: "schedule.title.updated", actor, data: { weekTitle, weekNo } });
 }
 
-export interface ScheduleIntakeResult {
-  jobId: string;
-  weekNo: number;
-  duplicate: boolean;
-  status: string;
-  summary: { orders: number; lines: number; totalPcs: number; totalValue: number; invoiceFrom: string | null; invoiceTo: string | null };
-  reviewTicketCount: number;
+export async function addCutoff(scheduleId: string, label: string, date: string, actor: string): Promise<void> {
+  const count = await prisma.shipmentScheduleCutoff.count({ where: { scheduleId } });
+  await prisma.shipmentScheduleCutoff.create({
+    data: { scheduleId, label: label.trim(), date: date.trim(), sortOrder: count + 1 },
+  });
+  await audit({ entityType: "shipment-schedule", entityId: scheduleId, action: "cutoff.added", actor, data: { label, date } });
+}
+
+export async function updateCutoff(id: string, label: string, date: string, actor: string): Promise<void> {
+  const prev = await prisma.shipmentScheduleCutoff.findUnique({ where: { id } });
+  if (!prev) throw new Error("Cut-off not found.");
+  await prisma.shipmentScheduleCutoff.update({ where: { id }, data: { label: label.trim(), date: date.trim() } });
+  await audit({ entityType: "shipment-schedule", entityId: prev.scheduleId, action: "cutoff.updated", actor, data: { id, label, date } });
+}
+
+export async function deleteCutoff(id: string, actor: string): Promise<void> {
+  const prev = await prisma.shipmentScheduleCutoff.findUnique({ where: { id } });
+  if (!prev) return;
+  // Row-level cascade will clear the rows that were assigned to this cutoff —
+  // this is intentional: deleting a cutoff throws away its PDFs' extracted rows.
+  await prisma.shipmentScheduleCutoff.delete({ where: { id } });
+  await audit({ entityType: "shipment-schedule", entityId: prev.scheduleId, action: "cutoff.deleted", actor, data: { id, label: prev.label } });
+}
+
+export interface UploadedPdf {
+  name: string;
+  buffer: Buffer;
+}
+
+export interface ProcessResult {
+  rowId: string;
+  fileName: string;
+  orderNoPrefix: string;
+  marketCode: string;
+  marketSubCode: string;
+  matched: boolean;
+  matchReason: string;
+  bookingStatus: string;
+  pdfPcs: number | null;
+  cartons: number | null;
 }
 
 /**
- * Build a schedule from already-prepared orders and persist it (job + lines +
- * tickets + audit). Shared by the CSV intake and the Sales-Contract handoff.
+ * Upload one or more booking-confirmation PDFs to a specific cut-off, parse
+ * them, cross-match the OrderNo against the H&M Sales Contract POs, and
+ * persist one ShipmentScheduleRow per PDF.
+ *
+ * - sha256-dedup: the same file re-uploaded against the same schedule is
+ *   recognised and the earlier row is kept (idempotent).
+ * - Storage: PDFs are copied verbatim into
+ *   STORAGE_ROOT/shipment-schedule/<scheduleId>/<sha256>.pdf
+ * - Sales-contract hydration is best-effort — unmatched PDFs still create a
+ *   row (so the user sees it) with matched=false + matchReason explaining why.
  */
-export async function persistSchedule(
-  week: WeekDefinition,
-  orders: ScheduleOrderInput[],
-  opts: { actor?: string; invoiceStart?: number; sourceName: string; sourceKind: string; sourceHash: string },
-): Promise<ScheduleIntakeResult> {
-  const actor = opts.actor ?? "system";
-  const result = buildSchedule(week, orders, { invoiceStart: opts.invoiceStart });
+export async function uploadPdfsToCutoff(opts: {
+  scheduleId: string;
+  cutoffId: string;
+  files: UploadedPdf[];
+  actor: string;
+}): Promise<ProcessResult[]> {
+  const { scheduleId, cutoffId, files, actor } = opts;
+  if (files.length === 0) return [];
 
-  const job = await prisma.job.create({
-    data: {
-      module: MODULE,
-      type: "week-schedule",
-      businessKey: `Week ${week.weekNo}`,
-      status: "received",
-      payloadJson: JSON.stringify({ week }),
-      resultJson: JSON.stringify(result.summary),
-    },
-  });
+  const [schedule, cutoff] = await Promise.all([
+    prisma.shipmentSchedule.findUnique({ where: { id: scheduleId } }),
+    prisma.shipmentScheduleCutoff.findUnique({ where: { id: cutoffId } }),
+  ]);
+  if (!schedule) throw new Error("Shipment schedule not found.");
+  if (!cutoff || cutoff.scheduleId !== scheduleId) throw new Error("Cut-off does not belong to this schedule.");
 
-  await prisma.sourceDocument.create({
-    data: {
-      jobId: job.id,
-      kind: opts.sourceKind,
-      originalName: opts.sourceName,
-      sha256: opts.sourceHash,
-      sizeBytes: Buffer.byteLength(opts.sourceName),
-      mimeDetected: opts.sourceKind === "csv" ? "text/csv" : "application/json",
-      storagePath: `./var/storage/shipment-schedule/${job.id}`,
-      metadataJson: JSON.stringify({ week }),
-    },
-  });
+  const storeDir = join(env.STORAGE_ROOT, "shipment-schedule", scheduleId);
+  await mkdir(storeDir, { recursive: true });
 
-  await prisma.jobStageEvent.create({
-    data: { jobId: job.id, stage: "classified", status: "ok", message: `Week ${week.weekNo}; ${result.summary.orders} orders` },
-  });
+  const results: ProcessResult[] = [];
 
-  await prisma.shipmentScheduleLine.createMany({
-    data: result.lines.map((l) => ({
-      jobId: job.id,
-      weekNo: l.weekNo,
-      firstCutOff: l.firstCutOff,
-      secondCutOff: l.secondCutOff,
-      buyerCode: l.buyerCode,
-      contractNo: l.contractNo,
-      contractDate: l.contractDate,
-      orderNo: l.orderNo,
-      style: l.style,
-      composition: l.composition,
-      incoterm: l.incoterm,
-      transport: l.transport,
-      pcs: l.pcs,
-      fob: l.fob,
-      value: l.value,
-      marketCode: l.marketCode,
-      invoiceNo: l.invoiceNo,
-      cutOff: l.cutOff,
-      message: l.issues.map((i) => `${i.code}:${i.field}`).join("; "),
-      success: l.success,
-    })),
-  });
+  for (const f of files) {
+    const sha = createHash("sha256").update(f.buffer).digest("hex");
+    const storagePath = join(storeDir, `${sha}.pdf`);
+    await writeFile(storagePath, f.buffer);
 
-  const seen = new Set<string>();
-  let reviewTicketCount = 0;
-  for (const rr of result.reviewReasons) {
-    const key = rr.code + rr.reason;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    await prisma.reviewTicket.create({
-      data: { jobId: job.id, module: MODULE, reasonCode: rr.code, reason: rr.reason, contextJson: JSON.stringify({ severity: rr.severity }) },
+    const filenameParts = parseBookingFilename(f.name);
+    let text = "";
+    let pdfFields = parseBookingPdfText(""); // defaults
+    try {
+      const parsed = await parsePdfText(f.buffer);
+      text = parsed.text;
+      pdfFields = parseBookingPdfText(text);
+    } catch {
+      pdfFields.warnings.push("pdf_parse_failed");
+    }
+
+    // Look up sales-contract candidates by the orderNo prefix. We fetch a
+    // small window: all READY POs whose orderNo starts with the digits.
+    let matchReason = "no_sales_contract_po";
+    let matched = false;
+    let hydrated: {
+      buyerCode: string;
+      contractNo: string;
+      contractDate: string;
+      orderNo: string;
+      pcs: number | null;
+      style: string;
+      fob: number | null;
+      composition: string;
+      cat: string;
+      hts: string;
+    } | undefined;
+    if (filenameParts.ok) {
+      const pos = await prisma.hmSalesContractPo.findMany({
+        where: { orderNo: { startsWith: filenameParts.orderNoPrefix + "-" } },
+        include: { contract: true },
+        take: 20,
+      });
+      const candidates: SalesContractLookup[] = pos.map((p) => ({
+        contract: {
+          marchentContNo: p.contract.marchentContNo,
+          contractDate: p.contract.contractDate,
+          buyerCode: p.contract.buyerCode,
+          commercialContNo: p.contract.commercialContNo,
+          commercialDate: p.contract.commercialDate,
+        },
+        orderNo: p.orderNo,
+        state: p.state,
+        rowsJson: p.rowsJson,
+      }));
+      const m = matchByOrderNoPrefix(filenameParts.orderNoPrefix, candidates);
+      matched = m.matched;
+      matchReason = m.reason;
+      hydrated = m.hydrated;
+    } else {
+      matchReason = `bad_filename:${filenameParts.reason ?? "unknown"}`;
+    }
+
+    // Idempotency: if this (schedule, sha) is already stored, update the
+    // existing row's cutoff to the newly chosen one (user may have changed
+    // their mind) and skip re-match. New metadata is still applied.
+    const existing = await prisma.shipmentScheduleRow.findFirst({ where: { scheduleId, pdfSha256: sha } });
+
+    const data = {
+      scheduleId,
+      cutoffId,
+      buyerCode: hydrated?.buyerCode ?? "",
+      contractNo: hydrated?.contractNo ?? "",
+      contractDate: hydrated?.contractDate ?? "",
+      orderNo: hydrated?.orderNo ?? filenameParts.orderNoPrefix,
+      pcs: hydrated?.pcs ?? null,
+      style: hydrated?.style ?? "",
+      fob: hydrated?.fob ?? null,
+      composition: hydrated?.composition ?? "",
+      cat: hydrated?.cat ?? "",
+      hts: hydrated?.hts ?? "",
+      pdfOrderNo: pdfFields.pdfOrderNo,
+      marketCode: filenameParts.marketCode,
+      marketSubCode: filenameParts.marketSubCode,
+      skuItem: pdfFields.skuItem,
+      bookingRef: pdfFields.bookingRef,
+      bcn: pdfFields.bcn,
+      bookingStatus: pdfFields.bookingStatus,
+      portOfLoading: pdfFields.portOfLoading,
+      portOfDischarge: pdfFields.portOfDischarge,
+      placeOfDelivery: pdfFields.placeOfDelivery,
+      transportMode: pdfFields.transportMode,
+      pdfPcs: pdfFields.pdfPcs,
+      grossWeightKg: pdfFields.grossWeightKg,
+      cartons: pdfFields.cartons,
+      measurementCbm: pdfFields.measurementCbm,
+      pdfFileName: f.name,
+      pdfSha256: sha,
+      pdfPath: storagePath,
+      matched,
+      matchReason,
+    } as const;
+
+    let rowId: string;
+    if (existing) {
+      await prisma.shipmentScheduleRow.update({ where: { id: existing.id }, data });
+      rowId = existing.id;
+    } else {
+      const created = await prisma.shipmentScheduleRow.create({ data });
+      rowId = created.id;
+    }
+
+    await audit({
+      entityType: "shipment-schedule",
+      entityId: scheduleId,
+      action: "row.ingested",
+      actor,
+      data: { rowId, fileName: f.name, cutoffId, matched, matchReason, bcn: pdfFields.bcn, bookingRef: pdfFields.bookingRef },
     });
-    reviewTicketCount++;
+
+    results.push({
+      rowId,
+      fileName: f.name,
+      orderNoPrefix: filenameParts.orderNoPrefix,
+      marketCode: filenameParts.marketCode,
+      marketSubCode: filenameParts.marketSubCode,
+      matched,
+      matchReason,
+      bookingStatus: pdfFields.bookingStatus,
+      pdfPcs: pdfFields.pdfPcs,
+      cartons: pdfFields.cartons,
+    });
   }
 
-  await prisma.jobStageEvent.create({
-    data: {
-      jobId: job.id,
-      stage: "reconciled",
-      status: result.outcome === "queued" ? "failed" : "ok",
-      message: `${result.summary.lines} lines; invoices ${result.summary.invoiceFrom ?? "-"}..${result.summary.invoiceTo ?? "-"}`,
-    },
-  });
-
-  await prisma.job.update({ where: { id: job.id }, data: { status: result.outcome } });
-  await audit({ entityType: "job", entityId: job.id, action: "schedule.built", actor, data: { week, summary: result.summary, outcome: result.outcome } });
-
-  return {
-    jobId: job.id,
-    weekNo: week.weekNo,
-    duplicate: false,
-    status: result.outcome,
-    summary: result.summary,
-    reviewTicketCount,
-  };
+  return results;
 }
 
-/**
- * Ingest a week title + orders CSV, build the schedule, and persist it.
- * Idempotent on the (title + CSV) content hash.
- */
-export async function intakeWeekSchedule(
-  weekTitle: string,
-  csvText: string,
-  opts: { actor?: string; invoiceStart?: number } = {},
-): Promise<ScheduleIntakeResult> {
-  const week = parseWeekTitle(weekTitle);
-  if (!week) throw new Error(`Could not parse week title: "${weekTitle}"`);
+/** Move an existing row to a different cut-off (e.g. after review). */
+export async function moveRowToCutoff(rowId: string, cutoffId: string, actor: string): Promise<void> {
+  const row = await prisma.shipmentScheduleRow.findUnique({ where: { id: rowId } });
+  if (!row) throw new Error("Row not found.");
+  const dst = await prisma.shipmentScheduleCutoff.findUnique({ where: { id: cutoffId } });
+  if (!dst || dst.scheduleId !== row.scheduleId) throw new Error("Target cut-off does not belong to this schedule.");
+  await prisma.shipmentScheduleRow.update({ where: { id: rowId }, data: { cutoffId } });
+  await audit({ entityType: "shipment-schedule", entityId: row.scheduleId, action: "row.moved", actor, data: { rowId, from: row.cutoffId, to: cutoffId } });
+}
 
-  const records = parseCsvRecords(csvText);
-  if (records.length === 0) throw new Error("No order rows parsed from CSV.");
-  const orders = toOrders(records);
-
-  const hash = createHash("sha256").update(`${weekTitle}\n${csvText}`, "utf8").digest("hex");
-  const existing = await prisma.sourceDocument.findUnique({ where: { sha256: hash } });
-  if (existing?.jobId) {
-    const job = await prisma.job.findUnique({ where: { id: existing.jobId } });
-    return {
-      jobId: existing.jobId,
-      weekNo: week.weekNo,
-      duplicate: true,
-      status: job?.status ?? "duplicate",
-      summary: { orders: records.length, lines: 0, totalPcs: 0, totalValue: 0, invoiceFrom: null, invoiceTo: null },
-      reviewTicketCount: 0,
-    };
-  }
-
-  return persistSchedule(week, orders, {
-    actor: opts.actor,
-    invoiceStart: opts.invoiceStart,
-    sourceName: `${weekTitle}.csv`,
-    sourceKind: "csv",
-    sourceHash: hash,
-  });
+/** Delete a row (and its edit history). The PDF file stays on disk for audit. */
+export async function deleteRow(rowId: string, actor: string): Promise<void> {
+  const row = await prisma.shipmentScheduleRow.findUnique({ where: { id: rowId } });
+  if (!row) return;
+  await prisma.shipmentScheduleRow.delete({ where: { id: rowId } });
+  await audit({ entityType: "shipment-schedule", entityId: row.scheduleId, action: "row.deleted", actor, data: { rowId, pdfFileName: row.pdfFileName } });
 }

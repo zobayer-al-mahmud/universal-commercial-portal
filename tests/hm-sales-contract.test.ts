@@ -178,19 +178,17 @@ describe("H&M Sales Contract — cross-document reconciliation (AC-3, AC-11)", (
   });
 });
 
-describe("H&M Sales Contract — A..U template rows (AC-4, AC-5)", () => {
-  it("creates one anchor row + N-1 blank-qty rows per PO", () => {
+describe("H&M Sales Contract — A..U template rows (AC-4, AC-5, one-row-per-PO 2026-10-20)", () => {
+  it("creates EXACTLY ONE row per PO regardless of market count", () => {
     const po = parsePurchaseOrderText(PO_TEXT);
     const size = parseSizeBreakdownText(SIZE_TEXT);
     const country = parseCountryBreakdownText(COUNTRY_TEXT);
     const recon = reconcileSet(po, size, country);
     const rows = mapToTemplateRows(po, size, country, recon);
-    expect(rows).toHaveLength(4); // 4 markets
-    expect(rows.filter((r) => r.isAnchor)).toHaveLength(1);
+    expect(rows).toHaveLength(1); // 4 markets in 643159 → still ONE row
     expect(rows[0].isAnchor).toBe(true);
-    expect(rows[0].orderQty).toBe(4078);
-    // Non-anchor rows have null Order Qty (encoded in O instead) — AC-5.
-    for (let i = 1; i < rows.length; i++) expect(rows[i].orderQty).toBeNull();
+    expect(rows[0].orderQty).toBe(4078); // total PO qty on the single row
+    expect(rows[0].orderNo).toBe("643159-8756");
   });
 
   it("leaves the fields that are not in any PDF blank (AC-4)", () => {
@@ -209,13 +207,25 @@ describe("H&M Sales Contract — A..U template rows (AC-4, AC-5)", () => {
     expect(r.styleNo).toBe("");
   });
 
-  it("encodes TOD, market and per-market qty in column O (AC-5)", () => {
+  it("concatenates every market into column O (newline-separated, one line per market)", () => {
     const po = parsePurchaseOrderText(PO_TEXT);
     const rows = mapToTemplateRows(po, null, null, { ok: true, checks: [], warnings: [] });
-    const oe = rows.find((r) => r.marketCode === "OE")!;
-    expect(oe.country).toBe("29 Jun, 2026 OE (OLCEU) 3 544 87%");
-    const od = rows.find((r) => r.marketCode === "OD")!;
-    expect(od.country).toBe("24 Aug, 2026 OD (OL-ME) 10 <1%");
+    expect(rows).toHaveLength(1);
+    const country = rows[0].country;
+    // All four 643159 markets appear in the single row.
+    expect(country).toContain("29 Jun, 2026 OE (OLCEU) 3 544 87%");
+    expect(country).toContain("24 Aug, 2026 OD (OL-ME) 10 <1%");
+    expect(country.split("\n").length).toBe(po.marketRows.length);
+  });
+
+  it("records every market code on the single row for traceability", () => {
+    const po = parsePurchaseOrderText(PO_TEXT);
+    const rows = mapToTemplateRows(po, null, null, { ok: true, checks: [], warnings: [] });
+    const codes = rows[0].marketCode.split(",").sort();
+    expect(codes).toEqual(["LH", "OD", "OE", "OF"]);
+    // marketQuantity on the merged row = sum across markets, equals totalQty
+    // when every market is allocated (PO 643159 is 100% allocated → 4078).
+    expect(rows[0].marketQuantity).toBe(4078);
   });
 
   it("builds Item Des. as 'group description construction' (BR-HM-03 default)", () => {
@@ -232,7 +242,7 @@ describe("H&M Sales Contract — A..U template rows (AC-4, AC-5)", () => {
 });
 
 describe("H&M Sales Contract — set envelope + blocked sets (AC-7)", () => {
-  it("builds a passing envelope with 4 rows for the 643159 set", () => {
+  it("builds a passing envelope with ONE row for the 643159 set (one-row-per-PO)", () => {
     const po = parsePurchaseOrderText(PO_TEXT);
     const size = parseSizeBreakdownText(SIZE_TEXT);
     const country = parseCountryBreakdownText(COUNTRY_TEXT);
@@ -240,7 +250,7 @@ describe("H&M Sales Contract — set envelope + blocked sets (AC-7)", () => {
     const recon = reconcileSet(po, size, country);
     const result = buildSetResult(po, size, country, match, recon);
     expect(result.blockWrite).toBe(false);
-    expect(result.rows).toHaveLength(4);
+    expect(result.rows).toHaveLength(1);
     expect(result.orderNo).toBe("643159-8756");
   });
 
@@ -257,73 +267,92 @@ describe("H&M Sales Contract — set envelope + blocked sets (AC-7)", () => {
   });
 });
 
-describe("H&M Sales Contract — workbook writer (AC-6, AC-8, AC-9)", () => {
+describe("H&M Sales Contract — fresh workbook writer (prototype layout, 2026-10-20)", () => {
   const tmpDir = join(tmpdir(), `hm-xlsx-${Date.now()}`);
 
-  it("writes to a NEW copy of the template and appends A..U rows with formulas", async () => {
+  it("writes a FRESH workbook with user-typed banner (row 1 + 3) + column headers (row 5) + data rows (row 6+)", async () => {
     mkdirSync(tmpDir, { recursive: true });
-    // Build a small template on the fly so the test does not depend on the
-    // user's local workbook. The real production path points at the user's
-    // Sales Contract workbook; the shape here mirrors its H&M sheet exactly.
-    const templatePath = join(tmpDir, "template.xlsx");
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet("H&M");
-    ws.addRow([
-      "Marchent Cont.No.", "Date", "Buyer Code", "commercial Cont.No.", "Date",
-      "Order No.", "Order Qty", "Style No.", "FOB", "Item Des.",
-      "Cat", "HTS", "CONTRACT VALUE", "TOD", "COUNTRY",
-      "REMARKS", "Merchandiser Name:", "pack/set Qty", "pack/set",
-      "Without Discount / Old FOB ", "Discount FOB con: date",
-    ]);
-    await wb.xlsx.writeFile(templatePath);
 
     const po = parsePurchaseOrderText(PO_TEXT);
     const size = parseSizeBreakdownText(SIZE_TEXT);
     const country = parseCountryBreakdownText(COUNTRY_TEXT);
-    const match = matchSet(po, size, country);
-    const recon = reconcileSet(po, size, country);
-    const result = buildSetResult(po, size, country, match, recon);
+    const result = buildSetResult(
+      po, size, country,
+      matchSet(po, size, country),
+      reconcileSet(po, size, country),
+    );
 
     const outputPath = join(tmpDir, "SalesContract_test.xlsx");
     const r = await writeSalesContractWorkbook({
-      templatePath,
       outputPath,
-      header: { marchentContNo: "AGL/H&M/99/2026", merchandiserName: "Test" },
+      header: { marchentContNo: "AGL/H&M/99/2026", reviseNo: "21" },
       sets: [result],
     });
-    expect(r.appendedRows).toBe(4);
+    expect(r.appendedRows).toBe(1);
     expect(existsSync(outputPath)).toBe(true);
-    // Original template still exists and is unchanged (sanity).
-    expect(existsSync(templatePath)).toBe(true);
 
-    // Reload the output and verify the A..U cells.
     const out = new ExcelJS.Workbook();
     await out.xlsx.readFile(outputPath);
-    const sheet = out.getWorksheet("H&M")!;
-    // Headers preserved.
-    expect(sheet.getCell("A1").value).toBe("Marchent Cont.No.");
-    expect(sheet.getCell("F1").value).toBe("Order No.");
-    expect(sheet.getCell("U1").value).toBe("Discount FOB con: date");
-    // Anchor row (row 2) has G, I populated and M, R as formulas; subsequent
-    // rows have G blank/null.
-    const anchor = sheet.getRow(2);
-    expect(anchor.getCell(6).value).toBe("643159-8756");           // F
-    expect(anchor.getCell(7).value).toBe(4078);                    // G
-    expect(Number(anchor.getCell(9).value)).toBe(6.18);            // I
-    expect(anchor.getCell(10).value).toBe("Boys Jeans - Garment Lower body Woven"); // J
-    expect(anchor.getCell(13).value).toMatchObject({ formula: "G2*I2" }); // M
-    expect(anchor.getCell(18).value).toMatchObject({ formula: "S2*G2" }); // R
-    expect(String(anchor.getCell(15).value)).toContain("OE (OLCEU)"); // O
+    const sheet = out.getWorksheet("Sales Contract")!;
 
-    const nonAnchor = sheet.getRow(3);
-    expect(nonAnchor.getCell(6).value).toBe("643159-8756");
-    const g3 = nonAnchor.getCell(7).value;
-    expect(g3 === null || g3 === "" || g3 === undefined).toBe(true); // G blank
-    expect(nonAnchor.getCell(13).value).toBeFalsy();                 // M blank
+    // --- Banner (user-typed; appears only when values are set) ---
+    expect(String(sheet.getCell("A1").value)).toContain("Block Contract Ref");
+    expect(String(sheet.getCell("A1").value)).toContain("AGL/H&M/99/2026");
+    expect(String(sheet.getCell("A3").value)).toContain("Revise: 21");
+
+    // --- Column header row (row 5) — field names appear ONLY here, never on data rows ---
+    const header = sheet.getRow(5);
+    expect(header.getCell(1).value).toBe("Order No.");
+    expect(header.getCell(2).value).toBe("Style No.");
+    expect(header.getCell(3).value).toBe("Description");
+    expect(header.getCell(4).value).toBe("Order Qty");
+    expect(header.getCell(5).value).toBe("Total Qty With Packs");
+    expect(header.getCell(6).value).toBe("Unit Price");
+    expect(header.getCell(7).value).toBe("Value");
+    expect(header.getCell(8).value).toBe("Time of Delivery");
+
+    // --- Data row (row 6) — one row per PO, PDF-sourced values ---
+    const row = sheet.getRow(6);
+    expect(row.getCell(1).value).toBe("643159-8756");                     // Order No.
+    expect(row.getCell(2).value).toBe("Slim denim");                      // Style No. = productName
+    expect(row.getCell(3).value).toBe("Boys Jeans - Garment Lower body Woven"); // Description
+    expect(row.getCell(4).value).toBe(4078);                              // Order Qty
+    expect(row.getCell(5).value).toBe(4078);                              // Total Qty With Packs (packSet default 1)
+    expect(Number(row.getCell(6).value)).toBe(6.18);                      // Unit Price
+    expect(row.getCell(7).value).toMatchObject({ formula: "D6*F6" });     // Value formula
+    const tod = String(row.getCell(8).value);                             // Time of Delivery
+    expect(tod).toContain("29 Jun, 2026");
+
+    // Row 7 must be empty — ONE row per PO.
+    const next = sheet.getRow(7);
+    for (let c = 1; c <= 8; c++) {
+      const v = next.getCell(c).value;
+      expect(v === null || v === undefined || v === "").toBe(true);
+    }
   });
 
-  it("respects user edits via `overrides` (AC-8)", async () => {
-    const templatePath = join(tmpDir, "template.xlsx");
+  it("omits the banner lines when the user has not typed Block Contract Ref / Revise", async () => {
+    const outputPath = join(tmpDir, "SalesContract_no_banner.xlsx");
+    const po = parsePurchaseOrderText(PO_TEXT);
+    const size = parseSizeBreakdownText(SIZE_TEXT);
+    const country = parseCountryBreakdownText(COUNTRY_TEXT);
+    const result = buildSetResult(
+      po, size, country,
+      matchSet(po, size, country),
+      reconcileSet(po, size, country),
+    );
+    await writeSalesContractWorkbook({ outputPath, sets: [result] });
+
+    const out = new ExcelJS.Workbook();
+    await out.xlsx.readFile(outputPath);
+    const sheet = out.getWorksheet("Sales Contract")!;
+    const a1 = sheet.getCell("A1").value;
+    const a3 = sheet.getCell("A3").value;
+    expect(a1 === null || a1 === undefined || a1 === "").toBe(true);
+    expect(a3 === null || a3 === undefined || a3 === "").toBe(true);
+  });
+
+  it("respects user edits via `overrides` keyed by orderNo", async () => {
     const outputPath = join(tmpDir, "SalesContract_overrides.xlsx");
 
     const po = parsePurchaseOrderText(PO_TEXT);
@@ -336,23 +365,21 @@ describe("H&M Sales Contract — workbook writer (AC-6, AC-8, AC-9)", () => {
     );
 
     await writeSalesContractWorkbook({
-      templatePath,
       outputPath,
       header: { marchentContNo: "AGL/H&M/99/2026" },
       sets: [result],
       overrides: {
-        "643159-8756:OE": { itemDes: "USER EDITED Item Des.", remarks: "URGENT" },
+        "643159-8756": { itemDes: "USER EDITED Description", styleNo: "USER EDITED Style" },
       },
     });
     const out = new ExcelJS.Workbook();
     await out.xlsx.readFile(outputPath);
-    const row = out.getWorksheet("H&M")!.getRow(2);
-    expect(row.getCell(10).value).toBe("USER EDITED Item Des."); // J edit
-    expect(row.getCell(16).value).toBe("URGENT");                 // P edit
+    const row = out.getWorksheet("Sales Contract")!.getRow(6);
+    expect(row.getCell(2).value).toBe("USER EDITED Style");       // Style No. (B)
+    expect(row.getCell(3).value).toBe("USER EDITED Description"); // Description (C)
   });
 
-  it("skips blocked sets and lists them in the result (AC-10 adjacent)", async () => {
-    const templatePath = join(tmpDir, "template.xlsx");
+  it("skips blocked sets and lists them in the result", async () => {
     const outputPath = join(tmpDir, "SalesContract_blocked.xlsx");
 
     const po = parsePurchaseOrderText(PO_TEXT);
@@ -365,31 +392,13 @@ describe("H&M Sales Contract — workbook writer (AC-6, AC-8, AC-9)", () => {
     );
     expect(result.blockWrite).toBe(true);
 
-    const r = await writeSalesContractWorkbook({
-      templatePath,
-      outputPath,
-      sets: [result],
-    });
+    const r = await writeSalesContractWorkbook({ outputPath, sets: [result] });
     expect(r.appendedRows).toBe(0);
     expect(r.blockedSets.map((b) => b.orderNo)).toContain(po.header.orderNo);
   });
 
-  // Clean up at end-of-file.
-  it("teardown", () => {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
-    expect(true).toBe(true);
-  });
-});
-
-describe("H&M Sales Contract — Sales Contract grouping (AC-6)", () => {
   it("accumulates rows from several PO sets under one Sales Contract", async () => {
-    const tmp = join(tmpdir(), `hm-group-${Date.now()}`);
-    mkdirSync(tmp, { recursive: true });
-    const templatePath = join(tmp, "template.xlsx");
-    const outputPath = join(tmp, "SalesContract_group.xlsx");
-    const wb = new ExcelJS.Workbook();
-    wb.addWorksheet("H&M").addRow(Array(21).fill(""));
-    await wb.xlsx.writeFile(templatePath);
+    const outputPath = join(tmpDir, "SalesContract_group.xlsx");
 
     const po = parsePurchaseOrderText(PO_TEXT);
     const size = parseSizeBreakdownText(SIZE_TEXT);
@@ -399,15 +408,13 @@ describe("H&M Sales Contract — Sales Contract grouping (AC-6)", () => {
       matchSet(po, size, country),
       reconcileSet(po, size, country),
     );
-    // Duplicate the set as a second "PO" (same orderNo would be a dedup
-    // concern upstream, but here we just verify the writer appends both).
-    const r = await writeSalesContractWorkbook({
-      templatePath,
-      outputPath,
-      sets: [result, result],
-    });
-    expect(r.appendedRows).toBe(8); // 4 rows × 2 PO sets
+    const r = await writeSalesContractWorkbook({ outputPath, sets: [result, result] });
+    expect(r.appendedRows).toBe(2); // one row per PO × 2 PO sets
+  });
 
-    try { rmSync(tmp, { recursive: true, force: true }); } catch { /* noop */ }
+  // Clean up at end-of-file.
+  it("teardown", () => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }
+    expect(true).toBe(true);
   });
 });

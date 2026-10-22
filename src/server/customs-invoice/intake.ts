@@ -1,154 +1,152 @@
-import { createHash } from "crypto";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { buildCustomsInvoice } from "./build";
-import type { CustomsInvoiceInput } from "./types";
+import { buildPrefill, shortOrderKey } from "./pull-data";
+import {
+  DEFAULT_BUYER,
+  DEFAULT_EXPORTER,
+  INVOICE_FLOAT_FIELDS,
+  INVOICE_INT_FIELDS,
+  INVOICE_STRING_FIELDS,
+  type InvoiceFields,
+} from "./types";
 
-const MODULE = "customs-invoice";
-
-async function loadCargoDeliveryMap(): Promise<Record<string, string>> {
-  const rows = await prisma.referenceData.findMany({ where: { type: "market-consignee", active: true } });
-  const map: Record<string, string> = {};
-  for (const r of rows) map[r.code.toUpperCase()] = r.value;
-  return map;
+export interface CreateInvoiceResult {
+  invoiceId: string;
+  orderNo: string;
+  duplicate: boolean;
 }
 
-export interface CustomsInvoiceIntakeResult {
-  jobId: string;
-  invoiceKey: string;
-  duplicate: boolean;
-  status: string;
-  totalQty: number;
-  totalValue: number;
-  reviewTicketCount: number;
+/** Create (or return existing) a CustomsInvoice for an Order No, prefilled from
+ *  Sales Contract + Shipment Schedule. */
+export async function createInvoiceForOrder(
+  rawOrderNo: string,
+  opts: { actor?: string } = {},
+): Promise<CreateInvoiceResult> {
+  const actor = opts.actor ?? "system";
+  const orderNo = shortOrderKey(rawOrderNo);
+  if (!orderNo) throw new Error("Order No is required.");
+
+  const existing = await prisma.customsInvoice.findUnique({ where: { orderNo } });
+  if (existing) return { invoiceId: existing.id, orderNo, duplicate: true };
+
+  const prefill = await buildPrefill(orderNo);
+  if (!prefill) throw new Error(`Order No ${orderNo} not found in Sales Contract or Shipment Schedule.`);
+
+  const inv = await prisma.customsInvoice.create({
+    data: {
+      orderNo,
+      countryCode: prefill.countryCode,
+      marketCode: prefill.marketCode,
+      marketSubCode: prefill.marketSubCode,
+      contractNo: prefill.contractNo,
+      contractDate: prefill.contractDate,
+      hmOrderNo: prefill.hmOrderNo,
+      buyerCode: prefill.buyerCode,
+      styleNo: prefill.styleNo,
+      descriptionOfGoods: prefill.descriptionOfGoods,
+      unitPrice: prefill.unitPrice ?? null,
+      quantityPcs: prefill.quantityPcs ?? null,
+      portOfLoading: prefill.portOfLoading || "CHITTAGONG",
+      portOfDischarge: prefill.portOfDischarge,
+      placeOfDelivery: prefill.placeOfDelivery,
+      transportMode: prefill.transportMode,
+      grossWeightKg: prefill.grossWeightKg ?? null,
+      totalCartons: prefill.totalCartons ?? null,
+      measurementCbm: prefill.measurementCbm ?? null,
+      exporterName: DEFAULT_EXPORTER,
+      buyerName: DEFAULT_BUYER,
+      consigneeName: DEFAULT_BUYER,
+      createdBy: actor,
+    },
+  });
+
+  await audit({
+    entityType: "customs-invoice",
+    entityId: inv.id,
+    action: "customs-invoice.created",
+    actor,
+    data: { orderNo, countryCode: inv.countryCode },
+  });
+
+  return { invoiceId: inv.id, orderNo, duplicate: false };
 }
 
 /**
- * Build and persist one customs invoice as a job + CustomsInvoice record.
- * Fail-closed on hard validation failures (no invoice persisted path that writes
- * a consequential document; stays queued for review).
+ * Apply a partial field patch to an invoice. Only known columns are written;
+ * each changed field becomes a CustomsInvoiceEdit entry (append-only).
  */
-export async function intakeCustomsInvoice(
-  input: CustomsInvoiceInput,
-  opts: { actor?: string } = {},
-): Promise<CustomsInvoiceIntakeResult> {
+export async function updateInvoiceFields(
+  invoiceId: string,
+  patch: Partial<InvoiceFields>,
+  opts: { actor?: string; source?: "user" | "pdf-extract" | "prefill" } = {},
+): Promise<{ updated: number }> {
   const actor = opts.actor ?? "system";
-  const cargoDeliveryByMarket = await loadCargoDeliveryMap();
-  const doc = buildCustomsInvoice(input, { cargoDeliveryByMarket });
+  const source = opts.source ?? "user";
+  const current = await prisma.customsInvoice.findUnique({ where: { id: invoiceId } });
+  if (!current) throw new Error("Invoice not found.");
 
-  const hash = createHash("sha256").update(JSON.stringify(input), "utf8").digest("hex");
-  const existing = await prisma.sourceDocument.findUnique({ where: { sha256: hash } });
-  if (existing?.jobId) {
-    const job = await prisma.job.findUnique({ where: { id: existing.jobId } });
-    return {
-      jobId: existing.jobId,
-      invoiceKey: doc.invoiceKey,
-      duplicate: true,
-      status: job?.status ?? "duplicate",
-      totalQty: doc.totalQty,
-      totalValue: doc.totalValue,
-      reviewTicketCount: 0,
-    };
+  // Build the data object + edit entries from the patch, skipping no-op values.
+  const data: Record<string, unknown> = {};
+  const edits: { field: string; oldValue: string; newValue: string }[] = [];
+  const strSet = new Set<string>(INVOICE_STRING_FIELDS as string[]);
+  const intSet = new Set<string>(INVOICE_INT_FIELDS as string[]);
+  const floatSet = new Set<string>(INVOICE_FLOAT_FIELDS as string[]);
+  const cur = current as unknown as Record<string, unknown>;
+
+  for (const [key, val] of Object.entries(patch)) {
+    if (strSet.has(key)) {
+      const next = typeof val === "string" ? val : val == null ? "" : String(val);
+      const old = typeof cur[key] === "string" ? (cur[key] as string) : "";
+      if (next === old) continue;
+      data[key] = next;
+      edits.push({ field: key, oldValue: old, newValue: next });
+    } else if (intSet.has(key)) {
+      const next = val == null || val === "" ? null : Number.parseInt(String(val).replace(/[^\d-]/g, ""), 10);
+      const parsed = Number.isFinite(next as number) ? (next as number) : null;
+      const old = (cur[key] as number | null) ?? null;
+      if (parsed === old) continue;
+      data[key] = parsed;
+      edits.push({ field: key, oldValue: String(old ?? ""), newValue: String(parsed ?? "") });
+    } else if (floatSet.has(key)) {
+      const next = val == null || val === "" ? null : Number.parseFloat(String(val).replace(/[^\d.-]/g, ""));
+      const parsed = Number.isFinite(next as number) ? (next as number) : null;
+      const old = (cur[key] as number | null) ?? null;
+      if (parsed === old) continue;
+      data[key] = parsed;
+      edits.push({ field: key, oldValue: String(old ?? ""), newValue: String(parsed ?? "") });
+    }
+    // Unknown fields are silently ignored (never trust client-side input).
   }
 
-  const status = doc.success ? "draft" : "queued";
+  if (edits.length === 0) return { updated: 0 };
 
-  const job = await prisma.job.create({
-    data: {
-      module: MODULE,
-      type: "customs-invoice",
-      businessKey: doc.invoiceKey,
-      status: "received",
-      payloadJson: JSON.stringify({ invoiceKey: doc.invoiceKey, contractNo: doc.contractNo }),
-      resultJson: JSON.stringify({ totalQty: doc.totalQty, totalValue: doc.totalValue }),
-    },
+  await prisma.$transaction([
+    prisma.customsInvoice.update({ where: { id: invoiceId }, data }),
+    ...edits.map((e) =>
+      prisma.customsInvoiceEdit.create({
+        data: { invoiceId, field: e.field, oldValue: e.oldValue, newValue: e.newValue, source, editedBy: actor },
+      }),
+    ),
+  ]);
+
+  await audit({
+    entityType: "customs-invoice",
+    entityId: invoiceId,
+    action: "customs-invoice.edited",
+    actor,
+    data: { fields: edits.map((e) => e.field), source },
   });
 
-  await prisma.sourceDocument.create({
-    data: {
-      jobId: job.id,
-      kind: "invoice-input",
-      originalName: `customs-invoice-${doc.invoiceKey}.json`,
-      sha256: hash,
-      sizeBytes: Buffer.byteLength(JSON.stringify(input)),
-      mimeDetected: "application/json",
-      storagePath: `./var/storage/customs-invoice/${job.id}`,
-      metadataJson: JSON.stringify({ invoiceKey: doc.invoiceKey }),
-    },
+  return { updated: edits.length };
+}
+
+export async function deleteInvoice(invoiceId: string, opts: { actor?: string } = {}): Promise<void> {
+  const actor = opts.actor ?? "system";
+  await prisma.customsInvoice.delete({ where: { id: invoiceId } });
+  await audit({
+    entityType: "customs-invoice",
+    entityId: invoiceId,
+    action: "customs-invoice.deleted",
+    actor,
   });
-
-  await prisma.jobStageEvent.create({
-    data: { jobId: job.id, stage: "classified", status: "ok", message: `Invoice ${doc.invoiceKey}; ${doc.lineItems.length} line item(s)` },
-  });
-
-  if (doc.success) {
-    await prisma.customsInvoice.create({
-      data: {
-        jobId: job.id,
-        invoiceNumber: doc.invoiceNumber,
-        marketCode: doc.marketCode,
-        invoiceKey: doc.invoiceKey,
-        invoiceDate: doc.invoiceDate,
-        contractNo: doc.contractNo,
-        contractDate: doc.contractDate,
-        hmOrderNo: doc.hmOrderNo,
-        expNo: doc.expNo,
-        expDate: doc.expDate,
-        portOfLoading: doc.portOfLoading,
-        portOfDelivery: doc.portOfDelivery,
-        countryOfOrigin: doc.countryOfOrigin,
-        countryOfFinalDestination: doc.countryOfFinalDestination,
-        exporterName: doc.exporterName,
-        buyerName: doc.buyerName,
-        consigneeName: doc.consigneeName,
-        cargoDeliveryName: doc.cargoDeliveryName,
-        currency: doc.currency,
-        totalQty: doc.totalQty,
-        totalValue: doc.totalValue,
-        lineItemsJson: JSON.stringify(doc.lineItems),
-        status: "draft",
-        message: doc.issues.map((i) => i.code).join("; "),
-      },
-    });
-  }
-
-  const seen = new Set<string>();
-  let reviewTicketCount = 0;
-  for (const issue of doc.issues) {
-    const key = issue.code + issue.message;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    await prisma.reviewTicket.create({
-      data: {
-        jobId: job.id,
-        module: MODULE,
-        reasonCode: issue.code,
-        reason: `${issue.field}: ${issue.message}`,
-        contextJson: JSON.stringify({ severity: issue.severity }),
-      },
-    });
-    reviewTicketCount++;
-  }
-
-  await prisma.jobStageEvent.create({
-    data: {
-      jobId: job.id,
-      stage: "reconciled",
-      status: doc.success ? "ok" : "failed",
-      message: doc.success ? `Invoice drafted; total ${doc.currency} ${doc.totalValue}` : "Hard failure(s); routed to review",
-    },
-  });
-
-  await prisma.job.update({ where: { id: job.id }, data: { status } });
-  await audit({ entityType: "job", entityId: job.id, action: "customs-invoice.built", actor, data: { invoiceKey: doc.invoiceKey, status, totalValue: doc.totalValue } });
-
-  return {
-    jobId: job.id,
-    invoiceKey: doc.invoiceKey,
-    duplicate: false,
-    status,
-    totalQty: doc.totalQty,
-    totalValue: doc.totalValue,
-    reviewTicketCount,
-  };
 }

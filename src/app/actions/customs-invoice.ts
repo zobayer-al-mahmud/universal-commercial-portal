@@ -3,51 +3,84 @@
 import { revalidatePath } from "next/cache";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { parseLineItems } from "@/server/customs-invoice/build";
-import { intakeCustomsInvoice, type CustomsInvoiceIntakeResult } from "@/server/customs-invoice/intake";
+import { createInvoiceForOrder, deleteInvoice, updateInvoiceFields } from "@/server/customs-invoice/intake";
+import { INVOICE_FLOAT_FIELDS, INVOICE_INT_FIELDS, INVOICE_STRING_FIELDS, type InvoiceFields } from "@/server/customs-invoice/types";
 
-export interface CustomsInvoiceActionState {
+export interface CustomsInvoiceCreateState {
   error?: string;
-  result?: CustomsInvoiceIntakeResult;
+  invoiceId?: string;
+  duplicate?: boolean;
 }
 
-export async function customsInvoiceAction(
-  _prev: CustomsInvoiceActionState,
+export async function createInvoiceAction(
+  _prev: CustomsInvoiceCreateState,
   formData: FormData,
-): Promise<CustomsInvoiceActionState> {
+): Promise<CustomsInvoiceCreateState> {
   const user = await getSessionUser();
   if (!user) return { error: "Not authenticated." };
   if (!userHasPermission(user, PERMISSIONS.JOB_CREATE))
-    return { error: "You do not have permission to create jobs." };
+    return { error: "You do not have permission to create invoices." };
 
-  const g = (k: string) => String(formData.get(k) ?? "").trim();
-  const lineItems = parseLineItems(g("lineItems"));
-  if (lineItems.length === 0) return { error: "Add at least one line item (description|hsCode|qty|unitPrice)." };
+  const orderNo = String(formData.get("orderNo") ?? "").trim();
+  if (!orderNo) return { error: "Order No is required." };
 
   try {
-    const result = await intakeCustomsInvoice(
-      {
-        invoiceNumber: g("invoiceNumber"),
-        marketCode: g("marketCode"),
-        invoiceDate: g("invoiceDate"),
-        contractNo: g("contractNo"),
-        contractDate: g("contractDate"),
-        hmOrderNo: g("hmOrderNo"),
-        expNo: g("expNo"),
-        expDate: g("expDate"),
-        portOfLoading: g("portOfLoading"),
-        portOfDelivery: g("portOfDelivery"),
-        countryOfOrigin: g("countryOfOrigin"),
-        countryOfFinalDestination: g("countryOfFinalDestination"),
-        lineItems,
-      },
-      { actor: user.email },
-    );
-    revalidatePath("/modules/customs-invoice");
-    revalidatePath("/jobs");
-    revalidatePath("/dashboard");
-    return { result };
+    const r = await createInvoiceForOrder(orderNo, { actor: user.email });
+    revalidatePath("/customs-invoice");
+    revalidatePath(`/customs-invoice/${r.invoiceId}`);
+    return { invoiceId: r.invoiceId, duplicate: r.duplicate };
   } catch (e) {
-    return { error: e instanceof Error ? e.message : "Invoice build failed." };
+    return { error: e instanceof Error ? e.message : "Create failed." };
   }
+}
+
+export interface CustomsInvoiceEditState {
+  error?: string;
+  updated?: number;
+}
+
+export async function updateInvoiceAction(
+  _prev: CustomsInvoiceEditState,
+  formData: FormData,
+): Promise<CustomsInvoiceEditState> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE))
+    return { error: "You do not have permission to edit invoices." };
+
+  const invoiceId = String(formData.get("invoiceId") ?? "").trim();
+  if (!invoiceId) return { error: "Invoice id is required." };
+
+  const patch: Record<string, unknown> = {};
+  for (const key of INVOICE_STRING_FIELDS) {
+    const v = formData.get(key);
+    if (v != null) patch[key] = String(v);
+  }
+  for (const key of INVOICE_INT_FIELDS) {
+    const v = formData.get(key);
+    if (v != null) patch[key] = v === "" ? null : Number.parseInt(String(v).replace(/[^\d-]/g, ""), 10);
+  }
+  for (const key of INVOICE_FLOAT_FIELDS) {
+    const v = formData.get(key);
+    if (v != null) patch[key] = v === "" ? null : Number.parseFloat(String(v).replace(/[^\d.-]/g, ""));
+  }
+
+  try {
+    const r = await updateInvoiceFields(invoiceId, patch as Partial<InvoiceFields>, { actor: user.email, source: "user" });
+    revalidatePath(`/customs-invoice/${invoiceId}`);
+    revalidatePath("/customs-invoice");
+    return { updated: r.updated };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Save failed." };
+  }
+}
+
+export async function deleteInvoiceAction(formData: FormData): Promise<void> {
+  const user = await getSessionUser();
+  if (!user) return;
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return;
+  const invoiceId = String(formData.get("invoiceId") ?? "").trim();
+  if (!invoiceId) return;
+  try { await deleteInvoice(invoiceId, { actor: user.email }); } catch { /* ignore */ }
+  revalidatePath("/customs-invoice");
 }

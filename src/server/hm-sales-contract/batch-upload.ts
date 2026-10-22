@@ -30,6 +30,7 @@ import {
   type HmPdfKind,
   type HmTemplateRow,
 } from ".";
+import { extractCountryCodes } from "./intake";
 
 export const MAX_PDFS_PER_BATCH = 3;
 
@@ -113,37 +114,35 @@ export function groupByOrderNo<T extends { orderNo: string }>(parsed: T[]): Map<
   return groups;
 }
 
-/** Pure conflict detection: compare the previously-stored rows for a PO with
- * the newly-generated rows. The comparison is per market code; a differing
- * value on any numeric or identity field is a conflict the user must review. */
+/** Pure conflict detection: compare the previously-stored row for a PO with
+ * the newly-generated row. The mapper now returns exactly one row per PO, so
+ * the comparison is a straight field-by-field check on that single row; any
+ * differing value is a conflict the user must review. */
 export function detectRowConflicts(
   prev: HmTemplateRow[],
   next: HmTemplateRow[],
 ): { hasConflict: boolean; fields: string[] } {
   if (!prev.length) return { hasConflict: false, fields: [] };
-  const byMarketPrev = new Map(prev.map((r) => [r.marketCode, r]));
-  const byMarketNext = new Map(next.map((r) => [r.marketCode, r]));
+  const prevRow = prev[0];
+  const nextRow = next[0];
   const fields: string[] = [];
-  for (const [market, nextRow] of byMarketNext) {
-    const prevRow = byMarketPrev.get(market);
-    if (!prevRow) continue; // new market is additive, not a conflict
-    const checks: [string, unknown, unknown][] = [
-      [`${market}.orderQty`, prevRow.orderQty, nextRow.orderQty],
-      [`${market}.fob`, prevRow.fob, nextRow.fob],
-      [`${market}.marketQuantity`, prevRow.marketQuantity, nextRow.marketQuantity],
-      [`${market}.tod`, prevRow.tod, nextRow.tod],
-      [`${market}.country`, prevRow.country, nextRow.country],
-      [`${market}.styleNo`, prevRow.styleNo, nextRow.styleNo],
-    ];
-    for (const [field, a, b] of checks) {
-      if (a === null && b === null) continue;
-      if (a !== b) fields.push(`${field} (was ${JSON.stringify(a)}, now ${JSON.stringify(b)})`);
-    }
+  if (!nextRow) {
+    // The new upload produced no row (e.g. match failed) where there was one.
+    return { hasConflict: true, fields: ["row_missing_in_new_upload"] };
   }
-  // Markets that WERE in prev but are missing from next are also a conflict
-  // (the new upload would silently drop them if we overwrote).
-  for (const market of byMarketPrev.keys()) {
-    if (!byMarketNext.has(market)) fields.push(`${market}.row_missing_in_new_upload`);
+  const checks: [string, unknown, unknown][] = [
+    ["orderQty", prevRow.orderQty, nextRow.orderQty],
+    ["fob", prevRow.fob, nextRow.fob],
+    ["marketQuantity", prevRow.marketQuantity, nextRow.marketQuantity],
+    ["tod", prevRow.tod, nextRow.tod],
+    ["country", prevRow.country, nextRow.country],
+    ["styleNo", prevRow.styleNo, nextRow.styleNo],
+    ["itemDes", prevRow.itemDes, nextRow.itemDes],
+    ["marketCode", prevRow.marketCode, nextRow.marketCode],
+  ];
+  for (const [field, a, b] of checks) {
+    if (a === null && b === null) continue;
+    if (a !== b) fields.push(`${field} (was ${JSON.stringify(a)}, now ${JSON.stringify(b)})`);
   }
   return { hasConflict: fields.length > 0, fields };
 }
@@ -348,6 +347,7 @@ export async function uploadHmBatch(
         sizeJson: JSON.stringify(sizeExtract),
         countryJson: JSON.stringify(countryExtract),
         rowsJson: conflict.hasConflict ? po.rowsJson : JSON.stringify(result.rows),
+        countryCodesJson: JSON.stringify(extractCountryCodes(countryExtract, poExtract)),
         warning: reasons[0] ?? "",
         processedAt: new Date(),
       },

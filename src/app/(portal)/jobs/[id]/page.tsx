@@ -6,8 +6,6 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { confirmContractAction } from "@/app/actions/handoffs";
 import { RenameApply } from "@/components/RenameApply";
-import { ScheduleLineEditor } from "@/components/ScheduleLineEditor";
-import { setScheduleLineStateAction } from "@/app/actions/shipment-schedule-edit";
 
 export const dynamic = "force-dynamic";
 
@@ -21,16 +19,12 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       contractRows: true,
       reviewTickets: true,
       renameItems: { orderBy: { createdAt: "asc" } },
-      scheduleLines: { orderBy: { createdAt: "asc" }, include: { edits: { orderBy: { createdAt: "desc" } } } },
-      customsInvoices: true,
       bookingCorrections: true,
     },
   });
   if (!job) notFound();
 
   const user = await getSessionUser();
-  const canEditSchedule = userHasPermission(user, PERMISSIONS.SCHEDULE_EDIT);
-  const canApproveSchedule = userHasPermission(user, PERMISSIONS.SCHEDULE_APPROVE);
   const openReviewCount = job.reviewTickets.filter((t) => t.status === "open").length;
   const canConfirm =
     job.module === "sales-contract" &&
@@ -58,8 +52,7 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
       />
       {job.module === "sales-contract" && job.status === "confirmed" ? (
         <div className="mb-4 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-          Contract confirmed. Its orders are available in the{" "}
-          <Link href="/modules/shipment-schedule" className="font-medium underline">Shipment Schedule</Link> module.
+          Contract confirmed.
         </div>
       ) : null}
 
@@ -174,157 +167,6 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
           </table>
         </section>
       ) : null}
-
-      {job.scheduleLines.length > 0 ? (
-        <section className="card mt-6 overflow-x-auto">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-            <span className="text-sm font-semibold text-slate-700">
-              Week {job.scheduleLines[0].weekNo} schedule ({job.scheduleLines.length} lines · cut-offs {job.scheduleLines[0].firstCutOff} / {job.scheduleLines[0].secondCutOff})
-            </span>
-            <a href={`/api/export/schedule/${job.id}`} className="btn-ghost text-xs">⬇ Download .xlsx</a>
-          </div>
-          {canEditSchedule ? (
-            <p className="px-4 py-2 text-xs text-slate-400">
-              In-portal editing is enabled for your role. Edits are field-level validated, recorded with the editor,
-              timestamp and reason, and never alter the source PDF. PCS/FOB edits recompute the line value.
-            </p>
-          ) : null}
-          <table className="w-full">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="th">Buyer</th><th className="th">Order No</th><th className="th">Style</th>
-                <th className="th">PCS</th><th className="th">FOB</th><th className="th">Value</th>
-                <th className="th">Market</th><th className="th">Invoice</th><th className="th">Cut-off</th>
-                <th className="th">Edit state</th>{(canEditSchedule || canApproveSchedule) ? <th className="th">Edit</th> : null}
-              </tr>
-            </thead>
-            <tbody>
-              {job.scheduleLines.map((l) => (
-                <tr key={l.id} className="border-t border-slate-50 align-top">
-                  <td className="td text-xs">{l.buyerCode}</td>
-                  <td className="td font-mono text-xs">{l.orderNo}</td>
-                  <td className="td text-xs">{l.style}</td>
-                  <td className="td">{l.pcs}</td>
-                  <td className="td">{l.fob}</td>
-                  <td className="td">{l.value}</td>
-                  <td className="td font-mono text-xs">{l.marketCode}</td>
-                  <td className="td font-mono text-xs">{l.invoiceNo || "—"}</td>
-                  <td className="td text-xs">{l.cutOff}</td>
-                  <td className="td">
-                    <span className={`badge ${
-                      l.editState === "approved" ? "bg-green-100 text-green-800"
-                      : l.editState === "submitted" ? "bg-sky-100 text-sky-800"
-                      : l.editState === "edited" ? "bg-amber-100 text-amber-800"
-                      : "bg-slate-100 text-slate-600"}`}>{l.editState}</span>
-                    {l.editedBy ? <div className="text-[10px] text-slate-400">{l.editedBy}</div> : null}
-                  </td>
-                  {(canEditSchedule || canApproveSchedule) ? (
-                    <td className="td">
-                      <div className="space-y-1">
-                        {canEditSchedule && l.editState !== "approved" ? (
-                          <ScheduleLineEditor
-                            lineId={l.id}
-                            current={{
-                              pcs: String(l.pcs), fob: String(l.fob), style: l.style, composition: l.composition,
-                              incoterm: l.incoterm, transport: l.transport, marketCode: l.marketCode,
-                              invoiceNo: l.invoiceNo, cutOff: l.cutOff, firstCutOff: l.firstCutOff, secondCutOff: l.secondCutOff,
-                            }}
-                          />
-                        ) : null}
-                        <div className="flex gap-2">
-                          {canEditSchedule && l.editState === "edited" ? (
-                            <form action={setScheduleLineStateAction}>
-                              <input type="hidden" name="lineId" value={l.id} />
-                              <input type="hidden" name="target" value="submitted" />
-                              <button className="text-xs text-sky-700 hover:underline">Submit</button>
-                            </form>
-                          ) : null}
-                          {canApproveSchedule && l.editState === "submitted" ? (
-                            <form action={setScheduleLineStateAction}>
-                              <input type="hidden" name="lineId" value={l.id} />
-                              <input type="hidden" name="target" value="approved" />
-                              <button className="text-xs text-green-700 hover:underline">Approve</button>
-                            </form>
-                          ) : null}
-                          {canApproveSchedule && l.editState === "approved" ? (
-                            <form action={setScheduleLineStateAction}>
-                              <input type="hidden" name="lineId" value={l.id} />
-                              <input type="hidden" name="target" value="edited" />
-                              <button className="text-xs text-slate-500 hover:underline">Reopen</button>
-                            </form>
-                          ) : null}
-                        </div>
-                        {l.edits.length > 0 ? (
-                          <details>
-                            <summary className="cursor-pointer text-[10px] text-slate-400">History ({l.edits.length})</summary>
-                            <ul className="mt-1 space-y-0.5 text-[10px] text-slate-500">
-                              {l.edits.map((e) => (
-                                <li key={e.id}>
-                                  <span className="font-mono">{e.field}</span>: {e.oldValue || "∅"} → {e.newValue || "∅"}
-                                  <span className="text-slate-400"> · {e.editor} · {e.reason}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        ) : null}
-                      </div>
-                    </td>
-                  ) : null}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
-
-      {job.customsInvoices.map((inv) => {
-        let items: { description: string; hsCode: string; quantity: number; unitPrice: number; amount: number }[] = [];
-        try { items = JSON.parse(inv.lineItemsJson); } catch { /* ignore */ }
-        return (
-          <section key={inv.id} className="card mt-6 p-5">
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-700">Customs Invoice {inv.invoiceKey}</h3>
-              <div className="flex items-center gap-2">
-                <a href={`/api/export/customs-invoice/${job.id}`} className="btn-ghost text-xs">⬇ Download .xlsx</a>
-                <span className="badge bg-amber-100 text-amber-800">draft document</span>
-              </div>
-            </div>
-            <div className="grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-3">
-              <div><div className="font-medium text-slate-500">Exporter</div>{inv.exporterName}</div>
-              <div><div className="font-medium text-slate-500">Buyer</div>{inv.buyerName}</div>
-              <div><div className="font-medium text-slate-500">Cargo delivery ({inv.marketCode})</div>{inv.cargoDeliveryName || "— (pending, see review)"}</div>
-              <div><div className="font-medium text-slate-500">Contract No. / Date</div>{inv.contractNo} · {inv.contractDate}</div>
-              <div><div className="font-medium text-slate-500">H&M Order No.</div>{inv.hmOrderNo}</div>
-              <div><div className="font-medium text-slate-500">Exp No. / Date</div>{inv.expNo} · {inv.expDate}</div>
-              <div><div className="font-medium text-slate-500">Invoice Date</div>{inv.invoiceDate}</div>
-              <div><div className="font-medium text-slate-500">Port of Loading → Delivery</div>{inv.portOfLoading} → {inv.portOfDelivery}</div>
-              <div><div className="font-medium text-slate-500">Origin → Destination</div>{inv.countryOfOrigin} → {inv.countryOfFinalDestination}</div>
-            </div>
-            <table className="mt-4 w-full">
-              <thead className="bg-slate-50">
-                <tr><th className="th">Description</th><th className="th">HS Code</th><th className="th">Qty</th><th className="th">Unit Price</th><th className="th">Amount</th></tr>
-              </thead>
-              <tbody>
-                {items.map((li, i) => (
-                  <tr key={i} className="border-t border-slate-50">
-                    <td className="td">{li.description}</td>
-                    <td className="td font-mono text-xs">{li.hsCode}</td>
-                    <td className="td">{li.quantity}</td>
-                    <td className="td">{li.unitPrice}</td>
-                    <td className="td">{li.amount}</td>
-                  </tr>
-                ))}
-                <tr className="border-t border-slate-200 font-semibold">
-                  <td className="td" colSpan={2}>Total</td>
-                  <td className="td">{inv.totalQty}</td>
-                  <td className="td"></td>
-                  <td className="td">{inv.currency} {inv.totalValue}</td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-        );
-      })}
 
       {job.bookingCorrections.map((bc) => {
         let changes: { field: string; label: string; oldValue: string; newValue: string; allowed: boolean }[] = [];

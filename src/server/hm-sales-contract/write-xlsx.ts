@@ -1,24 +1,30 @@
-import { copyFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import ExcelJS from "exceljs";
 import type { HmSetResult, HmTemplateRow } from "./types";
 
 /**
- * Append rows for one Sales Contract to the user's workbook, writing to a NEW
- * file (the original template is NEVER modified — user spec §7).
+ * Build a FRESH Sales Contract master Excel from scratch, containing ONLY the
+ * data extracted from the uploaded PDFs for this contract. No template is
+ * inherited — the user explicitly rejected appending to a template that already
+ * holds historical rows (2026-10-20 follow-up).
  *
- * The destination sheet is `H&M`. We locate the first truly empty row at the
- * bottom of its existing data (the live sheet already holds ~12 000 rows) and
- * append from there. Headers are preserved.
+ * Layout (one worksheet named "Sales Contract", mirrors the user's prototype):
+ *   Row 1 : (reserved for a company logo cell — plain text "PULS TRADING" for now)
+ *   Row 3 : "Block Contract Ref:  : <marchentContNo>"            Date: <contractDate>
+ *   Row 5 : "Revise: <N>"                                        Date: <latest update>
+ *   Row 7 : Column headers (blue, bold)
+ *   Row 8+: ONE row per PO with every field pulled from the PDFs — missing
+ *           values stay blank. Column headers never contain field names or
+ *           missing values (template-safe). The exported .xlsx remains editable
+ *           in Excel: no fields are locked.
  */
 export interface HmWriteOptions {
-  /** Path to the user's untouched template workbook. */
-  templatePath: string;
+  /** Optional — ignored by the new writer, kept so existing callers compile. */
+  templatePath?: string;
   /** Path the new workbook will be written to. */
   outputPath: string;
-  /** Sales Contract-level header values that the user has set in the UI. These
-   *  populate the A/B/C/D/E/P/Q/S cells for every row in the contract. Each is
-   *  OPTIONAL; omitted fields stay blank. */
+  /** Sales Contract-level fields the user has set in the UI. */
   header?: {
     marchentContNo?: string;
     date?: string | Date;
@@ -28,37 +34,41 @@ export interface HmWriteOptions {
     merchandiserName?: string;
     packSet?: string | number;
     remarksDefault?: string;
+    reviseNo?: string | number;
   };
   /** All PO sets that belong under this Sales Contract. Blocked sets are
-   *  skipped — their rows are not appended. */
+   *  skipped — their rows are not written. */
   sets: HmSetResult[];
-  /** User-edited row overrides, keyed by `${orderNo}:${marketCode}`. Any cell
-   *  override replaces the extracted value for that row/column. */
+  /** User-edited row overrides, keyed by orderNo. Any cell override replaces
+   *  the extracted value for that PO's row. */
   overrides?: Record<string, Partial<HmFlatCells>>;
 }
 
 export interface HmFlatCells {
-  marchentContNo: string;      // A
-  date: string | Date | null;   // B
-  buyerCode: string;            // C
-  commercialContNo: string;     // D
-  dateCommercial: string | Date | null; // E
-  orderNo: string;              // F
-  orderQty: number | null;      // G
-  styleNo: string;              // H
-  fob: number | null;           // I
-  itemDes: string;              // J
-  cat: string;                  // K
-  hts: string;                  // L
-  // M (CONTRACT VALUE) is a formula on anchor rows
-  tod: string;                  // N
-  country: string;              // O
-  remarks: string;              // P
-  merchandiserName: string;     // Q
-  // R (pack/set Qty) is a formula on anchor rows
-  packSet: string | number | null; // S
-  withoutDiscount: string;      // T
-  discountFobDate: string;      // U
+  marchentContNo: string;
+  date: string | Date | null;
+  buyerCode: string;
+  commercialContNo: string;
+  dateCommercial: string | Date | null;
+  orderNo: string;
+  orderQty: number | null;
+  styleNo: string;
+  fob: number | null;
+  itemDes: string;
+  cat: string;
+  hts: string;
+  tod: string;
+  country: string;
+  remarks: string;
+  merchandiserName: string;
+  packSet: string | number | null;
+  withoutDiscount: string;
+  discountFobDate: string;
+  // User-editable overrides for the two calculated Excel columns. When
+  // present, they REPLACE the Order Qty × packSet / Order Qty × FOB
+  // calculation on export — the user's typed value wins.
+  totalWithPacks: number | null;
+  value: number | null;
 }
 
 export interface HmWriteResult {
@@ -69,25 +79,66 @@ export interface HmWriteResult {
   blockedSets: { orderNo: string; reasons: string[] }[];
 }
 
-const SHEET_NAME = "H&M";
+const SHEET_NAME = "Sales Contract";
+const BLUE = "FF0000FF";
+// User spec (2026-10-20 revision): a small banner at the top holds the two
+// fields the user types manually in the UI — Block Contract Ref + Revise.
+// They are NEVER sourced from a PDF; a blank UI value → a blank banner line.
+// Column headers follow at row 5, data rows start at row 6.
+const BANNER_REF_ROW = 1;
+const BANNER_REVISE_ROW = 3;
+const HEADER_ROW = 5;
+const DATA_START_ROW = 6;
+
+const COLUMNS: { header: string; width: number; alignment?: Partial<ExcelJS.Alignment> }[] = [
+  { header: "Order No.", width: 14, alignment: { horizontal: "left" } },
+  { header: "Style No.", width: 22, alignment: { horizontal: "left" } },
+  { header: "Description", width: 40, alignment: { horizontal: "left" } },
+  { header: "Order Qty", width: 11, alignment: { horizontal: "right" } },
+  { header: "Total Qty With Packs", width: 13, alignment: { horizontal: "right" } },
+  { header: "Unit Price", width: 11, alignment: { horizontal: "right" } },
+  { header: "Value", width: 14, alignment: { horizontal: "right" } },
+  { header: "Time of Delivery", width: 22, alignment: { horizontal: "left", wrapText: true, vertical: "top" } },
+];
 
 export async function writeSalesContractWorkbook(opts: HmWriteOptions): Promise<HmWriteResult> {
-  // Never overwrite the original template.
   await mkdir(dirname(opts.outputPath), { recursive: true });
-  if (opts.outputPath !== opts.templatePath) {
-    await copyFile(opts.templatePath, opts.outputPath);
-  }
 
   const wb = new ExcelJS.Workbook();
-  await wb.xlsx.readFile(opts.outputPath);
-  const sheet = wb.getWorksheet(SHEET_NAME);
-  if (!sheet) throw new Error(`Workbook has no "${SHEET_NAME}" worksheet.`);
+  const sheet = wb.addWorksheet(SHEET_NAME);
+  COLUMNS.forEach((c, i) => { sheet.getColumn(i + 1).width = c.width; });
 
-  // First empty row below the current data.
-  const firstEmpty = findFirstEmptyRow(sheet);
-  let rowIdx = firstEmpty;
+  // --- Banner (user-typed only; blank fields → the whole banner line stays blank) ---
+  const ref = safeStr(opts.header?.marchentContNo);
+  if (ref) {
+    const refCell = sheet.getCell(BANNER_REF_ROW, 1);
+    refCell.value = `Block Contract Ref:  : ${ref}`;
+    refCell.font = { bold: true, color: { argb: BLUE } };
+  }
+  const rev = safeStr(opts.header?.reviseNo);
+  if (rev) {
+    const revCell = sheet.getCell(BANNER_REVISE_ROW, 1);
+    revCell.value = `Revise: ${rev}`;
+    revCell.font = { bold: true, color: { argb: BLUE } };
+  }
+
+  // --- Column header row ---
+  const headerRow = sheet.getRow(HEADER_ROW);
+  COLUMNS.forEach((c, i) => {
+    const cell = headerRow.getCell(i + 1);
+    cell.value = c.header;
+    cell.font = { bold: true, color: { argb: BLUE } };
+    cell.alignment = { horizontal: c.alignment?.horizontal ?? "left", vertical: "middle" };
+    cell.border = {
+      top: { style: "thin", color: { argb: "FF000000" } },
+      bottom: { style: "thin", color: { argb: "FF000000" } },
+    };
+  });
+  headerRow.height = 20;
+
+  // --- Data rows: ONE row per PO ---
+  let rowIdx = DATA_START_ROW;
   let appended = 0;
-
   const blocked: HmWriteResult["blockedSets"] = [];
 
   for (const set of opts.sets) {
@@ -96,8 +147,8 @@ export async function writeSalesContractWorkbook(opts: HmWriteOptions): Promise<
       continue;
     }
     for (const r of set.rows) {
-      const cells = applyOverrides(flattenRow(r, opts.header), opts.overrides?.[`${r.orderNo}:${r.marketCode}`]);
-      writeRow(sheet, rowIdx, cells, r.isAnchor);
+      const cells = applyOverrides(flattenRow(r, set, opts.header), opts.overrides?.[r.orderNo]);
+      writeDataRow(sheet, rowIdx, cells);
       rowIdx++;
       appended++;
     }
@@ -107,13 +158,25 @@ export async function writeSalesContractWorkbook(opts: HmWriteOptions): Promise<
   return {
     outputPath: opts.outputPath,
     appendedRows: appended,
-    firstRow: firstEmpty,
+    firstRow: DATA_START_ROW,
     lastRow: rowIdx - 1,
     blockedSets: blocked,
   };
 }
 
-function flattenRow(r: HmTemplateRow, header: HmWriteOptions["header"]): HmFlatCells {
+/** Build the per-row cell payload. Only PDF-sourced fields are used — never
+ * invented. The source for each visible column:
+ *   Style No.   = Product Name  (po.header.productName)
+ *   Description = Customs group + Product description + Type of construction
+ *   Order Qty   = PO total quantity
+ *   Total Qty With Packs = Order Qty × packSet (header, default 1 when blank)
+ *   Unit Price  = Invoice average price
+ *   Value       = Order Qty × Unit Price (written as a live formula)
+ *   Time of Delivery = multi-line, one TOD per market (deduplicated)
+ */
+function flattenRow(r: HmTemplateRow, set: HmSetResult, header: HmWriteOptions["header"]): HmFlatCells {
+  const productName = set.po?.header.productName ?? "";
+  const description = r.itemDes;
   return {
     marchentContNo: header?.marchentContNo ?? "",
     date: header?.date ?? null,
@@ -122,9 +185,9 @@ function flattenRow(r: HmTemplateRow, header: HmWriteOptions["header"]): HmFlatC
     dateCommercial: header?.dateCommercial ?? null,
     orderNo: r.orderNo,
     orderQty: r.orderQty,
-    styleNo: r.styleNo,
+    styleNo: productName,            // Style No. column — product name from the PO
     fob: r.fob,
-    itemDes: r.itemDes,
+    itemDes: description,            // Description column
     cat: "",
     hts: "",
     tod: r.tod,
@@ -134,6 +197,9 @@ function flattenRow(r: HmTemplateRow, header: HmWriteOptions["header"]): HmFlatC
     packSet: header?.packSet ?? "",
     withoutDiscount: "",
     discountFobDate: "",
+    // Calculated-by-default; a user override will replace these on write.
+    totalWithPacks: null,
+    value: null,
   };
 }
 
@@ -142,50 +208,53 @@ function applyOverrides(cells: HmFlatCells, overrides?: Partial<HmFlatCells>): H
   return { ...cells, ...overrides };
 }
 
-function writeRow(sheet: ExcelJS.Worksheet, rowIdx: number, c: HmFlatCells, isAnchor: boolean): void {
+function writeDataRow(sheet: ExcelJS.Worksheet, rowIdx: number, c: HmFlatCells): void {
   const row = sheet.getRow(rowIdx);
-  row.getCell(1).value = c.marchentContNo;                            // A
-  row.getCell(2).value = c.date ?? "";                                 // B
-  row.getCell(3).value = c.buyerCode;                                  // C
-  row.getCell(4).value = c.commercialContNo;                           // D
-  row.getCell(5).value = c.dateCommercial ?? "";                       // E
-  row.getCell(6).value = c.orderNo;                                    // F
-  if (c.orderQty !== null) row.getCell(7).value = c.orderQty;          // G
-  row.getCell(8).value = c.styleNo;                                    // H
-  if (c.fob !== null) row.getCell(9).value = c.fob;                    // I
-  row.getCell(10).value = c.itemDes;                                   // J
-  row.getCell(11).value = c.cat;                                       // K
-  row.getCell(12).value = c.hts;                                       // L
-  if (isAnchor) {
-    row.getCell(13).value = { formula: `G${rowIdx}*I${rowIdx}` };      // M — anchor only
+  const packSetN = Number(c.packSet);
+  const packs = Number.isFinite(packSetN) && packSetN > 0 ? packSetN : 1;
+
+  row.getCell(1).value = safeStr(c.orderNo);                              // A — Order No.
+  row.getCell(2).value = safeStr(c.styleNo);                              // B — Style No.
+  row.getCell(3).value = safeStr(c.itemDes);                              // C — Description
+  if (c.orderQty !== null && c.orderQty !== undefined) {
+    row.getCell(4).value = c.orderQty;                                    // D — Order Qty
   }
-  row.getCell(14).value = c.tod;                                       // N
-  row.getCell(15).value = c.country;                                   // O
-  row.getCell(16).value = c.remarks;                                   // P
-  row.getCell(17).value = c.merchandiserName;                          // Q
-  if (isAnchor) {
-    row.getCell(18).value = { formula: `S${rowIdx}*G${rowIdx}` };      // R — anchor only
+  // E — Total Qty With Packs: user override wins; otherwise orderQty × packs.
+  if (c.totalWithPacks !== null && c.totalWithPacks !== undefined) {
+    row.getCell(5).value = c.totalWithPacks;
+  } else if (c.orderQty !== null && c.orderQty !== undefined) {
+    row.getCell(5).value = c.orderQty * packs;
   }
-  row.getCell(19).value = c.packSet ?? "";                             // S
-  row.getCell(20).value = c.withoutDiscount;                           // T
-  row.getCell(21).value = c.discountFobDate;                           // U
+  if (c.fob !== null && c.fob !== undefined) {
+    row.getCell(6).value = c.fob;                                         // F — Unit Price
+    row.getCell(6).numFmt = '"USD "#,##0.00';
+  }
+  // G — Value: user override wins; otherwise live formula =D×F.
+  if (c.value !== null && c.value !== undefined) {
+    row.getCell(7).value = c.value;
+    row.getCell(7).numFmt = '"USD "#,##0.00';
+  } else if (c.orderQty !== null && c.orderQty !== undefined && c.fob !== null && c.fob !== undefined) {
+    row.getCell(7).value = { formula: `D${rowIdx}*F${rowIdx}` };
+    row.getCell(7).numFmt = '"USD "#,##0.00';
+  }
+  row.getCell(8).value = safeStr(c.tod);                                  // H — Time of Delivery
+  row.getCell(8).alignment = { ...(row.getCell(8).alignment ?? {}), wrapText: true, vertical: "top" };
+
+  // Match the prototype's blue bold data style and thin bottom border.
+  for (let col = 1; col <= COLUMNS.length; col++) {
+    const cell = row.getCell(col);
+    cell.font = { bold: true, color: { argb: BLUE } };
+    cell.border = { bottom: { style: "thin", color: { argb: "FF000000" } } };
+    const align = COLUMNS[col - 1].alignment;
+    cell.alignment = { ...(cell.alignment ?? {}), ...(align ?? {}), vertical: "top" };
+  }
   row.commit();
 }
 
-/** First row whose A..U are all empty, searching downward from row 2. The live
- *  H&M sheet already holds ~12 000 rows, so we scan the actual used range. */
-function findFirstEmptyRow(sheet: ExcelJS.Worksheet): number {
-  const last = sheet.actualRowCount;
-  for (let r = Math.max(2, last + 1); r <= last + 1; r++) {
-    if (isRowEmpty(sheet, r)) return r;
-  }
-  return last + 1;
-}
-
-function isRowEmpty(sheet: ExcelJS.Worksheet, r: number): boolean {
-  for (let c = 1; c <= 21; c++) {
-    const v = sheet.getRow(r).getCell(c).value;
-    if (v !== null && v !== undefined && v !== "") return false;
-  }
-  return true;
+/** `""` for null/undefined; refuses to persist the literal strings
+ * "null"/"undefined" into a cell (template-safe per user spec). */
+function safeStr(v: unknown): string {
+  if (v === null || v === undefined) return "";
+  const s = String(v);
+  return s === "null" || s === "undefined" ? "" : s;
 }

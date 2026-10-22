@@ -14,6 +14,7 @@ export const PERMISSIONS = {
   SCHEDULE_APPROVE: "schedule.approve",
   BOOKING_REVIEW: "booking.review",
   BOOKING_EXPORT: "booking.export",
+  PDF_COMBINE: "pdf.combine",
   REVIEW_READ: "review.read",
   REVIEW_RESOLVE: "review.resolve",
   CONTRACT_APPROVE: "contract.approve",
@@ -35,6 +36,7 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   [PERMISSIONS.SCHEDULE_APPROVE]: "Submit / approve edited shipment schedule lines",
   [PERMISSIONS.BOOKING_REVIEW]: "Review / correct extracted booking values",
   [PERMISSIONS.BOOKING_EXPORT]: "Download booking PDFs, originals, and batch ZIPs",
+  [PERMISSIONS.PDF_COMBINE]: "Run the PDF Combiner and download combined PDFs",
   [PERMISSIONS.REVIEW_READ]: "View the review queue",
   [PERMISSIONS.REVIEW_RESOLVE]: "Resolve / reject review tickets",
   [PERMISSIONS.CONTRACT_APPROVE]: "Approve a draft Sales Contract for submission",
@@ -60,6 +62,7 @@ export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
     PERMISSIONS.SCHEDULE_APPROVE,
     PERMISSIONS.BOOKING_REVIEW,
     PERMISSIONS.BOOKING_EXPORT,
+    PERMISSIONS.PDF_COMBINE,
     PERMISSIONS.AUDIT_READ,
   ],
   MERCHANDISER: [

@@ -22,12 +22,6 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
 
   const contract = await prisma.hmSalesContract.findUnique({ where: { id: params.id } });
   if (!contract) return NextResponse.json({ error: "Contract not found." }, { status: 404 });
-  const templatePath = env.HM_SALES_CONTRACT_TEMPLATE_PATH;
-  if (!templatePath) {
-    return NextResponse.json({
-      error: "HM_SALES_CONTRACT_TEMPLATE_PATH not configured — set it in .env to the path of the user's Sales Contract workbook.",
-    }, { status: 400 });
-  }
 
   const sets = await loadContractSets(contract.id);
   if (sets.length === 0) return NextResponse.json({ error: "No PO sets uploaded yet." }, { status: 400 });
@@ -38,8 +32,10 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
   const outputPath = join(outDir, `SalesContract_${safeRef}_${stamp}.xlsx`);
 
   const overrides = await buildOverridesForContract(contract.id);
+  // The writer builds a FRESH workbook per contract (prototype-matching layout)
+  // — no template inheritance, so historical rows from the user's old template
+  // are never mixed in with the uploaded PDFs' data.
   const result = await writeSalesContractWorkbook({
-    templatePath,
     outputPath,
     header: {
       marchentContNo: contract.marchentContNo || undefined,
@@ -50,6 +46,7 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
       merchandiserName: contract.merchandiserName || undefined,
       packSet: contract.packSet || undefined,
       remarksDefault: contract.remarksDefault || undefined,
+      reviseNo: contract.reviseNo || undefined,
     },
     sets: sets as never,
     overrides,

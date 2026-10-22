@@ -3,17 +3,13 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge, Empty } from "@/components/ui";
 import { MODULE_CATALOG } from "@/server/modules/catalog";
-import { IntakeForm } from "@/components/IntakeForm";
 import { RenameForm } from "@/components/RenameForm";
-import { ScheduleForm } from "@/components/ScheduleForm";
-import { CustomsInvoiceForm } from "@/components/CustomsInvoiceForm";
 import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
 import { BookingBatchUpload } from "@/components/BookingBatchUpload";
-import { SalesContractBatchUpload } from "@/components/SalesContractBatchUpload";
 import { SalesContractPickBatch, type ExistingContractOption } from "@/components/SalesContractPickBatch";
-import { ScheduleFromContracts } from "@/components/ScheduleFromContracts";
-import { listSchedulableContracts, listInvoiceableScheduleLines } from "@/server/handoffs/service";
-import { generateInvoiceFromLineAction } from "@/app/actions/handoffs";
+import { PdfCombinerForm } from "@/components/PdfCombinerForm";
+import { listRootFolders } from "@/server/pdf-combiner/folders";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +17,146 @@ export default async function ModulePage({ params }: { params: { key: string } }
   const module = await prisma.module.findUnique({ where: { key: params.key } });
   if (!module) notFound();
   const cat = MODULE_CATALOG[module.key];
+
+  // The Sales Contract Creation module renders a dedicated, prototype-driven
+  // layout (contract picker + 3-PDF upload + master Excel list). The generic
+  // catalog cards, legacy intake forms, and "Recent jobs" table are all
+  // suppressed here per the user's spec (2026-10-20).
+  if (module.key === "sales-contract") {
+    const existing = await prisma.hmSalesContract.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 200,
+      include: {
+        _count: { select: { pos: true } },
+        pos: { select: { updatedAt: true }, orderBy: { updatedAt: "desc" }, take: 1 },
+      },
+    });
+    const contracts: ExistingContractOption[] = existing.map((c) => ({
+      id: c.id,
+      marchentContNo: c.marchentContNo,
+      buyerCode: c.buyerCode,
+      poCount: c._count.pos,
+    }));
+    const masterRows = existing.map((c, i) => ({
+      sl: i + 1,
+      id: c.id,
+      ref: c.marchentContNo || c.id.slice(0, 10),
+      filename: `SalesContract_${(c.marchentContNo || c.commercialContNo || c.id.slice(0, 8)).replace(/[^\w.-]+/g, "_")}.xlsx`,
+      poCount: c._count.pos,
+      lastUpdated: (c.pos[0]?.updatedAt ?? c.updatedAt).toISOString().slice(0, 16).replace("T", " "),
+    }));
+    return (
+      <div>
+        <PageHeader
+          title="Sales Contract"
+          subtitle="Upload 3 PDFs, extract data and add to the selected Sales Contract master Excel."
+          actions={<StatusBadge status={module.status} />}
+        />
+        <div className="mb-6">
+          <SalesContractPickBatch contracts={contracts} />
+        </div>
+        <div className="card p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-slate-800">Sales Contract Master Excel List</h3>
+          </div>
+          {masterRows.length === 0 ? (
+            <div className="p-4 text-sm text-slate-400">No Sales Contracts yet — create one above.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="th">SL</th>
+                    <th className="th">Sales Contract No.</th>
+                    <th className="th">Excel File Name</th>
+                    <th className="th">Total PO Rows</th>
+                    <th className="th">Last Updated</th>
+                    <th className="th">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {masterRows.map((m) => (
+                    <tr key={m.id} className="border-t border-slate-100">
+                      <td className="td">{m.sl}</td>
+                      <td className="td font-mono">{m.ref}</td>
+                      <td className="td font-mono text-slate-600">{m.filename}</td>
+                      <td className="td">{m.poCount}</td>
+                      <td className="td text-slate-500">{m.lastUpdated}</td>
+                      <td className="td">
+                        <div className="flex items-center gap-3">
+                          <Link href={`/sales-contract/view/${m.id}`} className="text-xs text-sky-700 hover:underline">👁 View / Edit</Link>
+                          {m.poCount > 0 ? (
+                            <a href={`/api/hm-sales-contract/${m.id}/download`} className="text-xs text-sky-700 hover:underline">⬇ Download</a>
+                          ) : (
+                            <span className="text-xs text-slate-400">No POs yet</span>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (module.key === "pdf-combiner") {
+    let folders: string[] = [];
+    let folderError = "";
+    if (env.PDF_COMBINER_ROOT) {
+      try {
+        folders = (await listRootFolders(env.PDF_COMBINER_ROOT)).map((f) => f.name);
+      } catch (e) {
+        folderError = `Cannot read the server source folder: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+    const runs = await prisma.pdfCombineRun.findMany({ orderBy: { createdAt: "desc" }, take: 15 });
+    return (
+      <div>
+        <PageHeader
+          title="PDF Combiner"
+          subtitle="Upload the master Excel, select the server folders, and Run: every master row becomes one combined PDF of the files it lists."
+          actions={<StatusBadge status={module.status} />}
+        />
+        {folderError ? <div className="mb-4 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{folderError}</div> : null}
+        <div className="mb-6">
+          <PdfCombinerForm folders={folders} maxFolders={env.PDF_COMBINER_MAX_FOLDERS} rootConfigured={Boolean(env.PDF_COMBINER_ROOT)} />
+        </div>
+        <div className="card">
+          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">Recent runs</div>
+          {runs.length === 0 ? (
+            <div className="p-4 text-sm text-slate-400">No runs yet.</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50">
+                <tr>
+                  <th className="th">Run</th><th className="th">Master file</th><th className="th">Folders</th><th className="th">Rows</th>
+                  <th className="th">PDFs</th><th className="th">Failed</th><th className="th">Status</th><th className="th">Created</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => (
+                  <tr key={r.id} className="border-t border-slate-50">
+                    <td className="td font-mono"><Link href={`/pdf-combiner/${r.id}`} className="text-ananta hover:underline">{r.id.slice(0, 8)}</Link></td>
+                    <td className="td">{r.masterFileName}</td>
+                    <td className="td">{(JSON.parse(r.foldersJson) as string[]).length}</td>
+                    <td className="td">{r.totalRows}</td>
+                    <td className="td text-green-700">{r.completedRows}</td>
+                    <td className="td text-rose-700">{r.failedRows}</td>
+                    <td className="td"><StatusBadge status={r.status} /></td>
+                    <td className="td text-slate-400">{r.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   const jobs = await prisma.job.findMany({
     where: { module: module.key },
@@ -71,142 +207,6 @@ export default async function ModulePage({ params }: { params: { key: string } }
         </div>
       ) : null}
 
-      {module.key === "sales-contract" ? (
-        <>
-          {await (async () => {
-            const existing = await prisma.hmSalesContract.findMany({
-              orderBy: { createdAt: "desc" },
-              take: 100,
-              include: {
-                _count: { select: { pos: true } },
-                pos: { select: { updatedAt: true, state: true, orderNo: true }, orderBy: { updatedAt: "desc" }, take: 1 },
-              },
-            });
-            const contracts: ExistingContractOption[] = existing.map((c) => ({
-              id: c.id,
-              marchentContNo: c.marchentContNo,
-              buyerCode: c.buyerCode,
-              poCount: c._count.pos,
-            }));
-            // Pre-compute display-only fields so the JSX stays simple and
-            // SWC does not have to parse any TypeScript-only "typeof x[number]"
-            // helpers inline (which it can mis-parse in server-component files).
-            const masterRows = existing.map((c) => ({
-              id: c.id,
-              ref: c.marchentContNo || c.id.slice(0, 10),
-              buyerCode: c.buyerCode,
-              poCount: c._count.pos,
-              filename: `SalesContract_${(c.marchentContNo || c.commercialContNo || c.id.slice(0, 8)).replace(/[^\w.-]+/g, "_")}_<timestamp>.xlsx`,
-              lastUpdated: (c.pos[0]?.updatedAt ?? c.updatedAt).toISOString().slice(0, 16).replace("T", " "),
-            }));
-            return (
-              <>
-                <div className="mb-6">
-                  <h3 className="mb-1 text-sm font-semibold text-slate-700">① Pick a Sales Contract → upload & process up to 3 PDFs</h3>
-                  <p className="mb-3 text-xs text-slate-400">
-                    Select the target Sales Contract first (or create a new one), then upload up to three PDFs for a PO
-                    (PurchaseOrder / Size per Colour / Total Country breakdown) and click Process. PDFs that share the same
-                    Order No. merge into one row in that contract&apos;s master workbook; different Order Nos. become separate
-                    rows; a re-upload that would change an already-extracted value is flagged for review instead of silently
-                    overwriting. The user&apos;s Sales Contract template is never modified — the writer always exports to a new file.
-                  </p>
-                  <SalesContractPickBatch contracts={contracts} />
-                </div>
-                <div className="mb-6">
-                  <h3 className="mb-1 text-sm font-semibold text-slate-700">② Sales Contract master Excel files</h3>
-                  <p className="mb-3 text-xs text-slate-400">
-                    One master .xlsx per Sales Contract. New PO rows always append to the correct contract&apos;s workbook —
-                    other contracts are never touched. The filename pattern is <code>SalesContract_&lt;ref&gt;_&lt;timestamp&gt;.xlsx</code>.
-                  </p>
-                  {masterRows.length === 0 ? (
-                    <div className="card p-4 text-sm text-slate-400">No Sales Contracts yet — create one in section ① above.</div>
-                  ) : (
-                    <div className="card overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <thead className="bg-slate-50">
-                          <tr>
-                            <th className="th">Sales Contract ref</th>
-                            <th className="th">Buyer Code</th>
-                            <th className="th">POs</th>
-                            <th className="th">Master Excel filename</th>
-                            <th className="th">Last updated</th>
-                            <th className="th">Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {masterRows.map((m) => (
-                            <tr key={m.id} className="border-t border-slate-50">
-                              <td className="td font-mono">{m.ref}</td>
-                              <td className="td font-mono text-slate-500">{m.buyerCode || "—"}</td>
-                              <td className="td">{m.poCount}</td>
-                              <td className="td font-mono text-[11px] text-slate-500">{m.filename}</td>
-                              <td className="td text-slate-400">{m.lastUpdated}</td>
-                              <td className="td">
-                                {m.poCount > 0 ? (
-                                  <a href={`/api/hm-sales-contract/${m.id}/download`} className="btn-primary text-xs">
-                                    ⬇ Download .xlsx
-                                  </a>
-                                ) : (
-                                  <span className="text-xs text-slate-400">No POs yet</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              </>
-            );
-          })()}
-          <details className="mb-6 card p-5">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-700">③ Legacy: bulk PDF upload without picking a contract</summary>
-            <p className="mb-3 mt-3 text-xs text-slate-400">Original free-form batch — each PDF treated independently and cross-matched to existing contracts. Prefer section ① above.</p>
-            <p className="mb-3 text-xs text-slate-400">
-              Upload many H&amp;M PO / supporting PDFs in one operation → each is extracted, cross-matched against existing
-              contracts and classified (existing / new / duplicate / amendment / review) in a unified row-based table.
-              Verified existing contracts are reused; unresolved numbering / Buyer-Code rules block new-contract creation.
-            </p>
-            <SalesContractBatchUpload />
-          </details>
-          {await (async () => {
-            const batches = await prisma.salesContractBatch.findMany({ orderBy: { createdAt: "desc" }, take: 8 });
-            if (batches.length === 0) return null;
-            return (
-              <details className="mb-6 card p-5">
-                <summary className="cursor-pointer text-sm font-semibold text-slate-700">Recent legacy batches</summary>
-                <div className="card overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="bg-slate-50">
-                      <tr><th className="th">Batch</th><th className="th">Files</th><th className="th">Drafted</th><th className="th">Review</th><th className="th">Blocked</th><th className="th">Failed</th><th className="th">Status</th><th className="th">Created</th></tr>
-                    </thead>
-                    <tbody>
-                      {batches.map((b) => (
-                        <tr key={b.id} className="border-t border-slate-50">
-                          <td className="td font-mono"><Link href={`/sales-contract/${b.id}`} className="text-ananta hover:underline">{b.id.slice(0, 8)}</Link></td>
-                          <td className="td">{b.totalItems}</td>
-                          <td className="td text-green-700">{b.draftedItems}</td>
-                          <td className="td text-amber-700">{b.reviewItems}</td>
-                          <td className="td text-amber-700">{b.blockedItems}</td>
-                          <td className="td text-rose-700">{b.failedItems}</td>
-                          <td className="td"><StatusBadge status={b.status} /></td>
-                          <td className="td text-slate-400">{b.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </details>
-            );
-          })()}
-          <details className="mb-6 card p-5">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-700">④ Legacy: single Order Package intake (subject + PO text)</summary>
-            <div className="mt-3"><IntakeForm /></div>
-          </details>
-        </>
-      ) : null}
-
       {module.key === "pdf-rename" ? (
         <div className="mb-6">
           <h3 className="mb-3 text-sm font-semibold text-slate-700">Rename plan from extraction CSV</h3>
@@ -215,63 +215,27 @@ export default async function ModulePage({ params }: { params: { key: string } }
       ) : null}
 
       {module.key === "shipment-schedule" ? (
-        <>
-          <div className="mb-6">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">① From confirmed Sales Contracts</h3>
-            <p className="mb-3 text-xs text-slate-400">Handoff 1: schedule orders drawn from confirmed contract rows (markets from PO extraction).</p>
-            <ScheduleFromContracts contracts={await listSchedulableContracts()} />
-          </div>
-          <div className="mb-6">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700">Or build week schedule from a pasted orders CSV</h3>
-            <ScheduleForm />
-          </div>
-        </>
+        <div className="mb-6">
+          <h3 className="mb-1 text-sm font-semibold text-slate-700">Week-wise Shipment Schedule — v2 workflow</h3>
+          <p className="mb-3 text-xs text-slate-400">
+            Create one shipment schedule per week, define cut-offs, upload booking-confirmation PDFs to a cut-off,
+            and the OrderNo cross-matches the H&amp;M Sales Contract to fill Buyer Code, Cont.No., Date, STYLE, FOB,
+            Composition and PCS. Filename pattern: <code>&lt;OrderNo&gt; &lt;Market+Sub&gt;.pdf</code>.
+          </p>
+          <Link href="/shipment-schedule" className="btn-primary text-xs">Open Shipment Schedules →</Link>
+        </div>
       ) : null}
 
       {module.key === "customs-invoice" ? (
-        <>
-          <div className="mb-6">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">① From shipment schedule lines</h3>
-            <p className="mb-3 text-xs text-slate-400">Handoff 2: generate an invoice from a schedule line&apos;s allocated invoice number.</p>
-            {await (async () => {
-              const lines = await listInvoiceableScheduleLines();
-              if (lines.length === 0)
-                return <div className="card p-4 text-sm text-slate-400">No invoiceable schedule lines yet. Build a schedule (from confirmed contracts) first.</div>;
-              return (
-                <div className="card overflow-x-auto">
-                  <table className="w-full">
-                    <thead className="bg-slate-50">
-                      <tr><th className="th">Invoice No</th><th className="th">Market</th><th className="th">Order</th><th className="th">Style</th><th className="th">PCS</th><th className="th">FOB</th><th className="th">Contract</th><th className="th"></th></tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((l) => (
-                        <tr key={l.id} className="border-t border-slate-50">
-                          <td className="td font-mono text-xs">{l.invoiceNo}</td>
-                          <td className="td font-mono text-xs">{l.marketCode}</td>
-                          <td className="td font-mono text-xs">{l.orderNo}</td>
-                          <td className="td text-xs">{l.style}</td>
-                          <td className="td">{l.pcs}</td>
-                          <td className="td">{l.fob}</td>
-                          <td className="td font-mono text-xs">{l.contractNo}</td>
-                          <td className="td">
-                            <form action={generateInvoiceFromLineAction}>
-                              <input type="hidden" name="lineId" value={l.id} />
-                              <button className="btn-ghost text-xs">Generate invoice</button>
-                            </form>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              );
-            })()}
-          </div>
-          <div className="mb-6">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700">Or generate a customs invoice manually</h3>
-            <CustomsInvoiceForm />
-          </div>
-        </>
+        <div className="mb-6">
+          <h3 className="mb-1 text-sm font-semibold text-slate-700">Customs Invoice Generation</h3>
+          <p className="mb-3 text-xs text-slate-400">
+            Pull Order Nos from Sales Contract + Shipment Schedule; one invoice per Order No; country-wise
+            template detects from the market code; every field editable; PDF upload auto-extracts;
+            download the finished invoice as .xlsx.
+          </p>
+          <Link href="/customs-invoice" className="btn-primary text-xs">Open Customs Invoices →</Link>
+        </div>
       ) : null}
 
       {module.key === "booking-correction" ? (

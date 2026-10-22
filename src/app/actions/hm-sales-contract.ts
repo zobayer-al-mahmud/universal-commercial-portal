@@ -52,19 +52,22 @@ export async function editHmRowAction(formData: FormData): Promise<void> {
   const contractId = String(formData.get("contractId") ?? "");
   if (!poId || !marketCode) return;
 
-  // Pull A..U editable columns from the form. Server trusts no column —
-  // formulas (M, R) are never user-editable; styleNo (H) stays blank by rule.
+  // Every Sales Contract column is user-editable (2026-10-20 spec). The
+  // numeric columns (orderQty, fob, totalWithPacks, value) accept decimals;
+  // string columns pass through as typed.
   const editable: (keyof import("@/server/hm-sales-contract").HmFlatCells)[] = [
     "marchentContNo", "buyerCode", "commercialContNo", "orderNo", "orderQty",
     "styleNo", "fob", "itemDes", "cat", "hts", "tod", "country", "remarks",
     "merchandiserName", "packSet", "withoutDiscount", "discountFobDate",
+    "totalWithPacks", "value",
   ];
+  const numericKeys = new Set(["orderQty", "fob", "totalWithPacks", "value"]);
   const over: Record<string, unknown> = {};
   for (const k of editable) {
     const v = formData.get(k);
     if (v === null) continue;
     const s = String(v);
-    if (k === "orderQty" || k === "fob") {
+    if (numericKeys.has(k)) {
       const n = s.trim() === "" ? null : Number(s);
       over[k] = Number.isFinite(n) ? n : null;
     } else {
@@ -73,6 +76,7 @@ export async function editHmRowAction(formData: FormData): Promise<void> {
   }
   await recordHmRowEdit(poId, marketCode, over, { actor: user.email });
   revalidatePath(`/hm-sales-contract/${contractId}`);
+  revalidatePath(`/sales-contract/view/${contractId}`);
 }
 
 /** Delete a PO's three-PDF set from a contract. */

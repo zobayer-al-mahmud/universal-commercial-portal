@@ -119,18 +119,22 @@ describe("Sales Contract pick-and-upload — conflict detection (requirement 5)"
     expect(r.fields.some((f) => f.includes("marketQuantity"))).toBe(true);
   });
 
-  it("flags a conflict when a market present previously is missing from the new upload", () => {
-    const prev = [makeRow({ marketCode: "OE" }), makeRow({ marketCode: "OD" })];
+  it("flags a conflict when the market set differs between uploads (markets are concatenated into one row)", () => {
+    // One row per PO (user spec 2026-10-20) — the market set lives in
+    // row.marketCode as a comma-joined traceability field. A different market
+    // set is a conflict because the exported row's column O would change.
+    const prev = [makeRow({ marketCode: "OE,OD" })];
     const next = [makeRow({ marketCode: "OE" })];
     const r = detectRowConflicts(prev, next);
     expect(r.hasConflict).toBe(true);
-    expect(r.fields.some((f) => f.includes("OD.row_missing_in_new_upload"))).toBe(true);
+    expect(r.fields.some((f) => f.startsWith("marketCode"))).toBe(true);
   });
 
-  it("treats a new market not seen before as additive (not a conflict)", () => {
-    const prev = [makeRow({ marketCode: "OE" })];
-    const next = [makeRow({ marketCode: "OE" }), makeRow({ marketCode: "OD" })];
-    expect(detectRowConflicts(prev, next).hasConflict).toBe(false);
+  it("flags a conflict when the new upload drops the row entirely", () => {
+    const prev = [makeRow({})];
+    const r = detectRowConflicts(prev, []);
+    expect(r.hasConflict).toBe(true);
+    expect(r.fields.some((f) => f.includes("row_missing_in_new_upload"))).toBe(true);
   });
 
   it("flags a conflict on an fob price change (critical money field)", () => {

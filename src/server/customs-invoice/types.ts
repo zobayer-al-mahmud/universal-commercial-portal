@@ -1,82 +1,144 @@
 /**
- * Customs Invoice Generation domain types (module 3).
- *
- * Derived from the per-order customs-invoice workbooks (sample 45238 NH.xlsx):
- * an invoice keyed by Invoice Number + market code, with a fixed exporter (Ananta),
- * buyer/consignee (H&M GBC), a per-market cargo-delivery consignee, and HS-coded
- * line items. amount = quantity x unitPrice; totalValue = sum(amount).
+ * Customs Invoice Generation (module 3) — editable per-order invoice.
+ * One invoice per unique H&M Order No; country/market code resolves which of
+ * the per-country templates provides the final .xlsx layout.
  */
 
-export interface InvoiceLineItemInput {
-  description: string;
-  hsCode: string;
-  quantity: number;
-  unitPrice: number;
-}
-
-export interface InvoiceLineItem extends InvoiceLineItemInput {
-  amount: number;
-}
-
-export interface CustomsInvoiceInput {
-  invoiceNumber: string;
+export interface InvoicePrefill {
+  orderNo: string;
+  // Resolved per-country template key (market+sub).
+  countryCode: string;
   marketCode: string;
+  marketSubCode: string;
+
+  // From Sales Contract PO.
+  contractNo: string;
+  contractDate: string;
+  hmOrderNo: string;
+  buyerCode: string;
+  styleNo: string;
+  descriptionOfGoods: string;
+  unitPrice?: number;
+  quantityPcs?: number;
+
+  // From Shipment Schedule row.
+  portOfLoading: string;
+  portOfDischarge: string;
+  placeOfDelivery: string;
+  transportMode: string;
+  bookingRef: string;
+  grossWeightKg?: number;
+  totalCartons?: number;
+  measurementCbm?: number;
+
+  // Convenience: whether EITHER a sales-contract row OR a shipment row backs this order.
+  foundInSalesContract: boolean;
+  foundInShipmentSchedule: boolean;
+}
+
+/**
+ * Flat view of every editable column on the CustomsInvoice table — used by the
+ * form, server actions, write-xlsx and the PDF extractor.
+ */
+export interface InvoiceFields {
+  invoiceNumber: string;
   invoiceDate: string;
   contractNo: string;
   contractDate: string;
   hmOrderNo: string;
-  expNo: string;
-  expDate: string;
-  portOfLoading: string;
-  portOfDelivery: string;
-  countryOfOrigin: string;
-  countryOfFinalDestination: string;
-  currency?: string;
-  buyerName?: string;
-  consigneeName?: string;
-  lineItems: InvoiceLineItemInput[];
-}
-
-export interface InvoiceIssue {
-  field: string;
-  code: string;
-  message: string;
-  severity: "hard" | "pending";
-}
-
-export interface CustomsInvoiceDoc {
-  invoiceKey: string; // "<number> <market>"
-  invoiceNumber: string;
   marketCode: string;
-  invoiceDate: string;
-  contractNo: string;
-  contractDate: string;
-  hmOrderNo: string;
+  marketSubCode: string;
+  countryCode: string;
   expNo: string;
   expDate: string;
   portOfLoading: string;
-  portOfDelivery: string;
+  portOfDischarge: string;
+  placeOfDelivery: string;
   countryOfOrigin: string;
   countryOfFinalDestination: string;
+  transportMode: string;
+  termsOfDelivery: string;
+  termsOfPayment: string;
+  vesselName: string;
+  voyageNo: string;
+  sailingDate: string;
   currency: string;
   exporterName: string;
   buyerName: string;
   consigneeName: string;
   cargoDeliveryName: string;
-  lineItems: InvoiceLineItem[];
-  totalQty: number;
-  totalValue: number;
-  issues: InvoiceIssue[];
-  success: boolean;
+  issuingBank: string;
+  descriptionOfGoods: string;
+  styleNo: string;
+  buyerCode: string;
+  hsCode: string;
+  category: string;
+  quantityPcs: number | null;
+  unitPrice: number | null;
+  totalCartons: number | null;
+  grossWeightKg: number | null;
+  netWeightKg: number | null;
+  measurementCbm: number | null;
+  dimension: string;
+  packSet: string;
 }
 
-export interface BuildInvoiceOptions {
-  /** market code -> cargo-delivery consignee name (reference data, Q-CI-01). */
-  cargoDeliveryByMarket?: Record<string, string>;
-  exporterName?: string;
-}
+export const INVOICE_FIELD_LABELS: Record<keyof InvoiceFields, string> = {
+  invoiceNumber: "Invoice No.",
+  invoiceDate: "Invoice date",
+  contractNo: "Contract No.",
+  contractDate: "Contract date",
+  hmOrderNo: "H&M Order No.",
+  marketCode: "Country code",
+  marketSubCode: "Sub-code (style/article)",
+  countryCode: "Resolved template code",
+  expNo: "EXP No.",
+  expDate: "EXP date",
+  portOfLoading: "Port of loading",
+  portOfDischarge: "Port of discharge",
+  placeOfDelivery: "Place of delivery",
+  countryOfOrigin: "Country of origin",
+  countryOfFinalDestination: "Country of final destination",
+  transportMode: "Transport mode",
+  termsOfDelivery: "Terms of delivery",
+  termsOfPayment: "Terms of payment",
+  vesselName: "Vessel name",
+  voyageNo: "Voyage No.",
+  sailingDate: "Sailing date",
+  currency: "Currency",
+  exporterName: "Exporter",
+  buyerName: "Buyer",
+  consigneeName: "Consignee",
+  cargoDeliveryName: "Cargo delivery to",
+  issuingBank: "Issuing bank",
+  descriptionOfGoods: "Description of goods",
+  styleNo: "Style No.",
+  buyerCode: "Buyer code",
+  hsCode: "HS code",
+  category: "Category",
+  quantityPcs: "Quantity (PCS)",
+  unitPrice: "Unit price",
+  totalCartons: "Total cartons",
+  grossWeightKg: "Gross weight (kg)",
+  netWeightKg: "Net weight (kg)",
+  measurementCbm: "Measurement (cbm)",
+  dimension: "Dimension",
+  packSet: "Pack / set",
+};
 
-// Observed fixed parties (customs-invoice workbooks).
+export const INVOICE_STRING_FIELDS: (keyof InvoiceFields)[] = [
+  "invoiceNumber", "invoiceDate", "contractNo", "contractDate", "hmOrderNo",
+  "marketCode", "marketSubCode", "countryCode", "expNo", "expDate",
+  "portOfLoading", "portOfDischarge", "placeOfDelivery", "countryOfOrigin",
+  "countryOfFinalDestination", "transportMode", "termsOfDelivery",
+  "termsOfPayment", "vesselName", "voyageNo", "sailingDate", "currency",
+  "exporterName", "buyerName", "consigneeName", "cargoDeliveryName",
+  "issuingBank", "descriptionOfGoods", "styleNo", "buyerCode", "hsCode",
+  "category", "dimension", "packSet",
+];
+export const INVOICE_INT_FIELDS: (keyof InvoiceFields)[] = ["quantityPcs", "totalCartons"];
+export const INVOICE_FLOAT_FIELDS: (keyof InvoiceFields)[] = ["unitPrice", "grossWeightKg", "netWeightKg", "measurementCbm"];
+
 export const DEFAULT_EXPORTER =
   "ANANTA GARMENTS LIMITED, NISCHINTAPUR, ASHULIA, DEPZ ROAD, SAVAR, DHAKA-1341, BANGLADESH";
 export const DEFAULT_BUYER =

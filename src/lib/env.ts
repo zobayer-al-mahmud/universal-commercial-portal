@@ -73,6 +73,24 @@ const schema = z.object({
     .optional()
     .or(z.literal("")),
   HM_SALES_CONTRACT_MAX_FILE_MB: z.coerce.number().positive().default(20),
+
+  // --- Customs Invoice Generation (module 3) --------------------------------
+  // Folder holding the country-wise `<invoiceNo> <countryCode>.xlsx` templates.
+  // The writer reads from here (never modifies the originals); fresh copies are
+  // produced per download.
+  CUSTOMS_INVOICE_TEMPLATE_DIR: z
+    .string()
+    .default("D:/oct-2026/automation docs/New folder/3. Customs Invoice Generation/Customs Invoice templates and sample files"),
+  CUSTOMS_INVOICE_MAX_FILE_MB: z.coerce.number().positive().default(20),
+
+  // --- PDF Combiner -----------------------------------------------------------
+  // Server folder whose immediate sub-folders are offered for selection. Read
+  // only: source PDFs are never modified, moved or deleted. Blank = disabled.
+  PDF_COMBINER_ROOT: z.string().optional().or(z.literal("")),
+  PDF_COMBINER_MAX_FOLDERS: z.coerce.number().int().positive().default(20),
+  PDF_COMBINER_MAX_ROWS: z.coerce.number().int().positive().default(1000),
+  PDF_COMBINER_MAX_INDEXED_FILES: z.coerce.number().int().positive().default(50000),
+  PDF_COMBINER_MAX_MASTER_MB: z.coerce.number().positive().default(10),
 });
 
 const parsed = schema.safeParse(process.env);

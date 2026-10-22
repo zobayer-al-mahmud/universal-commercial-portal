@@ -2,7 +2,7 @@
 
 > Read this first, then inspect the files named below. Keep it current (rules at the bottom).
 > **Never put secrets here.** Credentials live only in the git-ignored `.env`.
-> Last updated: 2026-10-20 (all facts below were verified on that date unless marked UNVERIFIED).
+> Last updated: 2026-10-22 (new PDF Combiner module — see §12 topmost entry). All facts below were verified on that date unless marked UNVERIFIED.
 
 ## 1. What this is
 **Ananta Universal Commercial Portal (AUCP / "UCP")** — internal web app that automates the commercial
@@ -80,7 +80,7 @@ npm run build                      # next build
 | # | Module | Status |
 |---|---|---|
 | 1 | Sales Contract | Implemented. **NEW (Oct-2026 addendum §3): bulk multi-PDF batch** — upload many PDFs → one row per PO/document, per-file extract (never invents), cross-match existing contracts (reuse, no duplicate), block new-contract creation while numbering/Buyer-Code rules unresolved (AC-03). Plus original single Order-Package intake. Real PO-PDF layout parsing still pending (non-PO PDFs route to NEEDS_REVIEW honestly) |
-| 2 | Shipment Schedule | Implemented build + .xlsx export. **NEW (Oct-2026 addendum §4.2): in-portal editing** — role-gated field-level edits, validation, append-only edit history (original→edited, editor, time, reason), Save/Submit/Approve states; source PDF never altered. Pending: PDF upload/update comparison (§4.1), booking-confirmation PDF parsing, port/country lookup |
+| 2 | Shipment Schedule | **v2 implemented (2026-10-20)**. One `ShipmentSchedule` per week + any number of `ShipmentScheduleCutoff` rows (default "1st cut off"/"2nd cut off") + per-market `ShipmentScheduleRow`. Upload booking-confirmation PDFs under a chosen cut-off; filename `<OrderNo> <Market+Sub>.pdf` drives OrderNo + market codes; PDF content parsed for BCN, BRef, Status, ports, mode, PCS, cartons, gross wt, cbm; OrderNo cross-matched against `HmSalesContractPo` → hydrates Buyer Code / Cont.No. / Date / Style / FOB / Composition / PCS (never invented). Excel-like preview grouped by cut-off. **Per-cut-off .xlsx download** (sample layout: orange title + green 15-col header + `=Ex*Gx` Value formula). **Row-wise inline edit** of every field (sales-contract-sourced + PDF-sourced + manual invoiceNo) with append-only history in `ShipmentScheduleRowEdit`. Old `ShipmentScheduleLine*` tables stay in schema but unreferenced. Pending: invoice-number auto-allocation, ambiguous-match resolver UI |
 | 3 | Customs Invoice | Implemented build + .xlsx (INVOICE+SUMMARY+BL DRAFT). Pending: numbering + consignee master data |
 | 4 | PDF Rename | Implemented plan + gated on-disk apply (copy, originals kept). Pending: canonical filename rule |
 | 5 | Booking Correction | Field-level diff + approval gate (committed). **Batch Damco workflow — see §8 (uncommitted, in progress)** |
@@ -222,6 +222,486 @@ live search→compare→PDF path is NOT wired. The mock pipeline remains fully w
 - Commit trailer for commits made by Claude: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` (model name changed from 5.5 → 5; use whatever the current session's system reminder specifies).
 
 ## 12. Session log (newest first)
+- 2026-10-22 (NEW module: PDF Combiner, uncommitted):
+  Spec (user): upload a master Excel where each row lists file names to merge; select 8–10 of the 10–15 folders on a server;
+  Run → bot reads the Excel, finds each file inside the selected folders (nested sub-folders at any depth) and builds ONE PDF per row.
+  Built:
+    - `src/server/pdf-combiner/{master,resolve,folders,merge,read-master,run}.ts` (master/resolve/merge pure; `run.ts` is the only writer).
+    - Master format: optional header; optional "Output PDF Name" column (else `Row_<n>.pdf`); SL column ignored; file cells merged left→right;
+      `.pdf` optional; case-insensitive; `Folder/sub/name.pdf` disambiguates. .xlsx or .csv. Template: `/api/pdf-combiner/template`.
+    - Fail closed per row: missing / ambiguous (same name in 2+ places) / unreadable-encrypted file → NO PDF for that row, reason shown.
+    - Folders = immediate sub-folders of `PDF_COMBINER_ROOT` (new env; blank = disabled); selection validated against the live listing (no path traversal).
+      Source folders are read-only. Outputs: `var/storage/pdf-combiner/<runId>/output/*.pdf`.
+    - Prisma: `PdfCombineRun`, `PdfCombineOutput` (migration `20261022040608_add_pdf_combiner`). Permission `pdf.combine` (ADMIN, COMMERCIAL). Module seeded.
+    - UI: `/modules/pdf-combiner` (form + recent runs), `/pdf-combiner/[runId]` (per-row results, view/download, ZIP). Component `PdfCombinerForm.tsx`.
+    - Dependency: `pdf-lib@1.17.1`. `next.config.mjs`: `serverActions.bodySizeLimit = "50mb"` (default 1 MB rejected uploads) + pdf-lib external.
+    - Local `.env` now has `PDF_COMBINER_ROOT="./var/pdf-combiner-demo"` (12 demo folders with generated PDFs) — replace with the real server share path.
+  Verified: tests 217/217 (new `tests/pdf-combiner.test.ts`, 15), typecheck exit 0; browser E2E on dev :3300 — 8 folders, 5-row master →
+    3 COMPLETED (4/4/2 pages), 1 missing, 1 ambiguous; per-PDF, ZIP and template downloads 200 with valid PDF/ZIP/XLSX bytes. `npm run build` not run.
+  Open: partial-PDF-on-missing policy, default naming, write-back to a server folder (see catalog openQuestions).
+- 2026-10-20 (Customs Invoice Generation — rebuilt from scratch, uncommitted):
+  User asked to delete all previous customs-invoice work and rebuild per new spec:
+    - Use country-wise templates from `D:/oct-2026/automation docs/New folder/3. Customs Invoice Generation/Customs Invoice templates and sample files/`
+      (54 .xlsx files, filename pattern `<invoiceNo> <countryCode>.xlsx`
+      — e.g. `45237 OB.xlsx`, `45248 OF-(IT).xlsx`, `45260 OU-068.xlsx`).
+    - Detect country code and pick the matching template.
+    - Pull data from Sales Contract (HmSalesContractPo) + Shipment Schedule
+      (ShipmentScheduleRow) by Order No; one invoice per unique Order No.
+    - Every field editable; PDF upload per invoice auto-extracts labelled fields;
+      download the completed invoice as .xlsx.
+
+  Files DELETED (uncommitted):
+    - `src/server/customs-invoice/{build,intake,types}.ts`
+    - `src/server/export/customs-invoice-workbook.ts` and the whole `src/server/export/` dir
+      (schedule-workbook.ts was already orphaned from the earlier Shipment Schedule wipe)
+    - `src/app/actions/customs-invoice.ts` (old version)
+    - `src/components/CustomsInvoiceForm.tsx`
+    - `src/app/api/export/customs-invoice/` route
+    - `tests/customs-invoice.test.ts` (old) and `tests/export.test.ts`
+
+  Prisma schema REBUILT (`20261020113846_rebuild_customs_invoice` migration applied):
+    - Dropped the old `CustomsInvoice` model (job-scoped, invoice-key based).
+    - New `CustomsInvoice`: one row per unique Order No (`@unique`), with
+      `countryCode` + `templateFile` resolved from market codes, every editable
+      header/parties/goods/weights column, status enum (draft/ready/exported).
+    - New `CustomsInvoicePdf`: per-invoice attached PDF with sha256 dedup +
+      extractedJson for audit.
+    - New `CustomsInvoiceEdit`: append-only edit history, source =
+      user/pdf-extract/prefill.
+    - Removed `Job.customsInvoices` relation (no longer job-scoped).
+    - 11 migrations total, DB up to date.
+
+  Files ADDED (uncommitted):
+    - `src/server/customs-invoice/templates.ts` — filename parser + folder scan +
+      `resolveTemplate(marketCode, marketSubCode)`. Handles OB / OE (variant) /
+      OF-(IT) / OU-068 / LH- PL and other variants in the real folder.
+    - `src/server/customs-invoice/types.ts` — `InvoiceFields` (flat view), labels,
+      string/int/float field groupings, default exporter/buyer strings.
+    - `src/server/customs-invoice/pull-data.ts` — `shortOrderKey()` (6-digit
+      join key), `listOrderNosWithPrefill()` merges HmSalesContractPo (contract,
+      style, unit price, qty from poJson) + ShipmentScheduleRow (market codes,
+      ports, booking, cartons, weights); `buildPrefill()` for one Order No.
+    - `src/server/customs-invoice/intake.ts` — `createInvoiceForOrder` (prefill
+      → insert, `@unique orderNo` dedup, `customs-invoice.created` audit),
+      `updateInvoiceFields` (diff against stored row, Prisma `$transaction` of
+      update + per-field `CustomsInvoiceEdit` inserts, `customs-invoice.edited`
+      audit), `deleteInvoice`.
+    - `src/server/customs-invoice/parse-pdf.ts` — serialised pdf-parse (same
+      chain pattern as booking-correction) + a labelled-regex extractor for
+      Invoice No / Dates / Order No / Contract Ref / EXP / Ports / Vessel /
+      Terms / Buyer code / Style / HS code / Category / Qty / Unit Price /
+      Cartons / Weights / Measurement / Dimension. Never invents values.
+    - `src/server/customs-invoice/write-xlsx.ts` — loads the matched template
+      file (NEVER modifies the originals), adds a `UCP OVERRIDES` sheet with
+      every field label+value, best-effort patches the PAYMENT INVOICE sheet's
+      input row (last 25 rows, finds the row whose cell contains an AGL/H&M
+      contract-ref string). Falls back to a plain fresh workbook when no
+      template matches.
+    - `src/app/actions/customs-invoice.ts` — `createInvoiceAction`,
+      `updateInvoiceAction` (reads all editable fields from FormData with
+      correct string/int/float coercion), `deleteInvoiceAction`.
+    - `src/app/api/customs-invoice/[id]/upload/route.ts` — multipart POST,
+      sha256 dedup, writes to `${STORAGE_ROOT}/customs-invoice/<invId>/`, runs
+      extractor, applies non-empty fields via `updateInvoiceFields` with
+      source=pdf-extract.
+    - `src/app/api/customs-invoice/[id]/download/route.ts` — GET returns the
+      .xlsx (template or fresh), filename `CustomsInvoice_<order>_<country>.xlsx`.
+    - `src/app/(portal)/customs-invoice/page.tsx` — list of every Order No
+      found (SC / SS source badges) + create / open buttons. Shows resolved
+      template per row.
+    - `src/app/(portal)/customs-invoice/[id]/page.tsx` — detail/edit page:
+      PageHeader with download + back links, template warning when none
+      matches, PDF upload card, editable form, append-only edit history table.
+    - `src/components/CustomsInvoiceCreate.tsx` — per-row inline "Create
+      invoice" button (useFormState + redirect on success).
+    - `src/components/CustomsInvoiceEditor.tsx` — 6-section grouped editor
+      covering all 40 fields with per-kind inputs (text / number step=any /
+      textarea for addresses).
+    - `src/components/CustomsInvoicePdfUpload.tsx` — client-side fetch to the
+      upload route (plain file input, no useFormState body-size cap), surfaces
+      the extracted labels + duplicate / updated counters.
+    - `tests/customs-invoice.test.ts` — 17 unit tests: shortOrderKey,
+      parseTemplateFilename (every real variant in the folder), resolveTemplate
+      (exact + variant-suffix + fallback), extractInvoiceFieldsFromPdf (empty
+      buffer), writeInvoiceXlsx (fresh fallback + template-mode UCP OVERRIDES
+      sheet via `describe.skipIf`).
+
+  Files edited (uncommitted):
+    - `src/lib/env.ts` — added `CUSTOMS_INVOICE_TEMPLATE_DIR` (default points
+      at the Oct-2026 drop) + `CUSTOMS_INVOICE_MAX_FILE_MB`.
+    - `.env.example` — documented both vars.
+    - `src/lib/audit.ts` — added `"customs-invoice"` to the entityType union.
+    - `src/server/modules/catalog.ts` — replaced the stale customs-invoice
+      entry with the new scope (data pull, country-wise template, editable
+      fields, PDF upload) and open questions.
+    - `src/app/(portal)/modules/[key]/page.tsx` — swapped the inline manual
+      `CustomsInvoiceForm` for a Link to `/customs-invoice`; removed the import.
+    - `src/app/(portal)/jobs/[id]/page.tsx` — removed `customsInvoices` from the
+      Prisma include and dropped the whole in-job "Customs Invoice" section
+      (invoices are no longer job-scoped).
+
+  Verification gates:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — **194/194** (was 178 before; +17 new customs-invoice,
+      -2 export.test.ts, -6 old customs-invoice.test.ts; the booking-batch
+      tests are stable). The real-template integration test confirms the writer
+      produces a `UCP OVERRIDES` sheet on the matched NH template.
+    - Dev server not restarted here (another chat holds :3300 — see §10 rule);
+      the new routes compile under typecheck, UI verification pending.
+  Nothing committed. Stage selectively (never `.env`, `var/`, `prisma/dev.db`).
+
+- 2026-10-20 (Week-wise Shipment Schedule — per-cut-off .xlsx + row-wise edit, uncommitted):
+  Follow-up to the v2 build. User asked for two more features:
+  (a) each cut-off downloadable as its own Excel, (b) row-wise edit+save for
+  every field (both PDF-extracted and manual).
+  Files added (uncommitted):
+    - `src/server/shipment-schedule/write-xlsx.ts` — pure workbook writer for ONE
+      cut-off. Layout matches the sample: orange title row (merged across 15
+      cols), green 15-column header, data rows with Value as a live `=E{row}*G{row}`
+      formula (blank when either pcs or fob missing — never invents).
+    - `src/server/shipment-schedule/edit.ts` — pure validators + `computeValue`.
+      Int fields (pcs, pdfPcs, cartons) accept blank-as-null; float fields
+      (fob, grossWeightKg, measurementCbm) same; string code fields (bcn,
+      bookingRef, orderNo, marketCode, marketSubCode, invoiceNo) reject
+      newlines/tabs; all other string fields are trimmed.
+    - `src/app/api/shipment-schedule/[id]/cutoff/[cutoffId]/download/route.ts` —
+      GET route; filename `<WeekTitle>__<CutoffLabel>.xlsx`.
+    - `src/components/ShipmentScheduleRowEditor.tsx` — whole-row inline form (all
+      27 editable fields, grouped: sales-contract / booking / cut-off meta).
+      One Save → one server-action call → batched write + per-field
+      ShipmentScheduleRowEdit entries.
+  Files edited (uncommitted):
+    - `src/app/actions/shipment-schedule.ts` — new `editRowAction` (useFormState)
+      that collects every editable field from FormData, validates, diffs vs
+      stored row, applies as a Prisma `$transaction` (row.update + N
+      ShipmentScheduleRowEdit inserts), audits.
+    - `src/components/ShipmentScheduleCutoffs.tsx` — added Rows column + per-row
+      `⬇ Download .xlsx` link (hidden when row count is 0).
+    - `src/components/ShipmentScheduleGrid.tsx` — per-cut-off section header now
+      has a `⬇ Download this cut-off as .xlsx` link; each data row has an
+      `✎ Edit` button that swaps the row for `ShipmentScheduleRowEditor`.
+    - `src/app/(portal)/shipment-schedule/[id]/page.tsx` — computes
+      `rowCountsByCutoff` and passes it to the cut-off manager.
+    - `tests/shipment-schedule.test.ts` — +11 tests (edit validators,
+      computeValue, write-xlsx round-trip: title row content, 15-column
+      header labels, data cells, `E3*G3` Value formula, null-fob leaves Value
+      blank, sheet-name sanitisation).
+  Verification:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — **178/178** (was 167; +11).
+    - Dev server :3300 (tab c1) absorbed the new files via HMR; final compile
+      810 modules, zero errors. User already created a schedule and uploaded
+      PDFs (log shows `POST /api/shipment-schedule/<id>/upload 200`).
+  Nothing committed. Stage selectively.
+- 2026-10-20 (Week-wise Shipment Schedule — v2 built end-to-end, uncommitted):
+  User spec (from the sample workbook `Week 43 1st cut off 19.10.2026 2nd 23.10.2026.xlsx`
+  + 42 real booking-confirmation PDFs under `D:/oct-2026/automation docs/New folder/
+  2. Week Wise Shipment Schedule Creation/41/{1,2}/`):
+    "User gets a dashboard with a PDF upload option and a cut-off selector. Pick a
+     cut-off → upload PDFs → press Process → PDF data + matching Sales-Contract
+     fields (by OrderNo) land in that cut-off as rows. Cut-offs can be
+     manually created / updated / selected. Each PDF's row goes under whichever
+     cut-off it was uploaded to. UI must look like the Excel sample."
+  Sample Excel layout (15 columns): Buyer Code | Cont.No. | Date | OrderNo. | PCS |
+    STYLE | FOB | COMPOSITION | CAT | HTS | Value | INVOICE | Market+Sub | Market | Mode.
+  Filename pattern: `<6+ digits> <Market+Sub>.pdf`, e.g. `569959 AUW118.pdf` →
+    OrderNo prefix 569959, market AU, sub AUW118.
+  Booking PDF carries: BCN (ID), BRef (CTG…), Status (CONFIRMED), Port of Loading,
+    Port of Discharge, Place of Delivery, Service (CFS/CY → SEA / AIR), PO Number
+    (569959/3-2026), SKU/ITEM (AU/5686), Categories (AUW118), PCS, Cartons,
+    Gross weight (kg), Measurement (cbm).
+  New Prisma models (`add_shipment_schedule_v2` migration applied, 11 total):
+    - `ShipmentSchedule` (one per week; weekTitle + weekNo + createdBy)
+    - `ShipmentScheduleCutoff` (scheduleId + label + date + sortOrder, cascade on schedule delete)
+    - `ShipmentScheduleRow` (scheduleId + cutoffId + sales-contract fields + PDF fields
+      + sha256/path + matched/matchReason)
+    - `ShipmentScheduleRowEdit` (append-only edit history, ready for Phase 2)
+    - Old `ShipmentScheduleLine*` tables LEFT IN PLACE (not referenced any more).
+  Files added (uncommitted):
+    - `src/server/shipment-schedule/{types,parse-filename,parse-booking-pdf,
+      match-sales-contract,intake}.ts` — pure extraction + persistence service.
+      `parse-booking-pdf` handles the pdf-parse concatenated layout (labels like
+      "Export Licence No.Port of Loading" that run two columns together; "AU/5686SKU"
+      without space between SKU and the label).
+    - `src/app/actions/shipment-schedule.ts` — create schedule, update title, add /
+      edit / delete cut-off, move row to cut-off, delete row. Permissions-gated
+      (JOB_CREATE). On create, redirects to the detail page.
+    - `src/app/api/shipment-schedule/[id]/upload/route.ts` — multipart upload
+      (cutoffId + many `files`), returns per-PDF result (match status, booking status,
+      PCS, cartons). sha256-dedup: re-uploading the same PDF updates its row's
+      cut-off instead of creating a duplicate.
+    - `src/app/(portal)/shipment-schedule/page.tsx` — list page with
+      `CreateShipmentScheduleForm` + per-schedule row list.
+    - `src/app/(portal)/shipment-schedule/[id]/page.tsx` — detail page: title editor
+      + cut-off manager + PDF upload card + Excel-like grid.
+    - `src/components/{CreateShipmentScheduleForm,ShipmentScheduleHeaderEditor,
+      ShipmentScheduleCutoffs,ShipmentScheduleUpload,ShipmentScheduleGrid}.tsx` —
+      the UI components. Upload uses plain fetch() against the API route to avoid
+      the useFormState body-size cap and keep file inputs mounted (so FormData
+      never loses files on DOM swap).
+    - `tests/shipment-schedule.test.ts` — 12 pure tests: filename parsing,
+      PDF parsing against two real sample PDFs (`569959 AUW118.pdf` and
+      `583635 PEW153.pdf`), OrderNo-prefix matching (matched / no_sales_contract_po /
+      ambiguous / not_ready).
+  Files edited (uncommitted):
+    - `src/server/modules/catalog.ts` — re-added `shipment-schedule` entry with the
+      new workflow scope + 4 open questions (invoice allocation, Mode source,
+      partial-PCS handling, duplicate OrderNo×Market).
+    - `prisma/seed.ts` — re-added `shipment-schedule` module to MODULES; removed
+      the deleteMany line from the previous wipe.
+    - `src/app/(portal)/modules/[key]/page.tsx` — replaced the "Being rebuilt"
+      banner with a link to `/shipment-schedule`.
+    - `src/lib/audit.ts` — added `"shipment-schedule"` to the entityType union.
+  Verification:
+    - `npm run db:migrate` — `add_shipment_schedule_v2` applied; `prisma generate`
+      renamed the TS types fine (new models visible); the Windows DLL rename failed
+      (another chat's dev server locked `query_engine-windows.dll.node`), but the
+      SAME DLL already handles SQLite reads so runtime still works and tmp files
+      were cleaned up.
+    - `npm run db:seed` — OK; `shipment-schedule` row restored in Module table.
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — **167/167** (was 155; +12 from
+      `tests/shipment-schedule.test.ts`). Includes real-PDF extraction tests.
+    - `npm run build` — SKIPPED (another chat's dev server bound to :3300, §10 rule).
+    - Browser verification SKIPPED for the same reason.
+  Known gaps (Phase 2 todo):
+    - .xlsx export matching the sample layout (title row + 15-column green header
+      + per-cut-off section + per-row Value formula PCS×FOB).
+    - In-portal inline editing of row cells (model + table already in place via
+      `ShipmentScheduleRowEdit`).
+    - Invoice-number allocation per cut-off (manual today).
+    - If the PDF filename does not follow `<digits> <Market+Sub>.pdf` the row is
+      created with `matchReason=bad_filename:...` and left for the reviewer.
+    - If multiple HmSalesContractPo rows share the same 6-digit prefix,
+      `matchReason=ambiguous` and the first candidate's fields are shown; the
+      reviewer resolves manually (no UI dropdown yet).
+  Nothing committed. Stage selectively (never `.env`, `var/`, `prisma/dev.db`).
+- 2026-10-20 (Week-wise Shipment Schedule — module code wiped, rebuilding, uncommitted):
+  User asked to delete all logic in the Week-wise Shipment Schedule module ("ebar sob
+  logic delete kore dew"). Confirmed scope with user: "Code + handoff wiring only. Keep
+  Prisma + migrations + permissions + relations intact so DB stays stable. The module
+  tile is removed from the portal."
+  Files deleted (uncommitted):
+    - `src/server/shipment-schedule/{edit,intake,schedule,types}.ts` (+ the folder)
+    - `src/app/actions/shipment-schedule.ts`
+    - `src/app/actions/shipment-schedule-edit.ts`
+    - `src/components/ScheduleForm.tsx`
+    - `src/components/ScheduleFromContracts.tsx`
+    - `src/components/ScheduleLineEditor.tsx`
+    - `src/app/api/export/schedule/[jobId]/route.ts` (+ `schedule/` folder)
+    - `tests/shipment-schedule.test.ts`
+    - `tests/shipment-schedule-edit.test.ts`
+    - `tests/handoffs.test.ts` (only tested `contractRowToOrder` / `scheduleLineToInvoice`
+      which are also gone — no non-schedule tests to preserve)
+    - `src/server/handoffs/map.ts` (both exported mappers belonged to the schedule
+      handoffs; file would be empty)
+  Files edited (uncommitted):
+    - `src/server/handoffs/service.ts` — kept only `confirmContractJob`; removed
+      `listSchedulableContracts`, `buildScheduleFromContracts`, `listInvoiceableScheduleLines`,
+      `generateInvoiceFromLine`, their interfaces, and all shipment-schedule imports.
+    - `src/app/actions/handoffs.ts` — kept only `confirmContractAction`; removed
+      `scheduleFromContractsAction`, `generateInvoiceFromLineAction`, `ScheduleFromContractsState`.
+      `confirmContractAction` no longer revalidates `/modules/shipment-schedule`.
+    - `src/app/(portal)/modules/[key]/page.tsx` — removed the `module.key === "shipment-schedule"`
+      branch (replaced with an amber "Being rebuilt" notice), removed the customs-invoice
+      "① From shipment schedule lines" section (the manual CustomsInvoiceForm remains),
+      and dropped the now-unused imports (`ScheduleForm`, `ScheduleFromContracts`,
+      `listSchedulableContracts`, `listInvoiceableScheduleLines`, `generateInvoiceFromLineAction`).
+    - `src/app/(portal)/jobs/[id]/page.tsx` — removed the `job.scheduleLines` section
+      (editor + submit/approve/reopen forms + edit history), removed `scheduleLines`
+      from the Prisma include, removed `canEditSchedule`/`canApproveSchedule` locals,
+      removed `ScheduleLineEditor` and `setScheduleLineStateAction` imports, trimmed
+      the "Contract confirmed → Shipment Schedule" banner to just "Contract confirmed."
+    - `src/server/modules/catalog.ts` — removed the `shipment-schedule` entry.
+    - `prisma/seed.ts` — removed `shipment-schedule` from `MODULES`, added an explicit
+      `prisma.module.deleteMany({ where: { key: "shipment-schedule" } })` so re-seeding
+      drops the DB row (ran `npm run db:seed`; the row is gone, verified via
+      `prisma.module.findMany()` — the 9 remaining modules are listed, no shipment-schedule).
+  Kept intact (per user scope):
+    - Prisma models `ShipmentScheduleLine`, `ShipmentScheduleLineEdit`, `Job.scheduleLines`
+      relation, `SalesContractRow.scheduledJobId` field.
+    - Migrations `20261018064138_add_shipment_schedule_line` + `20261019115647_add_sales_batch_and_schedule_edit`.
+    - Permissions `SCHEDULE_EDIT` (`schedule.edit`) and `SCHEDULE_APPROVE` (`schedule.approve`)
+      in `src/lib/permissions.ts` + `prisma/seed.ts` role mappings.
+    - `confirmContractJob` + `confirmContractAction` (not schedule-specific).
+  Verification:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — 155/155 (was 173; -18 = removed shipment-schedule.test.ts (10)
+      + shipment-schedule-edit.test.ts (6) + handoffs.test.ts (2)).
+    - `npm run db:seed` — ran OK; Module table now has 9 entries, no `shipment-schedule`.
+    - `npm run build` — SKIPPED (another chat's dev server bound to :3300; §10 rule).
+  Nothing committed. Stage selectively when ready.
+- 2026-10-20 (Sales Contract Creation — fresh prototype-layout writer, uncommitted):
+  User's follow-up spec + screenshot: the master Excel must be built FRESH per
+  contract — ONLY the uploaded PDFs' data — using the specific prototype layout
+  (Puls Trading banner, Block Contract Ref + two dates, "Revise: N", then a
+  7-column data table). User was unhappy that the previous writer `copyFile`'d
+  the user's historical workbook (12,000+ existing rows from 2015-2026) and
+  appended to it.
+  Changes (uncommitted):
+    - `src/server/hm-sales-contract/write-xlsx.ts` — REPLACED. No more
+      `copyFile` from template. Builds a fresh workbook named "Sales Contract"
+      with the prototype layout:
+        row 1 "PULS TRADING" text (right-aligned, blue bold — real logo belongs
+                to the user; we never fetch external images)
+        row 3 "Block Contract Ref:  : <marchentContNo>"  "Date: <contract date>"
+        row 5 "Revise: <N>"                              "Date: <latest date>"
+        row 7 column headers (blue bold, thin borders): Order No. | Style No. |
+              Description | Order Qty | Total Qty With Packs | Unit Price |
+              Value | Time of Delivery
+        row 8+ one row per PO, every value PDF-sourced:
+          A Order No.          = r.orderNo
+          B Style No.          = po.header.productName
+          C Description        = r.itemDes (customsCustomerGroup + productDescription + typeOfConstruction)
+          D Order Qty          = r.orderQty (PO total)
+          E Total Qty With Packs = D × packSet (packSet default 1 when blank)
+          F Unit Price         = r.fob (USD #,##0.00)
+          G Value              = formula =D{row}*F{row}  (USD #,##0.00)
+          H Time of Delivery   = r.tod  (multi-line, wrapText)
+      `safeStr()` strips "null"/"undefined" so missing fields are truly blank in
+      the exported workbook (user spec: "never put field names or missing
+      values in the header row" — our column headers only appear on row 7 and
+      are the labels themselves, never populated from data).
+    - `src/app/api/hm-sales-contract/[id]/download/route.ts` — stopped
+      requiring `HM_SALES_CONTRACT_TEMPLATE_PATH`. The route calls the new
+      writer with no `templatePath`. The old env var is still parsed by env.ts
+      but is no longer required for any downloads.
+    - `src/app/(portal)/sales-contract/view/[id]/page.tsx` — removed the
+      amber "set TEMPLATE_PATH" warning banner (no longer applies).
+  Tests rewritten:
+    - `tests/hm-sales-contract.test.ts` — writer test block now verifies the
+      prototype banner cells (A3 ref, H3/H5 dates, A5 Revise), the 7-column
+      row-7 header, the single data row at row 8 with product-name as Style No.
+      and the Value formula, row 9 empty, overrides-by-orderNo editing, blocked
+      sets, multi-PO accumulation.
+    - All other test files unchanged.
+  Verification:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — 173/173.
+    - Dev server :3300 compile green; `POST /api/sales-contract/upload 200`
+      and TWO `GET /api/hm-sales-contract/<id>/download 200` observed in the
+      live log — the user has already downloaded the new workbook.
+  Nothing committed yet. The template path env var is retained in .env.example
+  (optional, unused) in case we add a "re-use user's template" option later.
+- 2026-10-20 (Sales Contract Creation — one row per PO (3-PDF merge), uncommitted):
+  User's follow-up spec: "process the 3 uploaded PDFs together and generate exactly
+  ONE row in the selected Sales Contract's master Excel—never create multiple rows
+  for the same PO. All Excel fields must remain in their original columns, including
+  fields with blank values; never put field names or missing values in the header row."
+  Previous behaviour: mapper produced N rows per PO (anchor + N-1 per-market rows,
+  G/M/R blank on non-anchor). New behaviour: mapper produces EXACTLY one row per PO,
+  with every market's "<tod> <code> (<codeB>) <qty> <pct>%" concatenated newline-
+  separated into column O (and distinct TODs newline-concatenated into column N),
+  G/M/R always populated. Writer sets wrapText + top-align on N and O.
+  Code changes (uncommitted):
+    - `src/server/hm-sales-contract/map-to-rows.ts` — rewrote `mapToTemplateRows` to
+      return a single `isAnchor=true` row; marketCode becomes a comma-joined
+      traceability string (e.g. "OE,OD,OF,LH"); marketQuantity is the sum (= PO total
+      when fully allocated); pctLabel is "" (per-market pct is encoded in O).
+    - `src/server/hm-sales-contract/write-xlsx.ts` — removed the per-row `isAnchor`
+      branch (every row writes G/M/R); added `safeStr()` that writes "" for null/
+      undefined and refuses to persist the literal strings "null" / "undefined";
+      added wrapText + vertical top alignment on cells N and O. Overrides are now
+      keyed by orderNo alone (one row per PO → one override bucket).
+    - `src/server/hm-sales-contract/intake.ts` — `buildOverridesForContract` now
+      reduces edits into `{ [orderNo]: overrides }` (was `{ [orderNo:marketCode]: ... }`).
+      `HmSalesContractRowEdit.marketCode` column is retained for audit but is not
+      part of the lookup key anymore.
+    - `src/server/hm-sales-contract/batch-upload.ts` — `detectRowConflicts` now
+      compares the single prev/next row's fields directly (orderQty, fob,
+      marketQuantity, tod, country, styleNo, itemDes, marketCode); the per-market
+      "missing market" path is replaced with a single "row_missing_in_new_upload"
+      case when the new upload produces zero rows.
+  Tests updated:
+    - `tests/hm-sales-contract.test.ts` — "A..U template rows" block updated:
+      asserts rows.length === 1 regardless of market count, orderQty on the single
+      row equals the PO total, column O concatenates every market (one line per
+      market), marketCode is the comma-joined set of all markets, marketQuantity
+      is the sum. Writer test updated to appendedRows === 1 and verifies row 3 is
+      empty. Grouping test updated to 2 rows for 2 PO sets. Override test updated
+      to new key format (orderNo-only).
+    - `tests/sales-contract-pick-batch.test.ts` — missing-market test rewritten
+      to assert that a DIFFERENT marketCode set between uploads is a conflict (the
+      exported column O would change). New test for row-dropped case.
+  Verification gates:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — **173/173** (was 172; +1 regression for the row-dropped case).
+    - Dev server :3300 compile green; the user has already successfully loaded
+      `/sales-contract/view/<id>` (POST 200 in the log).
+    - `npm run build` SKIPPED while the dev server is bound (§10 rule).
+  Nothing committed yet.
+- 2026-10-20 (Sales Contract Creation — Master Excel View/Edit page + template path, uncommitted follow-up):
+  User reported two things after the prototype redesign shipped:
+  (a) `HM_SALES_CONTRACT_TEMPLATE_PATH not configured` on Download click.
+  (b) Needs a MASTER EXCEL VIEW page where every row is visible, every field
+      editable, with a Save option.
+  Fixes:
+  - Appended the discovered template path to `.env` (uncommitted; git-ignored):
+    `HM_SALES_CONTRACT_TEMPLATE_PATH="D:/Running Backup/Downloads/new-up coming shipment -HM-2015 to 2026(AutoRecovered)(1).xlsx"`
+    Dev server restarted (:3300, cleared `.next` first per §10). `/api/healthz`
+    returns 200.
+  - New page `src/app/(portal)/sales-contract/view/[id]/page.tsx` — the Master
+    Excel view. Shows: editable header fields (via existing `HmSalesContractHeader`,
+    columns A/B/C/D/E/P/Q/S), every PO's rows with per-cell inline editors (via
+    existing `HmSalesContractPreview`, which already saves each edit through
+    `editHmRowAction` as an append-only override — "Save" is per-field on blur /
+    submit), the amber "set TEMPLATE_PATH" warning when env is unset, and the
+    Download .xlsx button. "← Back" returns to /modules/sales-contract. No new
+    backend — reuses the H&M editable-row machinery wholesale, so append-only
+    edits + edit log + override reduction are already in place.
+  - Added "👁 View / Edit" link in the Master Excel List table on the module
+    page, next to Download.
+  Verification gates:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — 172/172.
+    - Dev server :3300 restarted; healthz OK. The new view page compiles.
+  Nothing committed yet.
+- 2026-10-20 (Sales Contract Creation — prototype-driven redesign, uncommitted):
+  User sent a mockup + spec: section ① Select-or-Create, section ② Upload 3 PDFs
+  (one PO) with coloured dropzones + Process button, section ③ Result, then a
+  "Sales Contract Master Excel List" table below. Explicitly asked to DELETE
+  everything else from the Sales Contract Creation module page (catalog Source-backed
+  scope + Open questions cards, legacy "Bulk PDF upload", legacy "Single Order
+  Package intake", "Recent legacy batches", "Recent jobs"). Also reported the earlier
+  "No PDFs supplied" error → root cause was useFormState + file inputs in Next 14
+  (server-action body-size limit 1 MB AND file inputs can lose files on DOM swap).
+  Fix: switched to plain fetch() + two API routes.
+  Files added (uncommitted):
+    - `src/app/api/sales-contract/create/route.ts` — POST { marchentContNo } →
+      creates a blank HmSalesContract and returns { id, marchentContNo }.
+    - `src/app/api/sales-contract/upload/route.ts` — POST multipart (contractId +
+      3 named PDF slots) → calls uploadHmBatch → returns BatchResult. Runs on a
+      regular App Router API route so it is NOT capped by the server-action body
+      limit.
+  Files replaced (uncommitted):
+    - `src/components/SalesContractPickBatch.tsx` — rewritten to match the
+      prototype: numbered step badges, ① dropdown + inline "+ Create", ② three
+      coloured dropzones (blue / green / purple) with click-to-upload AND real
+      drag-and-drop, Process PDFs button, ③ Result card that renders the
+      placeholder text until the first upload, then shows per-PO rows
+      (orderNo / action / state / kinds / rows / notes) + Download master .xlsx
+      link. All inputs stay mounted (ref-based reset) so FormData never loses files.
+      Uses fetch() against the two new API routes; no useFormState.
+    - `src/app/(portal)/modules/[key]/page.tsx` — the sales-contract branch
+      returns a dedicated layout EARLY (header card + SalesContractPickBatch +
+      Master Excel List table) and the catalog/legacy/jobs sections never run
+      for this module. Dropped the now-unused `SalesContractBatchUpload` and
+      `IntakeForm` imports.
+  Files deleted (uncommitted):
+    - `src/app/actions/sales-contract-pick.ts` — superseded by the API routes.
+  Verification gates:
+    - `npm run typecheck` — exit 0.
+    - `npm run test` — 172/172 (unchanged; the pure-logic tests in
+      sales-contract-pick-batch.test.ts still cover the full backend).
+    - Dev server :3300 compile green; `GET /modules/sales-contract` returns 307
+      (redirect to login, expected). The old SWC error traces in `preview_logs`
+      are stale from earlier mid-edit states.
+    - `npm run build` SKIPPED while the dev server is bound to :3300 (§10 rule).
+  Notes:
+    - The master Excel Download button needs `HM_SALES_CONTRACT_TEMPLATE_PATH`
+      set in .env (unchanged behaviour); otherwise the download endpoint returns
+      400 with a message. The user already knows this from the previous session.
+    - Nothing committed yet.
 - 2026-10-20 (Sales Contract Creation — Process button + master Excel list, uncommitted follow-up):
   Added the two gaps the user's follow-up spec called out:
     - Renamed the submit button on `SalesContractPickBatch` to `▶ Process N PDF(s) → selected contract`

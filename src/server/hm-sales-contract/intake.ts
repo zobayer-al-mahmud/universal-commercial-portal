@@ -15,6 +15,31 @@ import {
   type HmPdfKind,
   type HmFlatCells,
 } from ".";
+import type { HmCountryBreakdownExtract, HmPoExtract } from "./types";
+
+/**
+ * Pull all unique H&M country/market codes from the Country Breakdown PDF,
+ * falling back to the PO's own market rows. Returned uppercase + de-duplicated,
+ * preserving the order of first appearance (the first entry becomes the primary
+ * country used by the Customs Invoice generator).
+ */
+export function extractCountryCodes(
+  country: HmCountryBreakdownExtract | null,
+  po: HmPoExtract | null,
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw: string | null | undefined) => {
+    if (!raw) return;
+    const c = String(raw).trim().toUpperCase();
+    if (!c || seen.has(c)) return;
+    seen.add(c);
+    out.push(c);
+  };
+  for (const r of country?.rows ?? []) add(r.marketCode);
+  for (const r of po?.marketRows ?? []) add(r.marketCode);
+  return out;
+}
 
 const MODULE = "hm-sales-contract";
 
@@ -41,6 +66,7 @@ export interface HmHeaderPatch {
   merchandiserName?: string;
   packSet?: string;
   remarksDefault?: string;
+  reviseNo?: string;
   status?: "draft" | "ready" | "exported";
 }
 /** Save editable Sales Contract header fields. Blank is distinct from unset. */
@@ -155,6 +181,11 @@ export async function processHmPoSet(
     const orderNo = result.orderNo || po.orderNo;
     const state: "READY" | "BLOCKED" = result.blockWrite ? "BLOCKED" : "READY";
 
+    // Extract country codes from the Country Breakdown PDF (and the PO's own
+    // market list as a fallback). Deduped + uppercased so the Customs Invoice
+    // module can match a template without going through Shipment Schedule.
+    const countryCodes = extractCountryCodes(countryExtract, poExtract);
+
     await prisma.hmSalesContractPo.update({
       where: { id: poId },
       data: {
@@ -168,6 +199,7 @@ export async function processHmPoSet(
         sizeJson: JSON.stringify(sizeExtract),
         countryJson: JSON.stringify(countryExtract),
         rowsJson: JSON.stringify(result.rows),
+        countryCodesJson: JSON.stringify(countryCodes),
         warning: result.reasons[0] ?? "",
         processedAt: new Date(),
       },
@@ -203,16 +235,18 @@ export async function recordHmRowEdit(
 }
 
 /**
- * Reduce the edit history for one PO's rows into a single
- * `{ "<orderNo>:<marketCode>": overrides }` map, used by `writeSalesContractWorkbook`.
- * Later edits win per column; earlier edits for untouched columns remain in effect.
+ * Reduce the edit history for one PO's rows into a single `{ "<orderNo>": overrides }`
+ * map, used by `writeSalesContractWorkbook`. One row per PO (user spec,
+ * 2026-10-20) so one override bucket per PO; later edits win per column,
+ * earlier edits for untouched columns remain in effect. The marketCode stored
+ * on each edit is retained for audit but is no longer part of the lookup key.
  */
 export async function buildOverridesForContract(contractId: string): Promise<Record<string, Partial<HmFlatCells>>> {
   const pos = await prisma.hmSalesContractPo.findMany({ where: { contractId }, include: { edits: { orderBy: { editedAt: "asc" } } } });
   const out: Record<string, Partial<HmFlatCells>> = {};
   for (const po of pos) {
     for (const e of po.edits) {
-      const key = `${po.orderNo}:${e.marketCode}`;
+      const key = po.orderNo;
       const prev = out[key] ?? {};
       const over = JSON.parse(e.overridesJson || "{}") as Partial<HmFlatCells>;
       out[key] = { ...prev, ...over };
