@@ -75,12 +75,12 @@ export interface MatchResult {
   notes: string[];
 }
 
-export type BookingStatus = "CONFIRMED" | "REQUESTED" | "UNKNOWN";
+export type BookingStatus = "CONFIRMED" | "REQUESTED" | "DELIVERED" | "UNKNOWN";
 
 export interface StatusValidation {
   headingStatus: BookingStatus;
   fieldStatus: BookingStatus;
-  finalStatus: "CONFIRMED" | "REQUESTED" | "STATUS_MISMATCH" | "NEEDS_REVIEW";
+  finalStatus: "CONFIRMED" | "DELIVERED" | "REQUESTED" | "STATUS_MISMATCH" | "NEEDS_REVIEW";
   consistent: boolean;
   message: string;
 }

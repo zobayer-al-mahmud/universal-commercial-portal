@@ -95,9 +95,9 @@ export function BookingBatchUpload() {
         ) : null}
 
         <p className="text-xs text-slate-400">
-          Originals are stored unchanged. Each PDF is extracted (Gross Weight, Total Cartons, Total Quantity, PO, country),
-          searched on the Damco Shipper Portal ({/* mode is shown on the batch page */}current integration mode), matched, and —
-          only when all three values match and the booking is CONFIRMED — a verified PDF is produced. Live portal actions are gated.
+          Your original files are kept unchanged. Each PDF is read for Gross Weight, Total Cartons, Total Quantity, PO and
+          country, then matched against the booking. A verified PDF is produced only when all three values match and the
+          booking is confirmed.
         </p>
         <Submit count={files.length} />
       </form>

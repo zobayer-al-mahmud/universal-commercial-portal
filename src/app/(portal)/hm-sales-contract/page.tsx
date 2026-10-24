@@ -20,7 +20,7 @@ export default async function HmSalesContractListPage() {
     <div>
       <PageHeader
         title="H&M Sales Contracts (three-PDF-set workflow)"
-        subtitle="Each PO uploads three H&M PDFs → A..U rows → one downloadable workbook per contract."
+        subtitle="Upload three H&M PDFs per PO and download a ready-to-use workbook for each contract."
         actions={
           <form action={createAndRedirect}>
             <button className="btn-primary text-xs">+ New Sales Contract</button>

@@ -22,22 +22,21 @@ interface HeaderValues {
 export function HmSalesContractHeader({ id, values }: { id: string; values: HeaderValues }) {
   return (
     <form action={updateHmHeaderAction} className="card space-y-3 p-5">
-      <h3 className="text-sm font-semibold text-slate-700">Sales Contract header (editable; blank by default)</h3>
+      <h3 className="text-sm font-semibold text-slate-800">Sales Contract header</h3>
       <input type="hidden" name="id" value={id} />
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Field label="A Marchent Cont.No." name="marchentContNo" defaultValue={values.marchentContNo} placeholder="AGL/H&M/99-A/2026" />
-        <Field label="B Date" name="contractDate" defaultValue={values.contractDate} placeholder="dd.mm.yyyy — DECISION (BR-HM-01)" />
+        <Field label="B Date" name="contractDate" defaultValue={values.contractDate} placeholder="dd.mm.yyyy" />
         <Field label="C Buyer Code" name="buyerCode" defaultValue={values.buyerCode} placeholder="AGL 349 A" />
         <Field label="D commercial Cont.No." name="commercialContNo" defaultValue={values.commercialContNo} placeholder="AGL/H&M/99/2026" />
         <Field label="E Date" name="commercialDate" defaultValue={values.commercialDate} placeholder="dd.mm.yyyy" />
         <Field label="Q Merchandiser Name" name="merchandiserName" defaultValue={values.merchandiserName} />
-        <Field label="S pack/set" name="packSet" defaultValue={values.packSet} placeholder="blank (BR-HM-04)" />
+        <Field label="S pack/set" name="packSet" defaultValue={values.packSet} placeholder="optional" />
         <Field label="P REMARKS (default)" name="remarksDefault" defaultValue={values.remarksDefault} />
       </div>
       <SaveButton />
       <p className="text-xs text-slate-400">
-        Columns A, B, C, D, E, Q, S, P come from this header — they are not in any of the three PDFs. Columns K, L, T, U are blank for every PO.
-        See <code>docs/modules/hm-sales-contract.md</code> for the unresolved business rules BR-HM-01..05.
+        These fields come from the header and are not read from the PDFs. Leave any field blank if it does not apply.
       </p>
     </form>
   );

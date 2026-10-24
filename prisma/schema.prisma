@@ -938,3 +938,73 @@ model PdfCombineOutput {
 
   @@index([runId, rowNo])
 }
+
+// The single UCP-managed "active" master Excel for the INCENTIV SET COMBINER
+// workflow. One current row (id = "active"); re-imports/edits bump `version`
+// and are audited. The bytes live on disk at `path`.
+model PdfCombineMaster {
+  id         String   @id @default("active")
+  fileName   String
+  path       String
+  sha256     String
+  version    Int      @default(1)
+  sheetName  String   @default("CLABING HERE-F")
+  eligible   Int      @default(0) // eligible rows at last save (display hint)
+  updatedBy  String   @default("system")
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+}
+
+// ---------------------------------------------------------------------------
+// Container Module — CTG Port (cpatos.gov.bd) container-search automation
+// ---------------------------------------------------------------------------
+
+model ContainerSearch {
+  id              String                 @id @default(cuid())
+  containerNo     String // the container number searched
+  expectedLocation String? // optional location from UCP, used to verify the match
+  shipmentRef     String? // optional UCP shipment reference this search belongs to
+  status          String                 @default("queued") // queued|running|completed|not_found|mismatch|failed|needs_auth
+  step            String                 @default("") // live progress step (display)
+  // Parsed portal result (only when found):
+  portalContainerNo String?
+  positionLocation String?
+  slot            String?
+  block           String?
+  yard            String?
+  category        String?
+  containerType   String?
+  destination     String?
+  mlo             String?
+  shippingAgent   String?
+  isoCode         String?
+  containerSize   String?
+  containerHeight String?
+  resultJson      String                 @default("{}")
+  // Captured result PDF (the portal page printed to PDF — no native PDF exists):
+  pdfPath         String?
+  pdfSha256       String?
+  pdfPages        Int                    @default(0)
+  error           String                 @default("")
+  actor           String                 @default("system")
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  processedAt     DateTime?
+  events          ContainerSearchEvent[]
+
+  @@index([containerNo])
+  @@index([createdAt])
+}
+
+model ContainerSearchEvent {
+  id        String          @id @default(cuid())
+  searchId  String
+  search    ContainerSearch @relation(fields: [searchId], references: [id], onDelete: Cascade)
+  step      String
+  status    String // info|ok|failed
+  message   String          @default("")
+  actor     String          @default("system")
+  createdAt DateTime        @default(now())
+
+  @@index([searchId, createdAt])
+}

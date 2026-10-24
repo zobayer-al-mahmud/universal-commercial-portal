@@ -13,6 +13,7 @@ import type { BookingStatus, StatusValidation } from "./batch-types";
 export function normalizeStatus(raw: string): BookingStatus {
   const s = (raw ?? "").trim().toUpperCase();
   if (/\bCONFIRMED\b/.test(s) || s === "CONFIRM") return "CONFIRMED";
+  if (/\bDELIVERED\b/.test(s)) return "DELIVERED";
   if (/\bREQUESTED\b/.test(s) || s === "REQUEST") return "REQUESTED";
   return "UNKNOWN";
 }
@@ -24,6 +25,9 @@ export function validateStatus(headingRaw: string, fieldRaw: string): StatusVali
 
   if (consistent && headingStatus === "CONFIRMED") {
     return { headingStatus, fieldStatus, finalStatus: "CONFIRMED", consistent: true, message: "Heading and status field both read CONFIRMED." };
+  }
+  if (consistent && headingStatus === "DELIVERED") {
+    return { headingStatus, fieldStatus, finalStatus: "DELIVERED", consistent: true, message: "Booking is DELIVERED — shipment has already been handed over. Accepted as a confirmed-and-completed booking." };
   }
   if (consistent && headingStatus === "REQUESTED") {
     return {

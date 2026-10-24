@@ -45,30 +45,41 @@ async function resolveSheetXmlPath(zip: JSZip, sheetName: string): Promise<strin
  * index. The last-known count is updated so Excel can read the file back.
  */
 class SharedStrings {
-  private strings: string[] = [];
-  private xml: string;
+  /** Raw `<si>…</si>` XML for every pre-existing entry — preserved verbatim so
+   *  multi-run rich text (bold label + plain value in one cell, e.g.
+   *  "Port of loading: " + "Chittagong") is never flattened or truncated. */
+  private originalSi: string[] = [];
+  /** Plain-text value of each entry (concatenation of ALL `<t>` runs),
+   *  index-aligned with the table, used for lookups + scanning. */
+  private texts: string[] = [];
+  /** Strings introduced by this patch (appended as plain `<si><t>`). */
+  private appended: string[] = [];
   constructor(xml: string) {
-    this.xml = xml;
-    const siRe = /<si\b[^>]*>([\s\S]*?)<\/si>/g;
-    for (const m of xml.matchAll(siRe)) {
-      const t = m[1].match(/<t[^>]*>([\s\S]*?)<\/t>/);
-      this.strings.push(t ? decodeXmlEntities(t[1]) : m[1].replace(/<[^>]+>/g, ""));
+    const siRe = /<si\b[^>]*>[\s\S]*?<\/si>/g;
+    for (const raw of xml.match(siRe) ?? []) {
+      this.originalSi.push(raw);
+      // Full cell text = concatenation of every <t> run inside the <si>.
+      const runs = [...raw.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map((x) => decodeXmlEntities(x[1]));
+      this.texts.push(runs.length ? runs.join("") : raw.replace(/<[^>]+>/g, ""));
     }
   }
   indexOf(value: string): number {
-    const i = this.strings.indexOf(value);
+    const i = this.texts.indexOf(value);
     if (i >= 0) return i;
-    this.strings.push(value);
-    return this.strings.length - 1;
+    this.texts.push(value);
+    this.appended.push(value);
+    return this.texts.length - 1;
   }
   render(): string {
-    const items = this.strings
-      .map((s) => `<si><t xml:space="preserve">${encodeXmlEntities(s)}</t></si>`)
-      .join("");
-    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${this.strings.length}" uniqueCount="${this.strings.length}">${items}</sst>`;
+    const items = [
+      ...this.originalSi,
+      ...this.appended.map((s) => `<si><t xml:space="preserve">${encodeXmlEntities(s)}</t></si>`),
+    ].join("");
+    const total = this.originalSi.length + this.appended.length;
+    return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="${total}" uniqueCount="${total}">${items}</sst>`;
   }
   /** For callers that need to scan the current table (eg. finding AGL refs). */
-  entries(): string[] { return this.strings; }
+  entries(): string[] { return this.texts; }
 }
 
 function decodeXmlEntities(s: string): string {

@@ -8,12 +8,14 @@ import { extractFromPdf, applyManualCorrections, pdfIsReadable } from "./extract
 import { matchBooking } from "./match";
 import { validateStatus } from "./status";
 import { buildBookingPdf } from "./pdf-writer";
-import type { ExtractionResult, BookingState } from "./batch-types";
+import type { ExtractionResult, BookingState, MatchResult } from "./batch-types";
+import type { BookingLiveStep } from "./progress";
 import {
   searchDamcoBookings,
   selectBooking,
   type BookingCandidate,
 } from "@/server/integrations/damco-portal";
+import { runLivePortalForDoc } from "./live-run";
 
 const MODULE = "booking-correction";
 
@@ -219,37 +221,152 @@ export async function processDocument(docId: string, opts: { actor?: string; for
     // --- READY_TO_SEARCH → PORTAL_SEARCH ---------------------------------
     await setState("READY_TO_SEARCH");
     await setState("PORTAL_SEARCH");
-    const search = await searchDamcoBookings({ company: doc.company, buyer: doc.buyer, extraction });
-    await docEvent(docId, "portal-search", search.ok ? "ok" : "failed", search.message, { entryUrl: search.entryUrl, poQuery: search.poQuery, countryQuery: search.countryQuery, mode: search.mode });
 
-    if (search.authRequired) {
-      await setState("PORTAL_AUTH_REQUIRED", { error: search.message, processedAt: new Date() });
-      await raiseReview(doc.batchId, actor, "PORTAL_AUTH_REQUIRED", search.message, docId, doc.serial, doc.originalName);
-      await recomputeBatch(doc.batchId);
-      return "PORTAL_AUTH_REQUIRED";
-    }
-    if (!search.ok) {
-      await setState("SEARCH_FAILED", { matchOutcome: "SEARCH_FAILED", error: search.message, processedAt: new Date() });
-      await raiseReview(doc.batchId, actor, "SEARCH_FAILED", search.message, docId, doc.serial, doc.originalName);
-      await recomputeBatch(doc.batchId);
-      return "SEARCH_FAILED";
-    }
-    if (search.candidates.length === 0) {
-      await setState("SEARCH_FAILED", { matchOutcome: "SEARCH_FAILED", error: `No booking found for PO ${extraction.poNumber}.`, candidatesJson: "[]", processedAt: new Date() });
-      await raiseReview(doc.batchId, actor, "NO_BOOKING_FOUND", `No booking found for PO ${extraction.poNumber}* / country ${extraction.countryCode}*.`, docId, doc.serial, doc.originalName);
-      await recomputeBatch(doc.batchId);
-      return "SEARCH_FAILED";
-    }
+    let booking: BookingCandidate;
+    let searchMode: "mock" | "dryrun" | "live" = "mock";
+    let entryUrl = "";
+    let poQuery = "";
+    let countryQuery = "";
+    let liveMatch: MatchResult | null = null;
 
-    const picked = selectBooking(search.candidates, { company: doc.company, buyer: doc.buyer, extraction });
-    await prisma.bookingDocument.update({ where: { id: docId }, data: { candidatesJson: JSON.stringify(search.candidates) } });
-    if (!picked.booking || picked.ambiguous) {
-      await setState("NEEDS_REVIEW", { matchOutcome: "NEEDS_REVIEW", warning: picked.reason, bookingRef: picked.booking?.soNumber ?? "", processedAt: new Date() });
-      await raiseReview(doc.batchId, actor, "BOOKING_AMBIGUOUS", picked.reason, docId, doc.serial, doc.originalName);
-      await recomputeBatch(doc.batchId);
-      return "NEEDS_REVIEW";
+    if (env.INTEGRATION_MODE === "live") {
+      // Real visible-browser automation (serialized globally — one at a time per PC).
+      await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStatus: "running", liveStep: "opening-portal", liveDocId: docId, liveStartedAt: new Date(), liveUpdatedAt: new Date(), liveMessage: `Opening Damco portal for PO ${extraction.poNumber}*` } });
+      await prisma.bookingDocument.update({ where: { id: docId }, data: { liveStep: "opening-portal" } });
+      // Persist each fine-grained live sub-step so the UI progress indicator
+      // reflects the real backend state (never a simulated clock).
+      const onStep = async (step: BookingLiveStep, detail?: string) => {
+        await prisma.bookingDocument.update({ where: { id: docId }, data: { liveStep: step } }).catch(() => undefined);
+        await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStep: step, liveMessage: detail ?? step, liveUpdatedAt: new Date() } }).catch(() => undefined);
+        await docEvent(docId, step, "info", detail ?? step).catch(() => undefined);
+      };
+      const dirLive = storageDir(doc.batchId);
+      const live = await runLivePortalForDoc({ batchId: doc.batchId, docId, company: doc.company, buyer: doc.buyer, extraction, storageDir: dirLive, grossWeightToleranceKg: env.BOOKING_GROSS_WEIGHT_TOLERANCE_KG, onStep });
+      searchMode = "live";
+      entryUrl = live.entryUrl; poQuery = live.poQuery; countryQuery = live.countryQuery;
+      await docEvent(docId, "portal-search", live.ok ? "ok" : "failed", live.message, { entryUrl, poQuery, countryQuery, mode: searchMode, candidates: live.candidates.length });
+      await prisma.bookingDocument.update({ where: { id: docId }, data: { candidatesJson: JSON.stringify(live.candidates), searchCriteria: `PO ${poQuery} SKU ${countryQuery}`, liveStep: "portal-search" } });
+
+      if (live.authRequired) {
+        await setState("PORTAL_AUTH_REQUIRED", { error: live.message, processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, "PORTAL_AUTH_REQUIRED", live.message, docId, doc.serial, doc.originalName);
+        await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStatus: "blocked", liveMessage: live.message, liveUpdatedAt: new Date() } });
+        await recomputeBatch(doc.batchId);
+        return "PORTAL_AUTH_REQUIRED";
+      }
+      if (!live.ok || !live.pickedBookingNumber) {
+        await setState("SEARCH_FAILED", { matchOutcome: "SEARCH_FAILED", error: live.message, processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, "SEARCH_FAILED", live.message, docId, doc.serial, doc.originalName);
+        await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStatus: "running", liveMessage: live.message, liveUpdatedAt: new Date() } });
+        await recomputeBatch(doc.batchId);
+        return "SEARCH_FAILED";
+      }
+
+      // Spec gate: verify the three values BEFORE a Damco PDF is accepted. The
+      // live run already skipped PDF capture on a non-match; record the outcome
+      // here (MISMATCH / NEEDS_REVIEW) — a mismatch is never a DOWNLOAD_FAILED.
+      if (live.match && live.match.outcome !== "MATCHED") {
+        const st: BookingState = live.match.outcome === "MISMATCH" ? "MISMATCH" : "NEEDS_REVIEW";
+        await prisma.bookingDocument.update({
+          where: { id: docId },
+          data: {
+            bookingRef: live.pickedBookingNumber,
+            bookingGrossWeight: live.portalValues?.grossWeight ?? "",
+            bookingCartons: live.portalValues?.cartons ?? "",
+            bookingQuantity: live.portalValues?.quantity ?? "",
+            matchOutcome: live.match.outcome,
+            matchJson: JSON.stringify(live.match),
+            liveStep: "verifying-values",
+          },
+        });
+        await docEvent(docId, "match", "failed", `${live.match.outcome}${live.match.notes.length ? " · " + live.match.notes.join("; ") : ""}`);
+        await setState(st, { warning: live.match.notes.join("; "), processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, live.match.outcome, `SO ${live.pickedBookingNumber}: ${live.match.notes.join("; ") || live.match.outcome}`, docId, doc.serial, doc.originalName);
+        await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStatus: "running", liveMessage: `Values did not match for booking ${live.pickedBookingNumber}.`, liveUpdatedAt: new Date() } });
+        await recomputeBatch(doc.batchId);
+        return st;
+      }
+
+      // Store the genuine portal PDF (never a UCP substitute) + portal-read values.
+      const pv = live.portalValues ?? { grossWeight: "", cartons: "", quantity: "", headingStatus: "", fieldStatus: "" };
+      await prisma.bookingDocument.update({
+        where: { id: docId },
+        data: {
+          liveStep: live.portalPdf ? "pdf-captured" : "pdf-failed",
+          portalPdfPath: live.portalPdf?.path ?? null,
+          portalPdfSha256: live.portalPdf?.sha256 ?? "",
+          portalValuesJson: JSON.stringify({ ...pv, portalPdfBytes: live.portalPdf?.bytes ?? 0, portalPdfPages: live.portalPdf?.pages ?? 0, portalPdfVia: live.portalPdf?.via ?? "", portalPdfSourceUrl: live.portalPdf?.sourceUrl ?? "" }),
+        },
+      });
+      await docEvent(
+        docId,
+        "pdf-download",
+        live.portalPdf ? "ok" : "failed",
+        live.portalPdf
+          ? `Captured ${live.portalPdf.bytes} bytes (${live.portalPdf.pages} pg) via ${live.portalPdf.via}; sha256 ${live.portalPdf.sha256.slice(0, 12)}…`
+          : live.portalPdfError || "Portal PDF capture failed.",
+        { bytes: live.portalPdf?.bytes ?? 0, pages: live.portalPdf?.pages ?? 0, via: live.portalPdf?.via ?? "", sha256: live.portalPdf?.sha256 ?? "" },
+      );
+
+      // Fail CLOSED: in live mode, no portal PDF means we never claim COMPLETED.
+      // The booking was found, but the portal download step failed — record it
+      // as DOWNLOAD_FAILED so the user can retry (the search is cached in
+      // candidatesJson and liveStep so retry resumes from here).
+      if (!live.portalPdf) {
+        await setState("DOWNLOAD_FAILED", { matchOutcome: "", error: live.portalPdfError || "Portal PDF capture failed.", processedAt: new Date(), bookingRef: live.pickedBookingNumber });
+        await raiseReview(doc.batchId, actor, "DOWNLOAD_FAILED", live.portalPdfError || "Portal PDF capture failed.", docId, doc.serial, doc.originalName);
+        await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStatus: "running", liveStep: "pdf-failed", liveMessage: live.portalPdfError || "Portal PDF capture failed.", liveUpdatedAt: new Date() } });
+        await recomputeBatch(doc.batchId);
+        return "DOWNLOAD_FAILED";
+      }
+      booking = {
+        soNumber: live.pickedBookingNumber,
+        company: doc.company,
+        buyer: doc.buyer,
+        poNumber: extraction.poNumber,
+        countryCode: extraction.countryCode,
+        grossWeight: pv.grossWeight,
+        cartons: pv.cartons,
+        quantity: pv.quantity,
+        headingStatus: pv.headingStatus,
+        fieldStatus: pv.fieldStatus,
+      };
+      liveMatch = live.match; // MATCHED (non-matches returned above)
+    } else {
+      const search = await searchDamcoBookings({ company: doc.company, buyer: doc.buyer, extraction });
+      searchMode = search.mode;
+      entryUrl = search.entryUrl; poQuery = search.poQuery; countryQuery = search.countryQuery;
+      await docEvent(docId, "portal-search", search.ok ? "ok" : "failed", search.message, { entryUrl, poQuery, countryQuery, mode: searchMode });
+
+      if (search.authRequired) {
+        await setState("PORTAL_AUTH_REQUIRED", { error: search.message, processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, "PORTAL_AUTH_REQUIRED", search.message, docId, doc.serial, doc.originalName);
+        await recomputeBatch(doc.batchId);
+        return "PORTAL_AUTH_REQUIRED";
+      }
+      if (!search.ok) {
+        await setState("SEARCH_FAILED", { matchOutcome: "SEARCH_FAILED", error: search.message, processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, "SEARCH_FAILED", search.message, docId, doc.serial, doc.originalName);
+        await recomputeBatch(doc.batchId);
+        return "SEARCH_FAILED";
+      }
+      if (search.candidates.length === 0) {
+        await setState("SEARCH_FAILED", { matchOutcome: "SEARCH_FAILED", error: `No booking found for PO ${extraction.poNumber}.`, candidatesJson: "[]", processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, "NO_BOOKING_FOUND", `No booking found for PO ${extraction.poNumber}* / country ${extraction.countryCode}*.`, docId, doc.serial, doc.originalName);
+        await recomputeBatch(doc.batchId);
+        return "SEARCH_FAILED";
+      }
+
+      const picked = selectBooking(search.candidates, { company: doc.company, buyer: doc.buyer, extraction });
+      await prisma.bookingDocument.update({ where: { id: docId }, data: { candidatesJson: JSON.stringify(search.candidates) } });
+      if (!picked.booking || picked.ambiguous) {
+        await setState("NEEDS_REVIEW", { matchOutcome: "NEEDS_REVIEW", warning: picked.reason, bookingRef: picked.booking?.soNumber ?? "", processedAt: new Date() });
+        await raiseReview(doc.batchId, actor, "BOOKING_AMBIGUOUS", picked.reason, docId, doc.serial, doc.originalName);
+        await recomputeBatch(doc.batchId);
+        return "NEEDS_REVIEW";
+      }
+      booking = picked.booking;
     }
-    const booking: BookingCandidate = picked.booking;
 
     // --- BOOKING_MATCHING -------------------------------------------------
     await setState("BOOKING_MATCHING", {
@@ -258,7 +375,9 @@ export async function processDocument(docId: string, opts: { actor?: string; for
       bookingCartons: booking.cartons,
       bookingQuantity: booking.quantity,
     });
-    const match = matchBooking(extraction, { grossWeight: booking.grossWeight, cartons: booking.cartons, quantity: booking.quantity }, { grossWeightToleranceKg: env.BOOKING_GROSS_WEIGHT_TOLERANCE_KG });
+    // Live mode already computed the match on the portal-read values; reuse it
+    // so the stored result matches what gated the PDF. Mock mode matches here.
+    const match = liveMatch ?? matchBooking(extraction, { grossWeight: booking.grossWeight, cartons: booking.cartons, quantity: booking.quantity }, { grossWeightToleranceKg: env.BOOKING_GROSS_WEIGHT_TOLERANCE_KG });
     await prisma.bookingDocument.update({ where: { id: docId }, data: { matchOutcome: match.outcome, matchJson: JSON.stringify(match) } });
     await docEvent(docId, "match", match.outcome === "MATCHED" ? "ok" : "failed", `${match.outcome}${match.notes.length ? " · " + match.notes.join("; ") : ""}`);
 
@@ -287,7 +406,7 @@ export async function processDocument(docId: string, opts: { actor?: string; for
         `Total Quantity: ${booking.quantity}`,
         `Booking Status: ${status.fieldStatus}`,
       ],
-      footer: `Generated by UCP Booking Correction · mode=${search.mode} · ${new Date().toISOString()}`,
+      footer: `Generated by UCP Booking Correction · mode=${searchMode} · ${new Date().toISOString()}`,
     });
     const dir = storageDir(doc.batchId);
     await mkdir(dir, { recursive: true });
@@ -311,10 +430,10 @@ export async function processDocument(docId: string, opts: { actor?: string; for
     await setState("STATUS_VALIDATION", { generatedPdfPath, headingStatus: status.headingStatus, fieldStatus: status.fieldStatus, finalStatus: status.finalStatus });
     await docEvent(docId, "status-validate", status.finalStatus === "CONFIRMED" ? "ok" : "failed", status.message);
 
-    if (status.finalStatus === "CONFIRMED") {
+    if (status.finalStatus === "CONFIRMED" || status.finalStatus === "DELIVERED") {
       await setState("COMPLETED", { processedAt: new Date() });
       await recomputeBatch(doc.batchId);
-      await audit({ entityType: "job", entityId: doc.batchId, action: "booking.document.completed", actor, data: { docId, so: booking.soNumber } });
+      await audit({ entityType: "job", entityId: doc.batchId, action: "booking.document.completed", actor, data: { docId, so: booking.soNumber, finalStatus: status.finalStatus } });
       return "COMPLETED";
     }
     // REQUESTED / STATUS_MISMATCH / NEEDS_REVIEW — never reported as confirmed.
@@ -354,7 +473,8 @@ export async function processBatch(batchId: string, opts: { actor?: string; forc
   const docs = await prisma.bookingDocument.findMany({ where: { batchId }, orderBy: { serial: "asc" } });
   const queue = docs.filter((d) => opts.force || !SUCCESS_STATES.includes(d.state as BookingState)).map((d) => d.id);
 
-  const limit = Math.max(1, env.BOOKING_CONCURRENCY);
+  // Live mode drives one visible browser — never parallelise its clicks.
+  const limit = env.INTEGRATION_MODE === "live" ? 1 : Math.max(1, env.BOOKING_CONCURRENCY);
   let cursor = 0;
   async function worker() {
     while (cursor < queue.length) {
@@ -364,5 +484,8 @@ export async function processBatch(batchId: string, opts: { actor?: string; forc
   }
   await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
   await recomputeBatch(batchId);
-  await audit({ entityType: "job", entityId: batchId, action: "booking.batch.processed", actor, data: { docs: queue.length } });
+  if (env.INTEGRATION_MODE === "live") {
+    await prisma.bookingBatch.update({ where: { id: batchId }, data: { liveStatus: "finished", liveStep: "", liveMessage: "Run finished.", liveUpdatedAt: new Date() } });
+  }
+  await audit({ entityType: "job", entityId: batchId, action: "booking.batch.processed", actor, data: { docs: queue.length, mode: env.INTEGRATION_MODE } });
 }

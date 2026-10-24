@@ -20,6 +20,15 @@ const schema = z.object({
     .enum(["true", "false"])
     .default("false")
     .transform((v) => v === "true"),
+  // OCR engine config (used by the PDF File Rename module for scanned copies).
+  // Tesseract language + the directory that holds `<lang>.traineddata`. The
+  // traineddata lives under var/ (git-ignored) so it is never committed; on the
+  // first run it is downloaded there if absent and network is available.
+  OCR_LANG: z.string().default("eng"),
+  OCR_TESSDATA_DIR: z.string().default("./var/ocr-tessdata"),
+  // How many leading pages of a scanned PDF to OCR when hunting for the invoice
+  // number (it is on the first declaration page in every observed sample).
+  OCR_MAX_PAGES: z.coerce.number().int().positive().max(10).default(2),
   BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional().or(z.literal("")),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().or(z.literal("")),
 
@@ -78,19 +87,63 @@ const schema = z.object({
   // Folder holding the country-wise `<invoiceNo> <countryCode>.xlsx` templates.
   // The writer reads from here (never modifies the originals); fresh copies are
   // produced per download.
+  // Default = the in-repo drop (resolved against the process cwd = repo root).
+  // Override in `.env` with an absolute path on deployments where the folder
+  // lives elsewhere.
   CUSTOMS_INVOICE_TEMPLATE_DIR: z
     .string()
-    .default("D:/oct-2026/automation docs/New folder/3. Customs Invoice Generation/Customs Invoice templates and sample files"),
+    .default("./Customs Invoice templates and sample files"),
   CUSTOMS_INVOICE_MAX_FILE_MB: z.coerce.number().positive().default(20),
 
   // --- PDF Combiner -----------------------------------------------------------
   // Server folder whose immediate sub-folders are offered for selection. Read
   // only: source PDFs are never modified, moved or deleted. Blank = disabled.
   PDF_COMBINER_ROOT: z.string().optional().or(z.literal("")),
+  // Backend master Excel that seeds the UCP-managed "active" copy on first use.
+  // Default = the real drop in docs/. After seeding, UCP works from its own
+  // active copy under STORAGE_ROOT; this path is only read to seed/re-seed.
+  PDF_COMBINER_MASTER_PATH: z
+    .string()
+    .default("./docs/INCENTIV SET COMBINER FORMET FINAL - exp sirial.xlsx"),
+  // Timeout (ms) for a single filesystem access to the (often network/UNC)
+  // source root, so a dead/unreachable share fails fast with an actionable
+  // message instead of hanging the request.
+  PDF_COMBINER_FS_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
   PDF_COMBINER_MAX_FOLDERS: z.coerce.number().int().positive().default(20),
   PDF_COMBINER_MAX_ROWS: z.coerce.number().int().positive().default(1000),
   PDF_COMBINER_MAX_INDEXED_FILES: z.coerce.number().int().positive().default(50000),
   PDF_COMBINER_MAX_MASTER_MB: z.coerce.number().positive().default(10),
+
+  // --- PDF File Rename (module 4, folder workflow) ---------------------------
+  // Base directory holding the dedicated per-document-type folders (e.g.
+  // "FCR EXTRACT & RENAME", "SHIPPING BILL SOFT COPY", "WEEK- 41 SHIPPING BILL
+  // SCAN COPY"). Each immediate sub-folder is offered in the UI. Read-only:
+  // originals are never modified. Default = the in-repo drop (resolved against
+  // the process cwd = repo root); override with an absolute path on deployments.
+  PDF_RENAME_ROOT: z.string().default("./PDF File Rename"),
+  // Renamed copies are written into this sub-folder of each dedicated folder,
+  // so FCR / soft-copy / scanned outputs never mix and originals stay intact.
+  PDF_RENAME_OUTPUT_SUBDIR: z.string().default("UCP Renamed"),
+  PDF_RENAME_MAX_FILES: z.coerce.number().int().positive().default(2000),
+
+  // --- Container Module (CTG Port / cpatos.gov.bd) ----------------------------
+  // The Port Community System entry page (holds the public container search
+  // form `frm3` AND the login modal `frmmodal`). Verified live 2026-10-24.
+  CTG_PORT_PCS_URL: z.string().default("https://www.cpatos.gov.bd/pcs/"),
+  // Optional PCS login. The container search itself is PUBLIC (no login needed),
+  // but when credentials are configured the bot signs in first (the authority's
+  // operational account, per the user's workflow). Read ONLY by the live adapter;
+  // never logged, returned, or written to disk. CAPTCHA/OTP are never bypassed.
+  CTG_PORT_USERNAME: z.string().optional().or(z.literal("")),
+  CTG_PORT_PASSWORD: z.string().optional().or(z.literal("")),
+  // Visible browser for the automation. Reuses the Damco browser binary by
+  // default but runs on its own CDP port + profile so the two never clash.
+  CONTAINER_BROWSER_PATH: z.string().optional().or(z.literal("")),
+  CONTAINER_CDP_PORT: z.coerce.number().int().min(1024).max(65535).default(9334),
+  CONTAINER_SESSION_DIR: z.string().default("./var/container-session"),
+  CONTAINER_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
+  // Where captured container result PDFs are stored (under STORAGE_ROOT).
+  CONTAINER_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
 });
 
 const parsed = schema.safeParse(process.env);

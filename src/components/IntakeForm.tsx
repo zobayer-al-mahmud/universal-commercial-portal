@@ -52,7 +52,7 @@ export function IntakeForm() {
               "644637_PurchaseOrder_Supplier_x.pdf\n644637_SizePerColourBreakdown_Supplier_x.pdf\n644637_TotalCountryBreakdown_Supplier_x.pdf"
             }
           />
-          <p className="mt-1 text-xs text-slate-400">The &quot;three expected PDFs&quot; rule (SC-FR-003) is enforced here.</p>
+          <p className="mt-1 text-xs text-slate-400">Attach the three expected PDFs for this order package.</p>
         </div>
         <div>
           <label className="label">Block contract ref</label>

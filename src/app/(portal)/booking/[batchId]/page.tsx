@@ -5,8 +5,12 @@ import { PageHeader, StatusBadge, Stat } from "@/components/ui";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { ExtractionReview } from "@/components/ExtractionReview";
-import { retryBookingDocAction, reprocessBatchAction } from "@/app/actions/booking-batch";
+import { BookingBatchAutoStart } from "@/components/BookingBatchAutoStart";
+import { BookingLiveProgress } from "@/components/BookingLiveProgress";
+import { retryBookingDocAction, reprocessBatchAction, confirmBookingPdfAction, startBookingBatchAction } from "@/app/actions/booking-batch";
 import type { MatchResult } from "@/server/booking-correction/batch-types";
+import { displayProgress, PROGRESS_TONE } from "@/server/booking-correction/progress";
+import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -40,6 +44,9 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
   const completed = docs.filter((d) => d.state === "COMPLETED").length;
   const review = docs.filter((d) => REVIEWABLE.includes(d.state) && !["FAILED", "SEARCH_FAILED", "DOWNLOAD_FAILED"].includes(d.state)).length;
   const failed = docs.filter((d) => ["FAILED", "SEARCH_FAILED", "DOWNLOAD_FAILED"].includes(d.state)).length;
+  const liveConfigured = env.INTEGRATION_MODE === "live" && env.DAMCO_LIVE_ENABLED && !!env.DAMCO_USERNAME && !!env.DAMCO_PASSWORD;
+  const pendingDocs = docs.filter((d) => d.state !== "COMPLETED").length;
+  const canAutoStart = canRetry && liveConfigured && pendingDocs > 0 && batch.liveStatus !== "running";
 
   return (
     <div>
@@ -56,17 +63,49 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
         <Stat label="Failed" value={failed} tone="text-rose-700" />
       </div>
 
-      <div className="mb-6 flex flex-wrap items-center gap-2">
-        {canExport ? <a href={`/api/booking/${batch.id}/zip`} className="btn-primary text-xs">⬇ Batch ZIP (completed only)</a> : null}
-        <a href={`/api/booking/${batch.id}/failed-report`} className="btn-ghost text-xs">⬇ Failed / review report (CSV)</a>
+      <BookingBatchAutoStart batchId={batch.id} shouldStart={canAutoStart} action={startBookingBatchAction} />
+
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {canRetry && liveConfigured ? (
+          <form action={startBookingBatchAction}>
+            <input type="hidden" name="batchId" value={batch.id} />
+            <button className="btn-primary text-xs" disabled={batch.liveStatus === "running" || pendingDocs === 0}>
+              {batch.liveStatus === "running" ? "▶ Damco automation running…" : batch.liveStatus === "blocked" ? "▶ Resume Damco automation" : "▶ Start Damco automation"}
+            </button>
+          </form>
+        ) : null}
         {canRetry ? (
           <form action={reprocessBatchAction}>
             <input type="hidden" name="batchId" value={batch.id} />
             <button className="btn-ghost text-xs">↻ Reprocess non-completed</button>
           </form>
         ) : null}
+        {canExport ? <a href={`/api/booking/${batch.id}/zip`} className="btn-primary text-xs">⬇ Batch ZIP (completed)</a> : null}
+        {canExport ? <a href={`/api/booking/${batch.id}/zip?include=all`} className="btn-ghost text-xs">⬇ ZIP · originals + Damco + edited</a> : null}
+        <a href={`/api/booking/${batch.id}/failed-report`} className="btn-ghost text-xs">⬇ Failed / review report (CSV)</a>
         <Link href="/modules/booking-correction" className="btn-ghost text-xs">← Back to module</Link>
       </div>
+
+      {batch.liveMessage ? (
+        <div className={`mb-4 rounded-md border px-3 py-2 text-xs ${batch.liveStatus === "blocked" ? "border-amber-200 bg-amber-50 text-amber-800" : batch.liveStatus === "failed" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
+          <strong>Damco automation:</strong> {batch.liveStatus} · {batch.liveMessage}
+        </div>
+      ) : null}
+      {!liveConfigured ? (
+        <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          Live Damco automation isn&apos;t enabled on this server, so this batch runs in simulation mode. Contact your administrator to enable live processing.
+        </div>
+      ) : null}
+
+      <section className="mb-8">
+        <h2 className="mb-3 text-sm font-semibold text-slate-800">Automation progress</h2>
+        <BookingLiveProgress
+          batchId={batch.id}
+          canExport={canExport}
+          canRetry={canRetry}
+          initialRunning={batch.status === "processing" || batch.liveStatus === "running" || pendingDocs > 0}
+        />
+      </section>
 
       {/* Results table — one row per uploaded document (§12). */}
       <section className="card mb-8 overflow-x-auto">
@@ -79,11 +118,13 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
               <th className="th">Ctn in</th><th className="th">Ctn bk</th>
               <th className="th">Qty in</th><th className="th">Qty bk</th>
               <th className="th">Booking</th><th className="th">Orig status</th><th className="th">Final</th>
-              <th className="th">State</th><th className="th">Note</th><th className="th">When</th><th className="th">Download</th>
+              <th className="th">Progress</th><th className="th">State</th><th className="th">Note</th><th className="th">When</th><th className="th">Download</th>
             </tr>
           </thead>
           <tbody>
-            {docs.map((d) => (
+            {docs.map((d) => {
+              const prog = displayProgress(d);
+              return (
               <tr key={d.id} className="border-t border-slate-50">
                 <td className="td">{d.serial}</td>
                 <td className="td max-w-[160px] truncate" title={d.originalName}>{d.originalName}</td>
@@ -97,17 +138,23 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
                 <td className="td font-mono">{d.bookingRef || "—"}</td>
                 <td className="td">{d.headingStatus || "—"}</td>
                 <td className="td">{d.finalStatus || "—"}</td>
+                <td className="td"><span className={`badge ${PROGRESS_TONE[prog.label]}`} title={`step ${prog.step}/${prog.of}`}>{prog.label}</span></td>
                 <td className="td"><span className={`badge ${tone(d.state)}`}>{d.state}</span></td>
                 <td className="td max-w-[200px] truncate text-rose-600" title={d.error || d.warning}>{d.error || d.warning || "—"}</td>
                 <td className="td text-slate-400">{d.processedAt ? d.processedAt.toISOString().slice(5, 16).replace("T", " ") : "—"}</td>
                 <td className="td">
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     {canExport && d.state === "COMPLETED" ? <a href={`/api/booking/doc/${d.id}/generated`} className="text-ananta hover:underline">PDF</a> : null}
+                    {canExport && d.portalPdfPath ? <a href={`/api/booking/doc/${d.id}/portal`} target="_blank" rel="noreferrer" className="text-indigo-700 hover:underline" title={`Damco portal PDF (${d.portalPdfSha256.slice(0, 10)}…) — preview in new tab`}>portal</a> : null}
+                    {canExport && d.portalPdfPath ? <a href={`/api/booking/doc/${d.id}/portal?download=1`} className="text-indigo-700/70 hover:underline" title="Download the Damco portal PDF">⬇</a> : null}
+                    {canExport && d.correctedPdfPath ? <a href={`/api/booking/doc/${d.id}/corrected`} className="text-emerald-700 hover:underline">edited</a> : null}
                     {canExport ? <a href={`/api/booking/doc/${d.id}/original`} className="text-slate-500 hover:underline">orig</a> : null}
+                    {canReview ? <Link href={`/booking/doc/${d.id}/edit`} className="text-slate-700 hover:underline">edit</Link> : null}
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </section>
@@ -126,7 +173,14 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
                   <span className={`badge ${tone(d.state)}`}>{d.state}</span>
                   {d.manualCorrected ? <span className="badge bg-indigo-100 text-indigo-700">manually corrected</span> : null}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  {canReview && d.headingStatus === "REQUESTED" && d.fieldStatus === "REQUESTED" ? (
+                    <form action={confirmBookingPdfAction}>
+                      <input type="hidden" name="docId" value={d.id} />
+                      <button className="btn-primary text-xs" title="Rewrite the corrected PDF with BOOKING CONFIRMED title + status">✓ Confirm PDF (one click)</button>
+                    </form>
+                  ) : null}
+                  {canReview ? <Link href={`/booking/doc/${d.id}/edit`} className="btn-ghost text-xs">✎ Edit PDF text</Link> : null}
                   {canRetry && d.state !== "COMPLETED" ? (
                     <form action={retryBookingDocAction}>
                       <input type="hidden" name="docId" value={d.id} />

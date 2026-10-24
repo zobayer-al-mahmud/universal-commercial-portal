@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import ExcelJS from "exceljs";
 import { readdirSync } from "fs";
 import { existsSync } from "fs";
+import { join } from "path";
 import JSZip from "jszip";
 import { parseTemplateFilename, listTemplates, resolveTemplate, listCountryCodes, type InvoiceTemplate } from "@/server/customs-invoice/templates";
 import { extractInvoiceFieldsFromPdf } from "@/server/customs-invoice/parse-pdf";
@@ -131,10 +132,13 @@ describe("writeInvoiceXlsx (fresh fallback)", () => {
   });
 });
 
-// Integration: if the templates folder is present on the dev machine, verify
-// the resolver and writer survive end-to-end on a real sample.
-const TEMPLATE_DIR = "D:/oct-2026/automation docs/New folder/3. Customs Invoice Generation/Customs Invoice templates and sample files";
-const hasTemplates = existsSync(TEMPLATE_DIR) && readdirSync(TEMPLATE_DIR).some((f) => f.endsWith(".xlsx"));
+// Integration: if the templates folder is present, verify the resolver and
+// writer survive end-to-end on a real sample. The real drop lives in the repo
+// root (resolved against the test process cwd); falls back to the env value.
+const TEMPLATE_DIR = existsSync(join(process.cwd(), "Customs Invoice templates and sample files"))
+  ? join(process.cwd(), "Customs Invoice templates and sample files")
+  : (process.env.CUSTOMS_INVOICE_TEMPLATE_DIR || "");
+const hasTemplates = !!TEMPLATE_DIR && existsSync(TEMPLATE_DIR) && readdirSync(TEMPLATE_DIR).some((f) => f.endsWith(".xlsx"));
 describe.skipIf(!hasTemplates)("end-to-end with real templates", () => {
   it("listTemplates finds the OB template", () => {
     const ts = listTemplates(TEMPLATE_DIR);
@@ -213,6 +217,29 @@ describe.skipIf(!hasTemplates)("end-to-end with real templates", () => {
       expect(r, `patchTemplate failed for ${code}`).not.toBeNull();
       expect(r!.fieldsWritten.length).toBeGreaterThan(5);
     }
+  });
+  it("preserves multi-run rich-text shared strings (no run truncation) — regression", async () => {
+    const { readFileSync } = await import("fs");
+    const ts = listTemplates(TEMPLATE_DIR);
+    const ob = ts.find((t) => t.countryCode === "OB")!;
+    // Collect the full (all-runs concatenated) text of every <si> in the template.
+    const siText = (xml: string) =>
+      (xml.match(/<si\b[^>]*>[\s\S]*?<\/si>/g) ?? []).map((raw) =>
+        [...raw.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
+          .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"))
+          .join(""),
+      );
+    const origZip = await JSZip.loadAsync(readFileSync(ob.path));
+    const before = new Set(siText(await origZip.file("xl/sharedStrings.xml")!.async("string")));
+    // Sanity: the template really does contain a multi-run string.
+    expect([...before].some((s) => /port of loading:\s*chittagong/i.test(s))).toBe(true);
+
+    const r = await patchTemplate(ob.path, { ...BASE, marketCode: "OB" });
+    const outZip = await JSZip.loadAsync(r!.buffer);
+    const after = new Set(siText(await outZip.file("xl/sharedStrings.xml")!.async("string")));
+    // Every original full string must still be present verbatim after the patch.
+    const dropped = [...before].filter((s) => s !== "" && !after.has(s));
+    expect(dropped, `shared strings mangled: ${JSON.stringify(dropped.slice(0, 5))}`).toEqual([]);
   });
 });
 

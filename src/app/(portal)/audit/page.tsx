@@ -20,22 +20,22 @@ export default async function AuditPage() {
     <div>
       <PageHeader
         title="Audit Trail"
-        subtitle="Append-only event log (SC-NFR-07). Showing the 200 most recent events."
+        subtitle="A tamper-evident record of every action. Showing the 200 most recent events."
       />
       {events.length === 0 ? (
         <Empty>No audit events yet.</Empty>
       ) : (
-        <div className="card overflow-hidden">
+        <div className="card overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-slate-50">
+            <thead className="bg-slate-50/70">
               <tr>
                 <th className="th">Time</th><th className="th">Entity</th><th className="th">Action</th>
                 <th className="th">Actor</th><th className="th">Data</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {events.map((e) => (
-                <tr key={e.id} className="border-t border-slate-50">
+                <tr key={e.id} className="hover:bg-slate-50/60">
                   <td className="td whitespace-nowrap text-xs text-slate-400">{e.createdAt.toISOString().replace("T", " ").slice(0, 19)}</td>
                   <td className="td text-xs">{e.entityType}:{e.entityId.slice(0, 8)}</td>
                   <td className="td text-xs font-medium">{e.action}</td>

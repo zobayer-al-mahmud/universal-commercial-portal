@@ -22,7 +22,7 @@ export default async function ReviewPage() {
     <div>
       <PageHeader
         title="Review Queue"
-        subtitle="Exceptions routed here never reach a live destination (SC-FR-015). Resolve or reject each with an audited decision."
+        subtitle="Exceptions that need a human decision. Resolve or reject each — every decision is recorded in the audit trail."
       />
 
       <h3 className="mb-2 text-sm font-semibold text-slate-700">Open ({open.length})</h3>

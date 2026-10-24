@@ -4,44 +4,142 @@
 
 :root {
   --ananta: #3c6da5;
+  --surface: #ffffff;
+  --surface-muted: #f6f8fb;
+  --border: #e4e9f0;
 }
 
 html,
 body {
   padding: 0;
   margin: 0;
-  background: #f4f6f9;
-  color: #23272b;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+  background: var(--surface-muted);
+  color: #2b3139;
+  font-family: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
     sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Thin, unobtrusive scrollbars */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #cdd5e0;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #aab6c6;
+  background-clip: content-box;
 }
 
 @layer components {
+  /* ---------- Surfaces ---------- */
   .card {
-    @apply rounded-lg border border-slate-200 bg-white shadow-sm;
+    @apply rounded-xl border border-slate-200/80 bg-white shadow-card;
   }
+  .card-hover {
+    @apply transition duration-150 hover:-translate-y-0.5 hover:border-ananta-300 hover:shadow-card-hover;
+  }
+  .panel-head {
+    @apply flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-3.5;
+  }
+  .panel-title {
+    @apply text-sm font-semibold text-slate-800;
+  }
+
+  /* ---------- Buttons ---------- */
   .btn {
-    @apply inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-medium transition;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-ananta-400 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .btn-primary {
-    @apply btn bg-ananta text-white hover:bg-ananta-600 disabled:opacity-50;
+    @apply btn bg-ananta text-white shadow-sm hover:bg-ananta-600 active:bg-ananta-700;
   }
   .btn-ghost {
-    @apply btn border border-slate-300 bg-white text-slate-700 hover:bg-slate-50;
+    @apply btn border border-slate-300 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50;
   }
+  .btn-subtle {
+    @apply btn bg-slate-100 text-slate-700 hover:bg-slate-200;
+  }
+  .btn-danger {
+    @apply btn bg-rose-600 text-white hover:bg-rose-700;
+  }
+  .btn-sm {
+    @apply px-2.5 py-1.5 text-xs;
+  }
+  .btn-xs {
+    @apply gap-1 rounded-md px-2 py-1 text-xs;
+  }
+
+  /* ---------- Forms ---------- */
   .label {
-    @apply block text-sm font-medium text-slate-600;
+    @apply block text-sm font-medium text-slate-700;
   }
-  .input {
-    @apply mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-ananta focus:outline-none focus:ring-1 focus:ring-ananta;
+  .hint {
+    @apply mt-1 text-xs text-slate-400;
   }
+  .input,
+  .select,
+  .textarea {
+    @apply mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm transition placeholder:text-slate-400 focus:border-ananta focus:outline-none focus:ring-2 focus:ring-ananta-200 disabled:bg-slate-50 disabled:text-slate-500;
+  }
+  .select {
+    @apply pr-8;
+  }
+
+  /* ---------- Badges / chips ---------- */
   .badge {
-    @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
   }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50;
+  }
+  .chip-active {
+    @apply border-transparent bg-ananta text-white hover:bg-ananta-600;
+  }
+
+  /* ---------- Tables ---------- */
   .th {
-    @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500;
+    @apply px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-slate-500;
   }
   .td {
-    @apply px-3 py-2 text-sm text-slate-700 align-top;
+    @apply px-4 py-2.5 text-sm text-slate-700 align-top;
+  }
+  .row-link {
+    @apply font-mono text-xs font-medium text-ananta hover:underline;
+  }
+
+  /* ---------- Feedback ---------- */
+  .alert {
+    @apply rounded-lg border px-4 py-3 text-sm;
+  }
+  .alert-info {
+    @apply alert border-ananta-100 bg-ananta-50 text-ananta-800;
+  }
+  .alert-warn {
+    @apply alert border-amber-200 bg-amber-50 text-amber-800;
+  }
+  .alert-danger {
+    @apply alert border-rose-200 bg-rose-50 text-rose-700;
+  }
+
+  /* ---------- Loading ---------- */
+  .skeleton {
+    @apply relative overflow-hidden rounded-md bg-slate-100;
+  }
+  .skeleton::after {
+    content: "";
+    @apply absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/60 to-transparent;
+  }
+  .spinner {
+    @apply inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-ananta;
   }
 }

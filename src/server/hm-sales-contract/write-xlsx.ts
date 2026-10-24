@@ -175,7 +175,7 @@ export async function writeSalesContractWorkbook(opts: HmWriteOptions): Promise<
  *   Time of Delivery = multi-line, one TOD per market (deduplicated)
  */
 function flattenRow(r: HmTemplateRow, set: HmSetResult, header: HmWriteOptions["header"]): HmFlatCells {
-  const productName = set.po?.header.productName ?? "";
+  const productName = set.po?.header?.productName ?? "";
   const description = r.itemDes;
   return {
     marchentContNo: header?.marchentContNo ?? "",

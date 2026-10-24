@@ -5,7 +5,7 @@ import { prisma } from "./db";
  * Writes are insert-only; nothing in the app updates or deletes AuditEvent rows.
  */
 export async function audit(params: {
-  entityType: "job" | "review" | "user" | "document" | "contract" | "integration" | "auth" | "shipment-schedule" | "customs-invoice";
+  entityType: "job" | "review" | "user" | "document" | "contract" | "integration" | "auth" | "shipment-schedule" | "customs-invoice" | "container";
   entityId: string;
   action: string;
   actor?: string;

@@ -12,6 +12,28 @@ export interface ModuleCatalogEntry {
   openQuestions: string[];
 }
 
+/**
+ * Modules hidden from the portal UI (dashboard, module launcher, detail routes).
+ * These are placeholders with no working functionality yet; hiding them keeps the
+ * interface focused on real features. Non-destructive: DB rows and the Damco
+ * integration adapter that Booking Correction relies on are untouched.
+ */
+export const HIDDEN_MODULE_KEYS: ReadonlySet<string> = new Set([
+  "hm-portal",
+  "bb-portal",
+  "damco-portal",
+  "common",
+]);
+
+export function isVisibleModule(key: string): boolean {
+  return !HIDDEN_MODULE_KEYS.has(key);
+}
+
+/** Filter a list of module-like records down to the ones shown in the UI. */
+export function visibleModules<T extends { key: string }>(modules: T[]): T[] {
+  return modules.filter((m) => isVisibleModule(m.key));
+}
+
 export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
   "hm-sales-contract": {
     key: "hm-sales-contract",
@@ -88,31 +110,51 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
   },
   "pdf-rename": {
     key: "pdf-rename",
-    sources: "428 scanned PDFs (FCR / Shipping Bill); 2 extraction CSVs with full field schemas; 4 workbooks.",
-    status: "partial",
+    sources: "Real PDFs in the three dedicated folders under PDF_RENAME_ROOT (FCR EXTRACT & RENAME, SHIPPING BILL SOFT COPY, WEEK- 41 SHIPPING BILL SCAN COPY). Rules derived + verified against the actual files, Oct-2026.",
+    status: "implemented",
     scope: [
-      "FCR extraction schema (34 fields incl. FCR Number, Order Number, Invoice Number, Export Number, Container).",
-      "Bill-of-Export schema (39 fields incl. BE No/Date, HS Code, weights, EXP No, Invoice).",
-      "Rename scanned PDFs from an opaque name ('1 (1).pdf') to a business key (Invoice / FCR number).",
-      "Deterministic rename-plan preview implemented; destination write stays a preview.",
+      "Folder workflow: pick a dedicated folder, extract each PDF's invoice number and rename to <invoice>.pdf — Rename One PDF and Rename All PDFs.",
+      "Invoice number read from embedded text: FCR 'INV NO :' label (verified 80/80); Bill of Export box-44 '<invoice> <country> <date>' (verified 129/129).",
+      "Scanned shipping bills (CCITT Group-4 fax images, no text) OCR'd via Tesseract: page image → TIFF → OCR → same box-44 rule (verified on sampled scans).",
+      "Fail-closed: duplicate invoice numbers, unreadable PDFs and OCR misses go to manual review — never a guessed name; an existing target is never overwritten; originals and page layout are preserved (copy into an output sub-folder per dedicated folder).",
+      "Per-file preview, individual + bulk ZIP download of renamed files, search, and an audit trail. Legacy CSV-driven rename plan kept as an advanced option.",
     ],
-    openQuestions: ["Exact canonical output filename pattern", "Collision handling", "OCR policy for scanned copies"],
+    openQuestions: ["Canonical output for non-FCR/non-bill document types", "Whether OCR should run automatically on large scan batches (performance)"],
   },
   "pdf-combiner": {
     key: "pdf-combiner",
-    sources: "User spec (2026-10-22): master Excel lists, row-wise, the file names to merge; files live in 10–15 folders on a server share (nested sub-folders allowed).",
+    sources: "Backend master 'INCENTIV SET COMBINER FORMET FINAL - exp sirial.xlsx' (sheet CLABING HERE-F) + the 'Combiner Folders' network share (PDF_COMBINER_ROOT). Verified 2026-10-24.",
     status: "implemented",
     scope: [
-      "Upload a master .xlsx/.csv: one row = one output PDF; file cells merged left → right; optional 'Output PDF Name' column.",
-      "Select folders from the configured server root (PDF_COMBINER_ROOT); selections are validated against the live listing.",
-      "Files are searched recursively inside the selected folders; case-insensitive; '.pdf' optional; 'Folder/sub/name.pdf' disambiguates.",
-      "Fail closed per row: any missing, ambiguous or unreadable/encrypted file → no PDF for that row, reason reported.",
-      "Source folders are read-only; outputs stored per run; per-file and ZIP download; audit trail.",
+      "Backend Excel is managed inside UCP: seeded once from PDF_COMBINER_MASTER_PATH into an active copy, then view/search/edit/save (surgical cell edits preserve the whole workbook), download, and re-import+replace after validation.",
+      "Each CLABING HERE-F row = one output PDF. Documents come from SL-0n (folder) + FL-0n (file) column pairs, merged in ascending slot order.",
+      "Files are resolved directly against the share by exact folder+file (fresh every run), so huge folders like Container are never fully listed and added/removed files are picked up automatically.",
+      "Combine One Row and Combine All Rows actions; row eligibility = has an invoice/serial key and ≥1 complete folder/file slot.",
+      "Fail closed per row: missing folder, missing file or unreadable/encrypted PDF → no output for that row, reason reported. Source folders are read-only; per-file + ZIP download; audit trail.",
+      "Output PDF named by invoice number (fallback serial, then Row_<n>).",
     ],
     openQuestions: [
-      "Should a row with a missing file still produce a partial PDF (currently: no — fail closed)?",
-      "Output file naming when the master has no 'Output PDF Name' column (currently Row_<n>.pdf).",
-      "Should outputs also be written back to a server folder (currently download only)?",
+      "Should a row with a missing document still produce a partial PDF (currently: no — fail closed)?",
+      "Should SL-06..SL-18 slots (no FL column in the current master) ever carry files, and if so under what filename rule?",
+      "Should outputs also be written back to a server folder (currently download/ZIP only)?",
+    ],
+  },
+  container: {
+    key: "container",
+    sources: "Live CTG Port Port Community System (https://www.cpatos.gov.bd/pcs/). Selectors + behaviour verified live 2026-10-24 against real records (e.g. TLLU4872965).",
+    status: "implemented",
+    scope: [
+      "Visible-browser automation: opens cpatos.gov.bd → Port Community System, enters the container number into the real search form (frm3 → POST /Report/mySearchContainerLocation, field #containerLocation, submit #submit, target=_blank).",
+      "The search is public; when CTG_PORT_USERNAME/PASSWORD are set the bot also signs in first (real login form frmmodal). CAPTCHA/OTP pause for manual completion — never bypassed.",
+      "Parses the portal's real 'Container Infromation' result (Container NO, Position/Location → Slot/Block/Yard, Category, Type, Destination, MLO, Shipping Agent, ISO Code, Size, Height); strips the commented-out duplicate block.",
+      "Verifies the returned container number (and, when supplied, the UCP Container Location) against the shipment before accepting the record; mismatches and not-found are reported, never ignored.",
+      "The portal exposes NO native PDF/print/export, so UCP reproduces the portal's OWN 'Container Infromation' result page as a clean single-page PDF: a pixel-controlled replica of the CPA layout (embedded CPA logo + header, centred title, the 12 label:value rows in the portal's exact order, serif typography, white background, no borders/tables/extra pages), populated ONLY with the extracted values (blank when unavailable — never invented), printed via CDP Page.printToPDF (headful). The PDF is validated (%PDF header, %%EOF, ≥1 page) before it is stored.",
+      "Live 7-step progress (Opening CTG Port → … → Download Verified), per-search event log + append-only audit (no credentials/tokens logged), duplicate-processing guard (reuse a verified PDF unless forced; one in-flight run per container).",
+      "Stored under STORAGE_ROOT/container/<id>.pdf; preview + download in UCP. Fail-closed when CONTAINER_LIVE_ENABLED is off (records a failure, never a fake result).",
+    ],
+    openQuestions: [
+      "Does the operator's authenticated PCS account expose a richer per-container report (with a native download) than the public search? If so, pin those selectors and prefer that document.",
+      "Retention policy for captured result PDFs.",
     ],
   },
   "booking-correction": {

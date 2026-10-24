@@ -412,6 +412,44 @@ describe("H&M Sales Contract — fresh workbook writer (prototype layout, 2026-1
     expect(r.appendedRows).toBe(2); // one row per PO × 2 PO sets
   });
 
+  it("does not throw when a set's PO extract has no `header` (poJson='{}') — regression", async () => {
+    // Loaded-from-DB sets can carry a truthy-but-headerless `po` object when a
+    // PO's PurchaseOrder PDF produced an empty extract (poJson stored as "{}").
+    // The writer must treat that as a blank Style No., not crash on
+    // `set.po.header.productName`.
+    const outputPath = join(tmpDir, "SalesContract_headerless_po.xlsx");
+    const headerlessSet = {
+      orderNo: "500000-6565",
+      match: {},
+      reconciliation: {},
+      po: {}, // truthy object, no `header`
+      size: null,
+      country: null,
+      blockWrite: false,
+      reasons: [],
+      rows: [
+        {
+          orderNo: "500000-6565",
+          orderQty: 1200,
+          styleNo: "",
+          fob: 5.5,
+          itemDes: "Country-breakdown-only set",
+          tod: "01 Jan, 2026",
+          country: "DE",
+        },
+      ],
+    };
+    const r = await writeSalesContractWorkbook({ outputPath, sets: [headerlessSet] as never });
+    expect(r.appendedRows).toBe(1);
+
+    const out = new ExcelJS.Workbook();
+    await out.xlsx.readFile(outputPath); // reopen must succeed
+    const row = out.getWorksheet("Sales Contract")!.getRow(6);
+    expect(row.getCell(1).value).toBe("500000-6565"); // Order No.
+    expect(row.getCell(2).value === "" || row.getCell(2).value === null || row.getCell(2).value === undefined).toBe(true); // Style No. blank
+    expect(row.getCell(4).value).toBe(1200); // Order Qty
+  });
+
   // Clean up at end-of-file.
   it("teardown", () => {
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ }

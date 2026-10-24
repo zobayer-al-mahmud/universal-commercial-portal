@@ -17,24 +17,24 @@ export default async function JobsPage({ searchParams }: { searchParams: { statu
 
   return (
     <div>
-      <PageHeader title="Jobs" subtitle="Durable job ledger with full stage history. Showing up to 100 most recent." />
+      <PageHeader title="Jobs" subtitle="All processing jobs with their full stage history." />
       <div className="mb-4 flex flex-wrap gap-2">
         {STATUSES.map((s) => (
           <Link
             key={s}
             href={s === "all" ? "/jobs" : `/jobs?status=${s}`}
-            className={`badge ${status === s ? "bg-ananta text-white" : "bg-slate-100 text-slate-600"}`}
+            className={`chip capitalize ${status === s ? "chip-active" : ""}`}
           >
             {s}
           </Link>
         ))}
       </div>
       {jobs.length === 0 ? (
-        <Empty>No jobs match this filter.</Empty>
+        <Empty title="No jobs found">No jobs match this filter.</Empty>
       ) : (
-        <div className="card overflow-hidden">
+        <div className="card overflow-x-auto">
           <table className="w-full">
-            <thead className="bg-slate-50">
+            <thead className="bg-slate-50/70">
               <tr>
                 <th className="th">Job</th>
                 <th className="th">Module</th>
@@ -47,11 +47,11 @@ export default async function JobsPage({ searchParams }: { searchParams: { statu
                 <th className="th">Created</th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="divide-y divide-slate-100">
               {jobs.map((j) => (
-                <tr key={j.id} className="border-t border-slate-50 hover:bg-slate-50">
+                <tr key={j.id} className="hover:bg-slate-50/60">
                   <td className="td">
-                    <Link href={`/jobs/${j.id}`} className="font-mono text-xs text-ananta hover:underline">
+                    <Link href={`/jobs/${j.id}`} className="row-link">
                       {j.id.slice(0, 8)}
                     </Link>
                   </td>

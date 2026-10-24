@@ -1,22 +1,27 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { PageHeader, StatusBadge, Empty } from "@/components/ui";
-import { MODULE_CATALOG } from "@/server/modules/catalog";
+import { PageHeader, StatusBadge } from "@/components/ui";
+import { isVisibleModule } from "@/server/modules/catalog";
 import { RenameForm } from "@/components/RenameForm";
 import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
 import { BookingBatchUpload } from "@/components/BookingBatchUpload";
 import { SalesContractPickBatch, type ExistingContractOption } from "@/components/SalesContractPickBatch";
-import { PdfCombinerForm } from "@/components/PdfCombinerForm";
+import { PdfCombinerManager, type ManagerCol, type ManagerRow, type ManagerMaster } from "@/components/PdfCombinerManager";
+import { ContainerSearchManager, type RecentSearch } from "@/components/ContainerSearchManager";
+import { PdfRenameManager } from "@/components/PdfRenameManager";
+import { listRenameFolders } from "@/server/pdf-rename/folder-rename";
 import { listRootFolders } from "@/server/pdf-combiner/folders";
+import { ensureActiveMaster, readActiveMasterBytes, extractMatrixGrid } from "@/server/pdf-combiner/master-store";
+import { parseMatrixGrid } from "@/server/pdf-combiner/parse-matrix";
+import { getSessionUser } from "@/lib/auth";
 import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
 export default async function ModulePage({ params }: { params: { key: string } }) {
   const module = await prisma.module.findUnique({ where: { key: params.key } });
-  if (!module) notFound();
-  const cat = MODULE_CATALOG[module.key];
+  if (!module || !isVisibleModule(module.key)) notFound();
 
   // The Sales Contract Creation module renders a dedicated, prototype-driven
   // layout (contract picker + 3-PDF upload + master Excel list). The generic
@@ -104,6 +109,8 @@ export default async function ModulePage({ params }: { params: { key: string } }
   }
 
   if (module.key === "pdf-combiner") {
+    const user = await getSessionUser();
+    const actor = user?.email ?? "system";
     let folders: string[] = [];
     let folderError = "";
     if (env.PDF_COMBINER_ROOT) {
@@ -113,17 +120,55 @@ export default async function ModulePage({ params }: { params: { key: string } }
         folderError = `Cannot read the server source folder: ${e instanceof Error ? e.message : String(e)}`;
       }
     }
+
+    // Load the UCP-managed active master (seeded from the backend file on first use).
+    let managerMaster: ManagerMaster | null = null;
+    let cols: ManagerCol[] = [];
+    let rows: ManagerRow[] = [];
+    let masterError = "";
+    if (env.PDF_COMBINER_ROOT) {
+      try {
+        const rec = await ensureActiveMaster(actor);
+        const grid = await extractMatrixGrid(await readActiveMasterBytes(actor));
+        const result = parseMatrixGrid(grid);
+        cols = result.columns;
+        const maxIdx = cols.reduce((m, c) => Math.max(m, c.index), 0);
+        rows = result.rows.map((r) => {
+          const raw = grid[r.rowNo - 1] ?? [];
+          return { rowNo: r.rowNo, cells: Array.from({ length: maxIdx }, (_, i) => raw[i] ?? ""), eligible: r.eligible, reason: r.ineligibleReason };
+        });
+        managerMaster = {
+          fileName: rec.fileName,
+          version: rec.version,
+          updatedAt: rec.updatedAt.toISOString().slice(0, 16).replace("T", " "),
+          updatedBy: rec.updatedBy,
+          eligible: result.rows.filter((r) => r.eligible).length,
+          sheetName: rec.sheetName,
+          headerRowNo: result.headerRow,
+        };
+      } catch (e) {
+        masterError = e instanceof Error ? e.message : String(e);
+      }
+    }
+
     const runs = await prisma.pdfCombineRun.findMany({ orderBy: { createdAt: "desc" }, take: 15 });
     return (
       <div>
         <PageHeader
           title="PDF Combiner"
-          subtitle="Upload the master Excel, select the server folders, and Run: every master row becomes one combined PDF of the files it lists."
+          subtitle="Manage the backend Excel in UCP, then Combine: each eligible row becomes one PDF, merging its SL/FL folder-and-file documents in order."
           actions={<StatusBadge status={module.status} />}
         />
         {folderError ? <div className="mb-4 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{folderError}</div> : null}
         <div className="mb-6">
-          <PdfCombinerForm folders={folders} maxFolders={env.PDF_COMBINER_MAX_FOLDERS} rootConfigured={Boolean(env.PDF_COMBINER_ROOT)} />
+          <PdfCombinerManager
+            master={managerMaster}
+            cols={cols}
+            rows={rows}
+            rootConfigured={Boolean(env.PDF_COMBINER_ROOT)}
+            folderNames={folders}
+            configError={masterError || undefined}
+          />
         </div>
         <div className="card">
           <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">Recent runs</div>
@@ -158,6 +203,70 @@ export default async function ModulePage({ params }: { params: { key: string } }
     );
   }
 
+  if (module.key === "container") {
+    const rows = await prisma.containerSearch.findMany({ orderBy: { createdAt: "desc" }, take: 25 });
+    const recent: RecentSearch[] = rows.map((r) => ({
+      id: r.id,
+      containerNo: r.containerNo,
+      portalContainerNo: r.portalContainerNo,
+      positionLocation: r.positionLocation,
+      shipmentRef: r.shipmentRef,
+      status: r.status,
+      hasPdf: Boolean(r.pdfPath),
+      createdAt: r.createdAt.toISOString().slice(0, 16).replace("T", " "),
+    }));
+    return (
+      <div>
+        <PageHeader
+          title="Container"
+          subtitle="Enter a container number to search the CTG Port system, verify the record, and capture the result as a downloadable PDF."
+          actions={<StatusBadge status={module.status} />}
+        />
+        <ContainerSearchManager
+          recent={recent}
+          liveEnabled={env.CONTAINER_LIVE_ENABLED}
+          authConfigured={Boolean(env.CTG_PORT_USERNAME && env.CTG_PORT_PASSWORD)}
+        />
+      </div>
+    );
+  }
+
+  if (module.key === "pdf-rename") {
+    let folders: { name: string; fileCount: number }[] = [];
+    let folderError = "";
+    if (env.PDF_RENAME_ROOT) {
+      try {
+        folders = await listRenameFolders(env.PDF_RENAME_ROOT, env.PDF_RENAME_OUTPUT_SUBDIR);
+      } catch (e) {
+        folderError = `Cannot read the rename source folder: ${e instanceof Error ? e.message : String(e)}`;
+      }
+    }
+    return (
+      <div>
+        <PageHeader
+          title="PDF File Rename"
+          subtitle="Pick a dedicated folder, extract each PDF's invoice number (embedded text, OCR for scans) and rename to <invoice>.pdf. Rename one or all; duplicates and unreadable files go to manual review, never a guessed name."
+          actions={<StatusBadge status={module.status} />}
+        />
+        <div className="mb-6">
+          <PdfRenameManager
+            folders={folders}
+            rootConfigured={Boolean(env.PDF_RENAME_ROOT)}
+            ocrEnabled={env.OCR_ENABLED}
+            outputSubdir={env.PDF_RENAME_OUTPUT_SUBDIR}
+            configError={folderError || undefined}
+          />
+        </div>
+        <details className="card p-4">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-700">Advanced: rename plan from an extraction CSV</summary>
+          <div className="mt-3">
+            <RenameForm />
+          </div>
+        </details>
+      </div>
+    );
+  }
+
   const jobs = await prisma.job.findMany({
     where: { module: module.key },
     orderBy: { createdAt: "desc" },
@@ -172,80 +281,46 @@ export default async function ModulePage({ params }: { params: { key: string } }
         actions={<StatusBadge status={module.status} />}
       />
 
-      {cat ? (
-        <div className="mb-6 grid gap-4 lg:grid-cols-2">
-          <div className="card p-5">
-            <h3 className="mb-2 text-sm font-semibold text-slate-700">Source-backed scope</h3>
-            <p className="mb-3 text-xs text-slate-400">{cat.sources}</p>
-            <ul className="ml-4 list-disc space-y-1 text-sm text-slate-600">
-              {cat.scope.map((s, i) => (
-                <li key={i}>{s}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="card p-5">
-            <h3 className="mb-2 text-sm font-semibold text-slate-700">Open questions / decisions</h3>
-            <ul className="ml-4 list-disc space-y-1 text-sm text-slate-600">
-              {cat.openQuestions.map((q, i) => (
-                <li key={i}>{q}</li>
-              ))}
-            </ul>
-            <p className="mt-3 text-xs text-slate-400">
-              See <Link href="/admin" className="text-ananta hover:underline">Administration → Integrations</Link> for adapter status and the decision register in <code>docs/source-analysis/BUSINESS_DECISIONS_REQUIRED.md</code>.
-            </p>
-          </div>
-        </div>
-      ) : null}
-
       {module.key === "hm-sales-contract" ? (
-        <div className="mb-6">
-          <h3 className="mb-1 text-sm font-semibold text-slate-700">H&amp;M Sales Contract — three-PDF-set workflow</h3>
-          <p className="mb-3 text-xs text-slate-400">
-            Upload the three H&amp;M PDFs per PO (PurchaseOrder, SizePerColourBreakdown, TotalCountryBreakdown), group many POs under one Sales Contract, review the extracted A..U rows and download a workbook that appends to a copy of the live template. See <code>docs/modules/hm-sales-contract.md</code> for the mapping and the five unresolved rules.
+        <div className="card mb-6 p-5">
+          <h3 className="text-sm font-semibold text-slate-800">H&amp;M Sales Contract</h3>
+          <p className="mb-4 mt-1 max-w-2xl text-sm text-slate-500">
+            Upload the three H&amp;M PDFs per PO, group many POs under one Sales Contract, review the extracted
+            rows, and download a ready-to-use workbook.
           </p>
-          <Link href="/hm-sales-contract" className="btn-primary text-xs">Open H&amp;M Sales Contracts →</Link>
-        </div>
-      ) : null}
-
-      {module.key === "pdf-rename" ? (
-        <div className="mb-6">
-          <h3 className="mb-3 text-sm font-semibold text-slate-700">Rename plan from extraction CSV</h3>
-          <RenameForm />
+          <Link href="/hm-sales-contract" className="btn-primary btn-sm">Open H&amp;M Sales Contracts →</Link>
         </div>
       ) : null}
 
       {module.key === "shipment-schedule" ? (
-        <div className="mb-6">
-          <h3 className="mb-1 text-sm font-semibold text-slate-700">Week-wise Shipment Schedule — v2 workflow</h3>
-          <p className="mb-3 text-xs text-slate-400">
-            Create one shipment schedule per week, define cut-offs, upload booking-confirmation PDFs to a cut-off,
-            and the OrderNo cross-matches the H&amp;M Sales Contract to fill Buyer Code, Cont.No., Date, STYLE, FOB,
-            Composition and PCS. Filename pattern: <code>&lt;OrderNo&gt; &lt;Market+Sub&gt;.pdf</code>.
+        <div className="card mb-6 p-5">
+          <h3 className="text-sm font-semibold text-slate-800">Week-wise Shipment Schedule</h3>
+          <p className="mb-4 mt-1 max-w-2xl text-sm text-slate-500">
+            Create one schedule per week, define cut-offs, and upload booking-confirmation PDFs. Order numbers
+            cross-match the Sales Contract to fill Buyer Code, Contract No., Date, Style, FOB, Composition and PCS.
           </p>
-          <Link href="/shipment-schedule" className="btn-primary text-xs">Open Shipment Schedules →</Link>
+          <Link href="/shipment-schedule" className="btn-primary btn-sm">Open Shipment Schedules →</Link>
         </div>
       ) : null}
 
       {module.key === "customs-invoice" ? (
-        <div className="mb-6">
-          <h3 className="mb-1 text-sm font-semibold text-slate-700">Customs Invoice Generation</h3>
-          <p className="mb-3 text-xs text-slate-400">
-            Pull Order Nos from Sales Contract + Shipment Schedule; one invoice per Order No; country-wise
-            template detects from the market code; every field editable; PDF upload auto-extracts;
-            download the finished invoice as .xlsx.
+        <div className="card mb-6 p-5">
+          <h3 className="text-sm font-semibold text-slate-800">Customs Invoice Generation</h3>
+          <p className="mb-4 mt-1 max-w-2xl text-sm text-slate-500">
+            One invoice per order number, with the country template chosen from the market code. Every field is
+            editable, PDF uploads auto-extract, and you can download the finished invoice as Excel.
           </p>
-          <Link href="/customs-invoice" className="btn-primary text-xs">Open Customs Invoices →</Link>
+          <Link href="/customs-invoice" className="btn-primary btn-sm">Open Customs Invoices →</Link>
         </div>
       ) : null}
 
       {module.key === "booking-correction" ? (
         <>
           <div className="mb-6">
-            <h3 className="mb-1 text-sm font-semibold text-slate-700">① Batch booking correction (Damco workflow)</h3>
-            <p className="mb-3 text-xs text-slate-400">
-              Upload packing-list PDFs → extract Gross Weight / Cartons / Quantity + PO &amp; country → search the Damco
-              Shipper Portal → match the three values → validate the CONFIRMED status → return verified PDFs. Live portal
-              actions are gated; a REQUESTED booking is never reported as confirmed.
+            <h3 className="mb-1 text-sm font-semibold text-slate-800">Batch booking correction</h3>
+            <p className="mb-3 text-sm text-slate-500">
+              Upload packing-list PDFs to extract Gross Weight, Cartons and Quantity, match them against the
+              booking, and return verified PDFs. A booking is never reported as confirmed unless it actually is.
             </p>
             <BookingBatchUpload />
           </div>
@@ -280,54 +355,45 @@ export default async function ModulePage({ params }: { params: { key: string } }
             );
           })()}
           <div className="mb-6">
-            <h3 className="mb-3 text-sm font-semibold text-slate-700">② Compare original vs corrected booking (field-level diff)</h3>
+            <h3 className="mb-3 text-sm font-semibold text-slate-800">Compare original vs corrected booking</h3>
             <BookingCorrectionForm />
           </div>
         </>
       ) : null}
 
-      {module.status === "blocked" ? (
-        <div className="mb-6 rounded-md border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700">
-          This module is <strong>blocked</strong>: the source folder contained no files. Portal
-          credentials in the checklist are intentionally excluded from the repository. Provide field
-          lists / screenshots and authorised, least-privilege service credentials to proceed. No
-          live portal action is implemented.
-        </div>
-      ) : null}
-
-      <div className="card">
-        <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">
-          Recent jobs ({module.name})
+      <div className="card overflow-hidden">
+        <div className="panel-head">
+          <div className="panel-title">Recent jobs</div>
         </div>
         {jobs.length === 0 ? (
-          <div className="p-6">
-            <Empty>No jobs recorded for this module yet.</Empty>
-          </div>
+          <div className="p-8 text-center text-sm text-slate-400">No jobs recorded for this module yet.</div>
         ) : (
-          <table className="w-full">
-            <thead>
-              <tr>
-                <th className="th">Job</th>
-                <th className="th">Key</th>
-                <th className="th">Status</th>
-                <th className="th">Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {jobs.map((j) => (
-                <tr key={j.id} className="border-t border-slate-50">
-                  <td className="td">
-                    <Link href={`/jobs/${j.id}`} className="font-mono text-xs text-ananta hover:underline">
-                      {j.id.slice(0, 8)}
-                    </Link>
-                  </td>
-                  <td className="td font-mono text-xs">{j.businessKey ?? "—"}</td>
-                  <td className="td"><StatusBadge status={j.status} /></td>
-                  <td className="td text-xs text-slate-400">{j.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead className="bg-slate-50/70">
+                <tr>
+                  <th className="th">Job</th>
+                  <th className="th">Key</th>
+                  <th className="th">Status</th>
+                  <th className="th">Created</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {jobs.map((j) => (
+                  <tr key={j.id} className="hover:bg-slate-50/60">
+                    <td className="td">
+                      <Link href={`/jobs/${j.id}`} className="row-link">
+                        {j.id.slice(0, 8)}
+                      </Link>
+                    </td>
+                    <td className="td font-mono text-xs">{j.businessKey ?? "—"}</td>
+                    <td className="td"><StatusBadge status={j.status} /></td>
+                    <td className="td text-xs text-slate-400">{j.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

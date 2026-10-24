@@ -15,8 +15,8 @@ function SubmitButton() {
 export default function LoginPage() {
   const [state, action] = useFormState<LoginState, FormData>(loginAction, {});
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100 p-4">
-      <div className="card w-full max-w-sm p-8">
+    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-ananta-50 via-surface-muted to-slate-100 p-4">
+      <div className="card w-full max-w-sm p-8 shadow-pop">
         <div className="mb-6 flex flex-col items-center text-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src="/ananta_logo_full.png" alt="Ananta" className="mb-3 h-20 w-auto" />
@@ -35,9 +35,7 @@ export default function LoginPage() {
           {state.error ? <p className="text-sm text-rose-600">{state.error}</p> : null}
           <SubmitButton />
         </form>
-        <p className="mt-6 text-center text-xs text-slate-400">
-          Default dev admin is seeded from <code>BOOTSTRAP_ADMIN_*</code>. Change it after first login.
-        </p>
+        <p className="mt-6 text-center text-xs text-slate-400">Authorised personnel only.</p>
       </div>
     </main>
   );

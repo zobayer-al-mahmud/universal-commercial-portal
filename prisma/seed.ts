@@ -9,25 +9,26 @@ import {
 
 const prisma = new PrismaClient();
 
+// Placeholder modules (H&M Portal, Bangladesh Bank Portal, Damco Portal, Common
+// Requirements) are intentionally not seeded — they have no working functionality
+// and are hidden from the UI. The Damco integration adapter used by Booking
+// Correction is seeded separately below.
 const MODULES = [
-  { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Intake H&M Order Packages, extract & reconcile POs into Sales Contract records (SRS UCP-SRS-SC-001)." },
-  { key: "hm-sales-contract", name: "H&M Sales Contract (3-PDF set)", sortOrder: 1, status: "active", description: "Three-PDF-set-per-PO workflow: upload PurchaseOrder + SizePerColourBreakdown + TotalCountryBreakdown → three-way match → A..U template rows → one downloadable workbook per contract." },
-  { key: "shipment-schedule", name: "Week Wise Shipment Schedule", sortOrder: 2, status: "active", description: "Per-week shipment schedule: define cut-offs, upload booking-confirmation PDFs per cut-off, OrderNo cross-matches the Sales Contract to fill Buyer Code / Cont.No. / Date / Style / FOB / Composition / PCS." },
-  { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 3, status: "active", description: "Generate per-order/per-market customs invoices (header, consignee, HS-coded line items, totals)." },
-  { key: "pdf-rename", name: "PDF File Rename", sortOrder: 4, status: "active", description: "Extract FCR / Bill-of-Export fields from scanned PDFs and rename by business key." },
-  { key: "pdf-combiner", name: "PDF Combiner", sortOrder: 4, status: "active", description: "Upload a master Excel (one row = one output PDF, file names left→right), pick folders from the server source root, and merge the listed files (searched recursively) into one PDF per row." },
-  { key: "booking-correction", name: "Booking Correction", sortOrder: 5, status: "active", description: "Batch packing-list PDFs → extract Gross Weight/Cartons/Quantity + PO/country → Damco search → match 3 values → CONFIRMED-status validation → verified PDF. Plus original↔corrected field diff. Live portal gated." },
-  { key: "hm-portal", name: "H&M Portal", sortOrder: 6, status: "blocked", description: "H&M Supplier Portal interactions. Blocked: no source files; credentials & field lists required." },
-  { key: "bb-portal", name: "Bangladesh Bank Portal", sortOrder: 7, status: "blocked", description: "Bangladesh Bank EXP portal. Blocked: no source files; banking actions are draft/dry-run only." },
-  { key: "damco-portal", name: "Damco Portal", sortOrder: 8, status: "blocked", description: "Damco Shipper Portal booking/correction. Blocked: no source files; field lists required." },
-  { key: "common", name: "Common Requirements", sortOrder: 9, status: "active", description: "Cross-cutting: roles, audit, reference/mapping data, notifications, reporting." },
+  { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Intake H&M order packages and reconcile purchase orders into Sales Contract records." },
+  { key: "hm-sales-contract", name: "H&M Sales Contract", sortOrder: 2, status: "active", description: "Upload the three H&M PDFs per PO, match and review the data, and download a ready-to-use workbook per contract." },
+  { key: "shipment-schedule", name: "Week-wise Shipment Schedule", sortOrder: 3, status: "active", description: "Build a week-wise shipment schedule from booking-confirmation PDFs, auto-filled from the matching Sales Contract." },
+  { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 4, status: "active", description: "Generate per-order customs invoices with country templates, editable fields and Excel export." },
+  { key: "pdf-rename", name: "PDF File Rename", sortOrder: 5, status: "active", description: "Read each PDF's invoice number (text or OCR) and rename files to the invoice number, one folder at a time." },
+  { key: "pdf-combiner", name: "PDF Combiner", sortOrder: 6, status: "active", description: "Merge document sets into one PDF per row using a master Excel and the server's source folders." },
+  { key: "booking-correction", name: "Booking Correction", sortOrder: 7, status: "active", description: "Match packing-list weights, cartons and quantities against bookings and return verified PDFs." },
+  { key: "container", name: "Container", sortOrder: 8, status: "active", description: "Search a container on the CTG Port system, verify the record, and capture the result as a PDF." },
 ];
 
 const ADAPTERS = [
-  { key: "ucp-sales-contract", name: "UCP Sales Contract", message: "Mock adapter (Q-SC-11: API vs browser unconfirmed)." },
+  { key: "ucp-sales-contract", name: "UCP Sales Contract", message: "Running in simulation mode." },
   { key: "hm-portal", name: "H&M Supplier Portal", message: "Not configured. Requires authorised credentials." },
-  { key: "bb-portal", name: "Bangladesh Bank EXP Portal", message: "Not configured. Banking actions default to draft/dry-run." },
-  { key: "damco-portal", name: "Damco Shipper Portal", message: "Booking Correction uses this adapter (mock/dryrun). Live search/confirmation gated on DAMCO_LIVE_ENABLED + env credentials." },
+  { key: "bb-portal", name: "Bangladesh Bank EXP Portal", message: "Not configured. Requires authorised credentials." },
+  { key: "damco-portal", name: "Damco Shipper Portal", message: "Used by Booking Correction. Live processing is disabled until enabled by an administrator." },
 ];
 
 // Observed sample reference values (NOT confirmed closed lists — see Q-SC-03/06).

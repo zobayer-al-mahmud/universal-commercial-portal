@@ -12,11 +12,27 @@ const TONE: Record<string, string> = {
 };
 
 interface FileInfo {
-  ref: string;
-  status: "found" | "missing" | "ambiguous";
-  folder?: string;
+  // Generic combiner shape:
+  ref?: string;
   relPath?: string;
   candidates?: string[];
+  // Matrix combiner shape:
+  slot?: number;
+  file?: string;
+  path?: string;
+  // Common:
+  status: string; // found | missing | ambiguous | missing-folder | missing-file | invalid
+  folder?: string;
+}
+
+/** Normalise either filesJson shape to a label + a trailing detail string. */
+function fileLine(f: FileInfo): { label: string; detail: string; ok: boolean } {
+  const label = f.slot !== undefined ? `${f.folder ?? ""}/${f.file ?? ""}` : (f.ref ?? "");
+  if (f.status === "found") return { label, detail: f.path ? ` → ${f.path}` : f.folder || f.relPath ? ` → ${f.folder}/${f.relPath}` : "", ok: true };
+  if (f.status === "missing-folder") return { label, detail: ` — folder not found`, ok: false };
+  if (f.status === "missing" || f.status === "missing-file") return { label, detail: ` — not found`, ok: false };
+  if (f.status === "ambiguous") return { label, detail: ` — ${f.candidates?.length ?? "multiple"} matches: ${(f.candidates ?? []).join(" | ")}`, ok: false };
+  return { label, detail: ` — ${f.status}`, ok: false };
 }
 
 export default async function PdfCombineRunPage({ params }: { params: { runId: string } }) {
@@ -83,14 +99,15 @@ export default async function PdfCombineRunPage({ params }: { params: { runId: s
                     <td className="td"><span className={`badge ${TONE[o.status] ?? ""}`}>{o.status}</span></td>
                     <td className="td">
                       <ol className="ml-4 list-decimal space-y-0.5">
-                        {files.map((f, i) => (
-                          <li key={i} className={f.status === "found" ? "text-slate-600" : "text-rose-700"}>
-                            <span className="font-mono">{f.ref}</span>
-                            {f.status === "found" ? <span className="text-slate-400"> → {f.folder}/{f.relPath}</span> : null}
-                            {f.status === "missing" ? <span> — not found</span> : null}
-                            {f.status === "ambiguous" ? <span> — {f.candidates?.length} matches: {f.candidates?.join(" | ")}</span> : null}
-                          </li>
-                        ))}
+                        {files.map((f, i) => {
+                          const { label, detail, ok } = fileLine(f);
+                          return (
+                            <li key={i} className={ok ? "text-slate-600" : "text-rose-700"}>
+                              <span className="font-mono">{label}</span>
+                              <span className={ok ? "text-slate-400" : ""}>{detail}</span>
+                            </li>
+                          );
+                        })}
                       </ol>
                       {o.error ? <div className="mt-1 text-rose-700">{o.error}</div> : null}
                     </td>

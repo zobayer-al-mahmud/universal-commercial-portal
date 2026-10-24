@@ -3,7 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   // pdf-parse and exceljs are server-only; keep them out of the client bundle.
   experimental: {
-    serverComponentsExternalPackages: ["pdf-parse", "exceljs", "pdf-lib"],
+    serverComponentsExternalPackages: ["pdf-parse", "exceljs", "pdf-lib", "tesseract.js"],
     // Default is 1 MB, which rejects real master Excel / PDF uploads.
     serverActions: { bodySizeLimit: "50mb" },
   },
