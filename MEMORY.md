@@ -232,8 +232,14 @@ The mock pipeline remains fully working for tests.
 2. ✅ DONE: docs refreshed — `README.md`, `IMPLEMENTATION_STATUS.md`, `src/server/modules/catalog.ts`, and new
    `docs/modules/booking-correction.md` (full guide: workflow, env vars, modes, permissions, commands, portal limitations).
    Still stale: `docs/FINAL_REPORT.md` (pre-dates this feature).
-3. Commit and push (USER HAS NOT ASKED YET — ask first). Stage explicitly (never `.env`, `var/`, `dev.db`):
-   `MEMORY.md`, `CLAUDE.md`, `src/types/pdf-parse-lib.d.ts`, `docs/modules/booking-correction.md`, and all files in the lists above.
+3. ✅ DONE (2026-10-24): user asked to push. Ran typecheck (exit 0) and `vitest run` (285/288 — the same 2
+   pre-existing `shipment-schedule.test.ts` failures from missing `D:\oct-2026` sample files, 1 opt-in live test
+   skipped) as a gate, scanned the diff + new files for hardcoded secrets (none found), then committed
+   (`5f7a7ba`, 98 files) and pushed to `origin/main`. Excluded two real business documents found untracked —
+   `Customs Invoice templates and sample files/` (real customs-invoice workbooks) and
+   `docs/INCENTIV SET COMBINER FORMET FINAL - exp sirial.xlsx` (the PDF Combiner master seed) — per CLAUDE.md's
+   "never commit business documents"; both are now in `.gitignore`. If PDF Combiner's master-seed flow is tested
+   on a fresh checkout, that xlsx must be dropped into `docs/` locally first (not fetched from git).
 4. Optional improvement: positional-text extraction (pdf-parse `pagerender`) so "Ctns/Col" and "Qty/Col" totals come out as
    separate columns instead of concatenated — would cut the carton/qty review rate. Then the roadmap in §9.
 
