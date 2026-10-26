@@ -4,8 +4,12 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
+import { prisma } from "@/lib/db";
 import { scanFolder, applyPlan, type PlanItem, type PlanSummary } from "@/server/pdf-rename/folder-rename";
-import { startRenameJob, runJob, retryItem, resumeJob, applyManualCorrection } from "@/server/pdf-rename/job-run";
+import {
+  startRenameJob, runJob, retryItem, resumeJob, applyManualCorrection,
+  previewRenameFolder, countFolderPdfs, type PreviewResult,
+} from "@/server/pdf-rename/job-run";
 import { revalidatePath } from "next/cache";
 
 /**
@@ -60,6 +64,64 @@ async function requireAuth(perm: (typeof PERMISSIONS)[keyof typeof PERMISSIONS])
   if (!user) return { user: null as null, error: "Not authenticated." };
   if (!userHasPermission(user, perm)) return { user: null as null, error: "You do not have permission for this action." };
   return { user, error: undefined };
+}
+
+// ---------------------------------------------------------------------------
+// Folder selection + deep preview + job history (DB-backed workflow).
+// ---------------------------------------------------------------------------
+
+export interface FolderValidateView { ok: boolean; folder?: string; count?: number; error?: string }
+
+/**
+ * Confirm a user-entered folder path is a readable directory on the UCP SERVER
+ * (within the configured rename root) and report its PDF count. The module only
+ * ever touches the server filesystem — never the user's local computer.
+ */
+export async function validateFolderAction(folder: string): Promise<FolderValidateView> {
+  const { user, error } = await requireAuth(PERMISSIONS.JOB_READ);
+  if (!user) return { ok: false, error };
+  if (!env.PDF_RENAME_ROOT) return { ok: false, error: "PDF_RENAME_ROOT is not configured." };
+  try {
+    const { count } = await countFolderPdfs(env.PDF_RENAME_ROOT, folder);
+    return { ok: true, folder, count };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : "Folder not accessible." };
+  }
+}
+
+export interface PreviewView { error?: string; preview?: PreviewResult }
+
+/** Deep read-only preview of a folder (same validator the job uses; no writes). */
+export async function previewFolderAction(folder: string): Promise<PreviewView> {
+  const { user, error } = await requireAuth(PERMISSIONS.JOB_READ);
+  if (!user) return { error };
+  if (!env.PDF_RENAME_ROOT) return { error: "PDF_RENAME_ROOT is not configured." };
+  try {
+    const preview = await previewRenameFolder(env.PDF_RENAME_ROOT, folder);
+    await audit({ entityType: "document", entityId: folder, action: "rename.folder.preview", actor: user.email, data: { total: preview.total, willRename: preview.willRename } });
+    return { preview };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Preview failed." };
+  }
+}
+
+export interface JobHistoryRow {
+  id: string; folder: string; status: string; total: number; renamed: number; review: number; failed: number;
+  createdAt: string; finishedAt: string | null; createdBy: string;
+}
+
+/** Recent rename jobs for the History section (persisted, newest first). */
+export async function listRenameJobsAction(limit = 20): Promise<{ jobs: JobHistoryRow[] }> {
+  const { user } = await requireAuth(PERMISSIONS.JOB_READ);
+  if (!user) return { jobs: [] };
+  const rows = await prisma.renameJob.findMany({ orderBy: { createdAt: "desc" }, take: Math.min(Math.max(limit, 1), 100) });
+  return {
+    jobs: rows.map((j) => ({
+      id: j.id, folder: j.folder, status: j.status, total: j.totalItems,
+      renamed: j.renamedItems, review: j.reviewItems, failed: j.failedItems,
+      createdAt: j.createdAt.toISOString(), finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null, createdBy: j.createdBy,
+    })),
+  };
 }
 
 /** Read-only preview: extract invoice numbers and build the rename plan. */

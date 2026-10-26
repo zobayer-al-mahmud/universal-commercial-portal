@@ -278,6 +278,85 @@ export async function applyManualCorrection(itemId: string, invoiceNumberRaw: st
   return { ok: true, message: `Renamed → ${invoiceNumber}.pdf` };
 }
 
+/**
+ * Count the PDFs under a folder (recursive, excluding the output sub-folder).
+ * Throws if the path is not a readable directory on the UCP server. Used by the
+ * folder picker to confirm a selection before scanning/renaming.
+ */
+export async function countFolderPdfs(root: string, folder: string): Promise<{ abs: string; count: number }> {
+  const abs = resolveFolder(root, folder);
+  const st = await fs.stat(abs).catch(() => null);
+  if (!st || !st.isDirectory()) throw new Error("Not a readable folder on the UCP server.");
+  const names = await listPdfsDeep(abs, env.PDF_RENAME_OUTPUT_SUBDIR);
+  return { abs, count: names.length };
+}
+
+export interface PreviewItem {
+  originalName: string;
+  docType: string;
+  invoiceNumber: string | null;
+  proposedName: string | null;
+  confidence: number;
+  decision: string; // RENAME | REVIEW
+  reviewReason: string;
+  reasonText: string;
+  source: string; // text | ocr | none
+  pages: number;
+  candidates: number;
+}
+
+export interface PreviewResult {
+  folder: string;
+  total: number;
+  willRename: number;
+  needsReview: number;
+  items: PreviewItem[];
+}
+
+/**
+ * READ-ONLY deep preview of a folder: run the SAME deep validator the job uses
+ * (`analyzePdf`) over every PDF and report the extracted invoice number, the
+ * proposed `<invoice>.pdf` filename, confidence and validation status. Writes
+ * nothing — no files renamed, no DB rows created. This is what the user sees
+ * before committing a bulk rename, so preview == what the job will do.
+ */
+export async function previewRenameFolder(root: string, folder: string): Promise<PreviewResult> {
+  const abs = resolveFolder(root, folder);
+  const names = await listPdfsDeep(abs, env.PDF_RENAME_OUTPUT_SUBDIR);
+  if (names.length > env.PDF_RENAME_MAX_FILES) {
+    throw new Error(`Folder has ${names.length} PDFs (> ${env.PDF_RENAME_MAX_FILES}). Raise PDF_RENAME_MAX_FILES or narrow the selection.`);
+  }
+  const items: PreviewItem[] = [];
+  for (const name of names) {
+    try {
+      const buffer = await fs.readFile(path.join(abs, name));
+      const a = await analyzePdf(buffer, { minConfidence: env.PDF_RENAME_MIN_CONFIDENCE });
+      const v = a.validation;
+      items.push({
+        originalName: name,
+        docType: v.docType,
+        invoiceNumber: v.invoiceNumber ?? null,
+        proposedName: v.decision === "RENAME" && v.invoiceNumber ? `${v.invoiceNumber}.pdf` : null,
+        confidence: v.confidence,
+        decision: v.decision,
+        reviewReason: v.reasonCode ?? "",
+        reasonText: v.reasonText,
+        source: v.source === "none" ? (a.usedOcr ? "ocr" : "text") : v.source,
+        pages: a.pages,
+        candidates: v.candidates.length,
+      });
+    } catch (e) {
+      items.push({
+        originalName: name, docType: "unknown", invoiceNumber: null, proposedName: null, confidence: 0,
+        decision: "REVIEW", reviewReason: "PDF_UNREADABLE_OR_CORRUPTED", reasonText: e instanceof Error ? e.message : String(e),
+        source: "none", pages: 0, candidates: 0,
+      });
+    }
+  }
+  const willRename = items.filter((i) => i.decision === "RENAME").length;
+  return { folder, total: items.length, willRename, needsReview: items.length - willRename, items };
+}
+
 /** Validate a reviewer-entered invoice against the stored candidates (advisory). */
 export function validateManualEntry(candidatesJson: string, value: string): { matchesCandidate: boolean } {
   try {

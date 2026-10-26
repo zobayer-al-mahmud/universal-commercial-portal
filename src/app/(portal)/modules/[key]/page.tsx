@@ -239,19 +239,27 @@ export default async function ModulePage({ params }: { params: { key: string } }
         folderError = `Cannot read the rename source folder: ${e instanceof Error ? e.message : String(e)}`;
       }
     }
+    const jobRows = await prisma.renameJob.findMany({ orderBy: { createdAt: "desc" }, take: 20 });
+    const recentJobs = jobRows.map((j) => ({
+      id: j.id, folder: j.folder, status: j.status, total: j.totalItems,
+      renamed: j.renamedItems, review: j.reviewItems, failed: j.failedItems,
+      createdAt: j.createdAt.toISOString(), finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null, createdBy: j.createdBy,
+    }));
     return (
       <div>
         <PageHeader
           title="PDF File Rename"
-          subtitle="Pick a dedicated folder, extract each PDF's invoice number (embedded text, OCR for scans) and rename to <invoice>.pdf. Rename one or all; duplicates and unreadable files go to manual review, never a guessed name."
+          subtitle="Extract invoice numbers, validate them, and rename PDFs in bulk. Select a server folder, preview the extraction, then run one batch job — duplicates and unreadable files go to manual review, never a guessed name."
           actions={<StatusBadge status={module.status} />}
         />
         <div className="mb-6">
           <PdfRenameManager
             folders={folders}
             rootConfigured={Boolean(env.PDF_RENAME_ROOT)}
+            rootPath={env.PDF_RENAME_ROOT ?? ""}
             ocrEnabled={env.OCR_ENABLED}
             outputSubdir={env.PDF_RENAME_OUTPUT_SUBDIR}
+            recentJobs={recentJobs}
             configError={folderError || undefined}
           />
         </div>

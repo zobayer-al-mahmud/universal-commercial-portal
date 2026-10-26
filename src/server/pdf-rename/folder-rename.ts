@@ -327,11 +327,21 @@ export async function listRenameFolders(root: string, outputSubdir: string): Pro
   return out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
-/** Resolve + validate a folder selection against the live listing (path-safe). */
+/**
+ * Resolve + validate a folder selection against the rename root (path-safe).
+ *
+ * Accepts the root itself ("" / ".") or any nested sub-folder BENEATH the root
+ * (e.g. "FCR EXTRACT & RENAME" or "WEEK 41/scans"). Back-slashes are normalised,
+ * leading slashes stripped (so an absolute-looking input stays relative to the
+ * root), and `.`/`..` segments are rejected — the resolved path can never escape
+ * the configured server root. This is the only filesystem the module touches;
+ * it never reads the user's local computer.
+ */
 export function resolveFolder(root: string, folder: string): string {
-  if (!folder || /[\\/]/.test(folder) || folder.includes("..")) throw new Error(`Invalid folder: ${folder}`);
+  const rel = String(folder ?? "").trim().replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (rel.split("/").some((seg) => seg === ".." || seg === ".")) throw new Error(`Invalid folder: ${folder}`);
   const base = path.resolve(root);
-  const abs = path.resolve(base, folder);
+  const abs = path.resolve(base, rel);
   if (abs !== base && !abs.startsWith(base + path.sep)) throw new Error(`Folder outside the rename root: ${folder}`);
   return abs;
 }

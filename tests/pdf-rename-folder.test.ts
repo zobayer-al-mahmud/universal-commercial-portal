@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { buildPlan, type ProcessedFile } from "@/server/pdf-rename/folder-rename";
+import path from "path";
+import { buildPlan, resolveFolder, type ProcessedFile } from "@/server/pdf-rename/folder-rename";
 import { buildG4Tiff } from "@/server/pdf-rename/ocr";
 
 function processed(partial: Partial<ProcessedFile> & { originalName: string }): ProcessedFile {
@@ -17,6 +18,34 @@ function processed(partial: Partial<ProcessedFile> & { originalName: string }): 
     ...partial,
   };
 }
+
+describe("resolveFolder — server-side, path-safe, nested sub-folders allowed", () => {
+  const root = path.resolve("/srv/rename-root");
+
+  it("resolves a top-level folder under the root", () => {
+    expect(resolveFolder(root, "FCR EXTRACT")).toBe(path.join(root, "FCR EXTRACT"));
+  });
+
+  it("resolves a nested sub-folder (the new capability)", () => {
+    expect(resolveFolder(root, "WEEK 41/scans")).toBe(path.join(root, "WEEK 41", "scans"));
+  });
+
+  it("normalises back-slashes and strips a leading slash (stays relative to root)", () => {
+    expect(resolveFolder(root, "A\\B")).toBe(path.join(root, "A", "B"));
+    expect(resolveFolder(root, "/A/B")).toBe(path.join(root, "A", "B"));
+  });
+
+  it("allows the root itself (empty / dot-less)", () => {
+    expect(resolveFolder(root, "")).toBe(root);
+  });
+
+  it("rejects path traversal — never escapes the configured root", () => {
+    expect(() => resolveFolder(root, "..")).toThrow();
+    expect(() => resolveFolder(root, "A/../../secret")).toThrow();
+    expect(() => resolveFolder(root, "A/./B")).toThrow();
+    expect(() => resolveFolder(root, "../outside")).toThrow();
+  });
+});
 
 describe("buildPlan", () => {
   it("assigns <invoice>.pdf targets to files with a number read", () => {
