@@ -3,8 +3,6 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge } from "@/components/ui";
 import { isVisibleModule } from "@/server/modules/catalog";
-import { RenameForm } from "@/components/RenameForm";
-import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
 import { BookingExcelManager } from "@/components/BookingExcelManager";
 import { SalesContractPickBatch, type ExistingContractOption } from "@/components/SalesContractPickBatch";
 import { PdfCombinerManager, type ManagerCol, type ManagerRow, type ManagerMaster } from "@/components/PdfCombinerManager";
@@ -257,12 +255,6 @@ export default async function ModulePage({ params }: { params: { key: string } }
             configError={folderError || undefined}
           />
         </div>
-        <details className="card p-4">
-          <summary className="cursor-pointer text-sm font-semibold text-slate-700">Advanced: rename plan from an extraction CSV</summary>
-          <div className="mt-3">
-            <RenameForm />
-          </div>
-        </details>
       </div>
     );
   }
@@ -320,9 +312,10 @@ export default async function ModulePage({ params }: { params: { key: string } }
             <h3 className="mb-1 text-sm font-semibold text-slate-800">Excel-driven booking correction</h3>
             <p className="mb-3 text-sm text-slate-500">
               Upload the PackingLists workbook, edit rows as needed, then process selected or all rows. Each row is
-              searched on Damco by PO + SKU; every candidate booking is opened and verified on PO, SKU, Shipper, FR,
-              Quantity, Cartons and Gross weight before a verified PDF is produced. A booking is never reported as
-              confirmed unless the portal actually confirms it, and carton mismatches are flagged for correction on Damco.
+              searched on Damco by PO + SKU; every candidate booking is opened and verified on PO, SKU, FR, Quantity,
+              Cartons and Gross weight before a verified PDF is produced. When the search returns several bookings, the
+              one whose FR matches the packing-list row is selected. A booking is never reported as confirmed unless the
+              portal actually confirms it, and carton mismatches are flagged for correction on Damco.
             </p>
             <BookingExcelManager />
           </div>
@@ -356,10 +349,6 @@ export default async function ModulePage({ params }: { params: { key: string } }
               </div>
             );
           })()}
-          <div className="mb-6">
-            <h3 className="mb-3 text-sm font-semibold text-slate-800">Compare original vs corrected booking</h3>
-            <BookingCorrectionForm />
-          </div>
         </>
       ) : null}
 

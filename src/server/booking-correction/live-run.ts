@@ -15,6 +15,7 @@ import {
 import { parseCtnsQtyTable, normalizeNumber } from "./extract";
 import { normalizeStatus } from "./status";
 import { matchBooking } from "./match";
+import { selectBooking } from "./select-booking";
 import type { BookingCandidate } from "@/server/integrations/damco-portal";
 import type { ExtractionResult, MatchResult } from "./batch-types";
 import type { BookingLiveStep } from "./progress";
@@ -307,33 +308,62 @@ export async function runLivePortalForDoc(input: {
       inspected.push({ cand, values, details, match: m, pdf });
     }
 
-    const fullMatches = inspected.filter((i) => i.match?.outcome === "MATCHED");
+    // --- Select the correct booking (§2/§9) --------------------------------
+    // FR is the decisive disambiguator when the packing-list row carries one:
+    // of all candidates whose Damco Details FR equals the row's FR, exactly one
+    // is the correct booking. We read every candidate's FR above; here we pick
+    // by FR first, and the totals (already compared in `matchBooking`) then
+    // decide the final state (COMPLETED vs flag-for-Damco-correction). Without
+    // an FR on the row (legacy PDF path) we fall back to totals + PO/SKU.
+    const selection = selectBooking(
+      inspected.map((i) => ({
+        frCode: i.details?.frCode,
+        matched: i.match?.outcome === "MATCHED",
+        identityOk: !identityConflicts(i.match),
+      })),
+      input.extraction.frCode ?? "",
+    );
+    const frList = inspected.map((i) => `${i.cand.soNumber}→FR ${i.details?.frCode || "?"}`).join("; ");
+    const basisLabel = (b: "fr" | "totals") => (b === "fr" ? `FR ${input.extraction.frCode}` : "PO/SKU + totals");
 
-    // ≥2 full matches → ambiguous. Never pick arbitrarily; flag for manual review.
-    if (fullMatches.length > 1) {
-      const nums = fullMatches.map((f) => f.cand.soNumber).join(", ");
+    // The row carried an FR but no candidate matched it → never guess by totals.
+    if (selection.kind === "no-fr-candidate") {
       return {
         authRequired: false, ok: true,
-        message: `Ambiguous: ${fullMatches.length} bookings (${nums}) match the Excel row; manual review required.`,
+        message: `No candidate booking's FR matched the packing-list FR ${input.extraction.frCode} (checked ${inspected.length}: ${frList}); manual review required.`,
         entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: "",
-        portalPdf: null, portalPdfError: "", portalValues: null,
-        match: { outcome: "NEEDS_REVIEW", comparisons: fullMatches[0].match!.comparisons, notes: [`${fullMatches.length} candidate bookings (${nums}) matched PO/SKU/FR + totals — UCP will not choose arbitrarily. Resolve in the portal and re-process.`] },
+        portalPdf: null, portalPdfError: "", portalValues: inspected[0]?.values ?? null,
+        match: { outcome: "NEEDS_REVIEW", comparisons: inspected.find((i) => i.match)?.match?.comparisons ?? [], notes: [`None of the ${candidates.length} candidate booking(s) had FR ${input.extraction.frCode}. FR by candidate: ${frList}.`] },
       };
     }
 
-    // 0 full matches → prefer a "right booking, wrong totals" candidate (identity
-    // matched but a total differs, e.g. carton mismatch) so the reviewer gets the
-    // carton diff to correct on Damco; otherwise it is a genuine no-match → review.
-    if (fullMatches.length === 0) {
-      const wrongTotals = inspected.find((i) => i.match?.outcome === "MISMATCH" && !identityConflicts(i.match));
-      if (wrongTotals) {
-        return {
-          authRequired: false, ok: true,
-          message: `Booking ${wrongTotals.cand.soNumber} matches the Excel row's identity but a value differs: ${wrongTotals.match!.notes.join("; ")}. Correct it on Damco, then re-verify.`,
-          entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: wrongTotals.cand.soNumber,
-          portalPdf: null, portalPdfError: "", portalValues: wrongTotals.values, match: wrongTotals.match,
-        };
-      }
+    // ≥2 candidates indistinguishable on the basis → ambiguous; never pick blindly.
+    if (selection.kind === "ambiguous") {
+      const picks = selection.indices.map((idx) => inspected[idx]);
+      const nums = picks.map((p) => p.cand.soNumber).join(", ");
+      return {
+        authRequired: false, ok: true,
+        message: `Ambiguous: ${picks.length} bookings (${nums}) match the packing-list row on ${basisLabel(selection.basis)}; manual review required.`,
+        entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: "",
+        portalPdf: null, portalPdfError: "", portalValues: null,
+        match: { outcome: "NEEDS_REVIEW", comparisons: picks[0].match?.comparisons ?? [], notes: [`${picks.length} candidate bookings (${nums}) matched on ${basisLabel(selection.basis)} — UCP will not choose arbitrarily. Resolve in the portal and re-process.`] },
+      };
+    }
+
+    // No FR on the row; identity matched a candidate but a total differs → flag it
+    // (right booking, wrong totals) so the reviewer corrects it on Damco.
+    if (selection.kind === "wrong-totals") {
+      const wt = inspected[selection.index];
+      return {
+        authRequired: false, ok: true,
+        message: `Booking ${wt.cand.soNumber} matches the Excel row's identity but a value differs: ${wt.match!.notes.join("; ")}. Correct it on Damco, then re-verify.`,
+        entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: wt.cand.soNumber,
+        portalPdf: null, portalPdfError: "", portalValues: wt.values, match: wt.match,
+      };
+    }
+
+    // Nothing matched at all (no FR on the row, no totals/identity agreement).
+    if (selection.kind === "none") {
       return {
         authRequired: false, ok: true,
         message: `No candidate booking matched the Excel row (PO ${poQuery}, SKU ${countryQuery}); manual review required.`,
@@ -343,11 +373,23 @@ export async function runLivePortalForDoc(input: {
       };
     }
 
-    // Exactly one full match — this is the correct booking.
-    const chosen = fullMatches[0];
+    // selection.kind === "selected": FR (or totals, when no FR) identified exactly
+    // one booking. The totals now decide its final state.
+    const chosen = inspected[selection.index];
     const picked = chosen.cand;
     const portalValues: LivePortalResult["portalValues"] = chosen.values;
     const match = chosen.match!;
+
+    // Right booking (selected by FR) but a total differs → select it and surface
+    // the diff so the reviewer corrects it on Damco (never auto-confirmed).
+    if (match.outcome !== "MATCHED") {
+      return {
+        authRequired: false, ok: true,
+        message: `Booking ${picked.soNumber} was selected on ${basisLabel(selection.basis)} but a value differs: ${match.notes.join("; ")}. Correct it on Damco, then re-verify.`,
+        entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: picked.soNumber,
+        portalPdf: null, portalPdfError: "", portalValues, match,
+      };
+    }
 
     // STEP: Generating PDF — re-open the chosen booking (we navigated through the
     // other candidates) and capture its genuine portal PDF.
