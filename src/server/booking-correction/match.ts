@@ -11,7 +11,10 @@ import type { FieldComparison, MatchResult, ExtractionResult } from "./batch-typ
  *  - A missing value on either side is never a successful match.
  *
  * Identity / disambiguation fields (verify the right booking was picked):
- *  - PO Number, SKU/Item, Shipper (= booking line Manufacturer), FR.
+ *  - PO Number, SKU/Item, FR. (Shipper is intentionally NOT a selection or
+ *    validation criterion — it was removed because the portal's Manufacturer
+ *    read is unreliable and the three totals + PO/SKU/FR already identify the
+ *    correct booking.)
  *  These are only checked when BOTH sides supply a value; a value present on both
  *  that disagrees makes the candidate a MISMATCH (so multi-candidate selection in
  *  live-run.ts never accepts the wrong booking). A field missing on the booking
@@ -25,7 +28,6 @@ export interface BookingValues {
   // Identity fields read from the booking Details tab (optional).
   poNumber?: string;
   sku?: string;
-  shipper?: string; // booking line Manufacturer/vendor
   frCode?: string;
 }
 
@@ -50,22 +52,6 @@ function idCore(v: string | undefined): string {
 function prefixMatch(a: string | undefined, b: string | undefined): boolean {
   const x = idCore(a);
   const y = idCore(b);
-  if (!x || !y) return false;
-  return x.startsWith(y) || y.startsWith(x);
-}
-
-/** Shipper/Manufacturer match: Excel "ABM Fashions Ltd (134715)" vs booking
- *  "ABM FASHIONS…". Strip a trailing vendor code "(123456)" and common company
- *  suffixes, then compare cores by prefix (portal often truncates the name). */
-function shipperMatch(a: string | undefined, b: string | undefined): boolean {
-  const norm = (v: string | undefined) =>
-    String(v ?? "")
-      .replace(/\(\s*\d{3,}\s*\)/g, " ") // drop "(134715)" vendor code
-      .toUpperCase()
-      .replace(/\b(LTD|LIMITED|LTD\.|CO|COMPANY|INC|THE|AND|&)\b/g, " ")
-      .replace(/[^A-Z0-9]/g, "");
-  const x = norm(a);
-  const y = norm(b);
   if (!x || !y) return false;
   return x.startsWith(y) || y.startsWith(x);
 }
@@ -144,7 +130,6 @@ export function matchBooking(
   };
   addIdentity("poNumber", "PO Number", extraction.poNumber ?? "", booking.poNumber ?? "", prefixMatch(extraction.poNumber, booking.poNumber), "prefix");
   addIdentity("sku", "SKU/Item", extraction.countryCode ?? "", booking.sku ?? "", prefixMatch(extraction.countryCode, booking.sku), "prefix");
-  addIdentity("shipper", "Shipper", extraction.shipper ?? "", booking.shipper ?? "", shipperMatch(extraction.shipper, booking.shipper), "manufacturer");
   addIdentity("frCode", "FR", extraction.frCode ?? "", booking.frCode ?? "", idCore(extraction.frCode) === idCore(booking.frCode), "exact");
 
   let outcome: MatchResult["outcome"];

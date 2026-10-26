@@ -232,9 +232,9 @@ export async function runLivePortalForDoc(input: {
 
     // STEP: Opening Booking Details — inspect EVERY candidate (spec §2). We never
     // pick candidates[0] blindly: each booking's Details tab is opened and the
-    // relevant fields (GW/Cartons/Qty + PO/SKU/Shipper/FR) are read and matched
-    // against the Excel row. Only a UNIQUE full match is selected; 0 or ≥2 →
-    // flagged for manual review (never an arbitrary pick).
+    // relevant fields (GW/Cartons/Qty + PO/SKU/FR) are read and matched against
+    // the Excel row. Only a UNIQUE full match is selected; 0 or ≥2 → flagged for
+    // manual review (never an arbitrary pick). Shipper is not a match criterion.
     await report("opening-detail", `Inspecting ${candidates.length} candidate booking(s)`);
 
     interface Inspected {
@@ -245,7 +245,7 @@ export async function runLivePortalForDoc(input: {
       pdf: PortalPdfCapture | null; // cached if we had to generate it to read values
     }
     const inspected: Inspected[] = [];
-    const IDENTITY_FIELDS: string[] = ["poNumber", "sku", "shipper", "frCode"];
+    const IDENTITY_FIELDS: string[] = ["poNumber", "sku", "frCode"];
     const identityConflicts = (m: MatchResult | null): boolean =>
       !!m && m.comparisons.some((c) => IDENTITY_FIELDS.includes(c.field) && !c.match);
 
@@ -300,7 +300,6 @@ export async function runLivePortalForDoc(input: {
           quantity: values.quantity,
           poNumber: details?.poNumber,
           sku: details?.sku,
-          shipper: details?.manufacturer,
           frCode: details?.frCode,
         },
         { grossWeightToleranceKg: tolerance },
@@ -318,7 +317,7 @@ export async function runLivePortalForDoc(input: {
         message: `Ambiguous: ${fullMatches.length} bookings (${nums}) match the Excel row; manual review required.`,
         entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: "",
         portalPdf: null, portalPdfError: "", portalValues: null,
-        match: { outcome: "NEEDS_REVIEW", comparisons: fullMatches[0].match!.comparisons, notes: [`${fullMatches.length} candidate bookings (${nums}) matched PO/SKU/Shipper/FR + totals — UCP will not choose arbitrarily. Resolve in the portal and re-process.`] },
+        match: { outcome: "NEEDS_REVIEW", comparisons: fullMatches[0].match!.comparisons, notes: [`${fullMatches.length} candidate bookings (${nums}) matched PO/SKU/FR + totals — UCP will not choose arbitrarily. Resolve in the portal and re-process.`] },
       };
     }
 
@@ -340,7 +339,7 @@ export async function runLivePortalForDoc(input: {
         message: `No candidate booking matched the Excel row (PO ${poQuery}, SKU ${countryQuery}); manual review required.`,
         entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: "",
         portalPdf: null, portalPdfError: "", portalValues: inspected[0]?.values ?? null,
-        match: { outcome: "NEEDS_REVIEW", comparisons: inspected[0]?.match?.comparisons ?? [], notes: [`None of the ${candidates.length} candidate booking(s) matched on PO/SKU/Shipper/FR + totals.`] },
+        match: { outcome: "NEEDS_REVIEW", comparisons: inspected[0]?.match?.comparisons ?? [], notes: [`None of the ${candidates.length} candidate booking(s) matched on PO/SKU/FR + totals.`] },
       };
     }
 

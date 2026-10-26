@@ -31,9 +31,9 @@ export type RequiredField = "grossWeight" | "cartons" | "quantity";
 /**
  * Every field compared when selecting + verifying a booking (§9). The three
  * numeric totals plus the identity/disambiguation fields the Excel row carries
- * (PO Number, SKU/Item, Shipper = booking Manufacturer, FR).
+ * (PO Number, SKU/Item, FR). Shipper is deliberately excluded from matching.
  */
-export type MatchField = RequiredField | "poNumber" | "sku" | "shipper" | "frCode";
+export type MatchField = RequiredField | "poNumber" | "sku" | "frCode";
 
 export interface ExtractedValue {
   value: string; // raw value as found

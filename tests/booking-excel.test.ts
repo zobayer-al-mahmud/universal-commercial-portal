@@ -92,7 +92,12 @@ describe.skipIf(!existsSync(REAL))("real PackingLists.xlsx", () => {
     const r728045 = res.rows.find((r) => r.poNumber === "728045" && r.sku === "OF");
     expect(r728045).toBeTruthy();
     expect(r728045).toMatchObject({ frCode: "NLW174", quantity: "521", cartons: "16", grossWeight: "109.14" });
-    expect(r728045!.shipper).toMatch(/ABM Fashions/i);
+    // FR is read complete from the packing list (the file no longer carries a
+    // Shipper column — Shipper was removed from the workflow). Check the PLW256
+    // row too (PO 726936 / SKU LH), the case from the review screenshots.
+    const rPlw = res.rows.find((r) => r.poNumber === "726936" && r.sku === "LH");
+    expect(rPlw).toBeTruthy();
+    expect(rPlw!.frCode).toBe("PLW256");
     // Every row that validates has the five required numeric/identity fields.
     for (const r of res.rows.filter((x) => x.valid)) {
       expect(r.poNumber).not.toBe("");

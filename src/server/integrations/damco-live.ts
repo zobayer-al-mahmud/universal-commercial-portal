@@ -2,6 +2,9 @@ import type { Download, Page, Response as PwResponse } from "playwright";
 import { env } from "@/lib/env";
 import { getDamcoPage } from "./damco-browser";
 import { ensureAuthenticated, type AuthResult } from "./damco-auth";
+import { assembleBookingDetails, type RawBookingDetails, type BookingDetailValues } from "@/server/booking-correction/booking-details";
+
+export type { BookingDetailValues } from "@/server/booking-correction/booking-details";
 
 /**
  * Damco Shipper Portal — LIVE booking workflow driver (visible browser).
@@ -164,32 +167,27 @@ export async function openBookingDetail(bookingNumber: string): Promise<boolean>
   return /ViewSOAction/i.test(page.url());
 }
 
-export interface BookingDetailValues {
-  grossWeight: string;
-  cartons: string;
-  quantity: string;
-  status: string;
-  confirmationNumber: string;
-  // Identity fields used to verify the correct booking was selected (§9).
-  poNumber: string; // booking-line "PO number" (e.g. "728045/5-2027")
-  sku: string; // booking-line "SKU/Item" (e.g. "OF/7656")
-  frCode: string; // dynamic field "FR" (e.g. "NLW174")
-  manufacturer: string; // HTS/Manufacturer (e.g. "ABM FASHIONS…")
-}
-
 /**
- * Read Quantity / Packages / Gross weight directly from the Details tab DOM.
- * The portal exposes these as form inputs in a "SUMMARY" section plus one row
- * per booking line in a table. The SUMMARY total is authoritative; falling
- * back to the sum of booking-line rows when SUMMARY is empty. Returns
- * normalized string values (never invented — missing stays "").
+ * Read Quantity / Packages / Gross weight + the identity fields directly from
+ * the Details tab DOM. The portal exposes the totals as form inputs in a
+ * "SUMMARY" section plus one row per booking line; the SUMMARY total is
+ * authoritative, falling back to the sum of booking-line rows when empty.
  *
- * This is the correctness-critical comparison source, not the PDF text.
+ * The identity reads (PO number / SKU / FR dynamic field / Manufacturer) are
+ * harvested RAW here (incl. every label→control-value pair for FR), then
+ * interpreted by the pure `assembleBookingDetails` — so a dynamic field is
+ * never read back as its own label ("FR") or a dropdown placeholder
+ * ("Select..."). Returns normalized string values (never invented — missing
+ * stays ""). This is the correctness-critical comparison source, not the PDF.
  */
 export async function readBookingDetails(): Promise<BookingDetailValues> {
   const page = await getDamcoPage();
+  const empty: RawBookingDetails = {
+    grossWeight: "", cartons: "", quantity: "", status: "", confirmationNumber: "",
+    poNumber: "", sku: "", manufacturer: "", dynamicFields: [],
+  };
   if (!/ViewSOAction/i.test(page.url())) {
-    return { grossWeight: "", cartons: "", quantity: "", status: "", confirmationNumber: "", poNumber: "", sku: "", frCode: "", manufacturer: "" };
+    return assembleBookingDetails(empty);
   }
 
   // Click the DETAILS sub-tab so the SUMMARY + BOOKING LINES sections render.
@@ -199,22 +197,37 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
   }).catch(() => undefined);
   await page.waitForTimeout(1200);
 
-  return page.evaluate(() => {
+  const raw = await page.evaluate((): RawBookingDetails => {
+    /** Read the *value* of a control: input/textarea value, or a select's chosen
+     *  option text — but never a placeholder option (value "", "Select...", …). */
+    const readControlValue = (el: Element | null | undefined): string => {
+      if (!el) return "";
+      if (el.tagName === "SELECT") {
+        const sel = el as HTMLSelectElement;
+        const opt = sel.options[sel.selectedIndex];
+        if (!opt) return "";
+        const val = (opt.value || "").trim();
+        const txt = (opt.textContent || "").trim();
+        if (val === "" || val === "0" || val === "-1") return "";
+        if (/^(select|please\s*select|choose|--+|\.{2,}|…)/i.test(txt)) return "";
+        return txt;
+      }
+      return (((el as HTMLInputElement).value ?? "") + "").trim();
+    };
+
     const getInputValueByLabel = (labelPattern: RegExp): string => {
       const nodes = [...document.querySelectorAll("label, td, th, div, span, b, strong")];
       for (const node of nodes) {
         const text = (node.textContent || "").trim();
         if (!labelPattern.test(text)) continue;
-        // Look at the next sibling(s) or the parent row for an input.
         const findInput = (root: Element | null | undefined): string => {
           if (!root) return "";
-          const el = root.querySelector("input, select, textarea") as HTMLInputElement | null;
-          return el ? (el.value || "").trim() : "";
+          const el = root.querySelector("input, select, textarea");
+          return el ? readControlValue(el) : "";
         };
         const row = node.closest("tr");
         const v = findInput(node.nextElementSibling) || findInput(node.parentElement) || findInput(row);
         if (v) return v;
-        // Also try pulling plain text from the next sibling cell (non-input case).
         const sib = node.nextElementSibling;
         if (sib && !sib.querySelector("input")) {
           const t = (sib.textContent || "").trim();
@@ -242,22 +255,21 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
     if (!grossWeight) grossWeight = sumInputsByName("grossWeight") || sumInputsByName("weight");
 
     // --- Identity fields (verify the right booking) ------------------------
-    // The booking line shows "PO number"/"SKU/Item" as label→value pairs (often
-    // plain text, not inputs); "FR" is a dynamic-field input; the Manufacturer
-    // is in the HTS/Country/Region of Origin/Manufacturer cell.
+    // PO number / SKU are booking-line label→value pairs; FR is a dynamic-field
+    // *input*; Manufacturer is the HTS row's select. We read the paired CONTROL
+    // VALUE (never the label), and separately harvest every dynamic label→value
+    // pair so the pure layer can pick FR robustly.
     const valueForLabel = (labelPattern: RegExp): string => {
       const nodes = [...document.querySelectorAll("label, td, th, div, span, b, strong")];
       for (const node of nodes) {
         const text = (node.textContent || "").trim();
         if (!labelPattern.test(text)) continue;
-        // Input value next to / under the label.
         const findInput = (root: Element | null | undefined): string => {
-          const el = root?.querySelector("input, select, textarea") as HTMLInputElement | null;
-          return el ? (el.value || "").trim() : "";
+          const el = root?.querySelector("input, select, textarea");
+          return el ? readControlValue(el) : "";
         };
         const fromInput = findInput(node.nextElementSibling) || findInput(node.parentElement);
         if (fromInput) return fromInput;
-        // Plain-text value in the next sibling cell.
         const sib = node.nextElementSibling;
         if (sib && !sib.querySelector("input, select, textarea")) {
           const t = (sib.textContent || "").trim();
@@ -267,14 +279,47 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
       return "";
     };
 
+    // Harvest label→control-value pairs. A "label" is a short cell/element that
+    // itself holds no control; its value is the control in the next cell/sibling
+    // (table layout) or inside/after it (flex/div layout).
+    const dynamicFields: { label: string; value: string }[] = [];
+    const pushPair = (label: string, value: string) => {
+      const l = (label || "").replace(/\s+/g, " ").trim();
+      if (!l || l.length > 40) return;
+      dynamicFields.push({ label: l, value: (value || "").replace(/\s+/g, " ").trim() });
+    };
+    // Strategy A: table rows — a text cell followed by a cell carrying a control.
+    for (const tr of document.querySelectorAll("tr")) {
+      const cells = [...tr.children].filter((c) => /^(td|th)$/i.test(c.tagName));
+      for (let i = 0; i < cells.length - 1; i++) {
+        const lc = cells[i];
+        if (lc.querySelector("input, select, textarea")) continue;
+        const label = (lc.textContent || "").trim();
+        if (!label) continue;
+        for (let j = i + 1; j < cells.length; j++) {
+          const ctrl = cells[j].querySelector("input, select, textarea");
+          if (ctrl) { pushPair(label, readControlValue(ctrl)); break; }
+        }
+      }
+    }
+    // Strategy B: a label element immediately followed by, or wrapping, a control.
+    for (const node of document.querySelectorAll("label, span, div, td, th, b, strong")) {
+      if (node.querySelector("input, select, textarea")) continue;
+      const label = (node.textContent || "").trim();
+      if (!label) continue;
+      const sib = node.nextElementSibling;
+      const ctrl = sib
+        ? (sib.matches && sib.matches("input, select, textarea") ? sib : sib.querySelector("input, select, textarea"))
+        : null;
+      if (ctrl) pushPair(label, readControlValue(ctrl));
+    }
+
     const poNumber = valueForLabel(/^PO\s*number$/i) || valueForLabel(/^PO\s*number\b/i);
     const sku = valueForLabel(/^SKU\s*\/?\s*Item$/i) || valueForLabel(/^SKU\b/i);
-    const frCode = valueForLabel(/^FR$/i) || valueForLabel(/^FR\b/i);
-    // Manufacturer: the HTS row's manufacturer select/input value, else a label match.
     let manufacturer = valueForLabel(/Manufacturer/i);
     if (!manufacturer) {
       const el = [...document.querySelectorAll<HTMLInputElement>("input, select")]
-        .map((e) => (e.value || "").trim())
+        .map((e) => readControlValue(e))
         .find((v) => /FASHION|GARMENTS|JEANS|SPORTSWEAR|TEXTILE|APPAREL/i.test(v));
       manufacturer = el || "";
     }
@@ -289,7 +334,7 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
     const normalize = (v: string) => {
       if (!v) return "";
       const n = Number(String(v).replace(/[^\d.-]/g, ""));
-      return Number.isFinite(n) && n > 0 ? (Number.isInteger(n) ? String(n) : String(n)) : "";
+      return Number.isFinite(n) && n > 0 ? String(n) : "";
     };
     return {
       grossWeight: normalize(grossWeight),
@@ -299,10 +344,12 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
       confirmationNumber,
       poNumber: poNumber.trim(),
       sku: sku.trim(),
-      frCode: frCode.trim(),
       manufacturer: manufacturer.trim(),
+      dynamicFields,
     };
   });
+
+  return assembleBookingDetails(raw);
 }
 
 /**

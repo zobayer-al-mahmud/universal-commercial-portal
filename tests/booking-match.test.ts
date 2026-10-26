@@ -54,16 +54,20 @@ function excelExtraction(over: Partial<ExtractionResult> = {}): ExtractionResult
   };
 }
 
-describe("matchBooking — identity fields (PO/SKU/Shipper/FR)", () => {
+describe("matchBooking — identity fields (PO/SKU/FR); Shipper excluded", () => {
   // The two candidates from the screenshot search 728045*/OF* (both CONFIRMED, same
-  // totals readable), disambiguated only by identity.
-  const rightBooking = { grossWeight: "109.140", cartons: "16", quantity: "521", poNumber: "728045/5-2027", sku: "OF/7656", shipper: "ABM FASHIONS LTD", frCode: "NLW174" };
+  // totals readable), disambiguated only by identity (PO/SKU/FR — never Shipper).
+  const rightBooking = { grossWeight: "109.140", cartons: "16", quantity: "521", poNumber: "728045/5-2027", sku: "OF/7656", frCode: "NLW174" };
 
-  it("MATCHED when identity + totals all agree (manufacturer truncation tolerated)", () => {
-    const r = matchBooking(excelExtraction(), { ...rightBooking, shipper: "ABM FASHIONS L" }, OPTS);
+  it("MATCHED when identity + totals all agree", () => {
+    const r = matchBooking(excelExtraction(), rightBooking, OPTS);
     expect(r.outcome).toBe("MATCHED");
-    expect(r.comparisons.find((c) => c.field === "shipper")!.match).toBe(true);
     expect(r.comparisons.find((c) => c.field === "frCode")!.match).toBe(true);
+  });
+
+  it("Shipper is never a comparison field", () => {
+    const r = matchBooking(excelExtraction(), rightBooking, OPTS);
+    expect(r.comparisons.find((c) => (c.field as string) === "shipper")).toBeUndefined();
   });
 
   it("PO/SKU match by prefix (booking carries a suffix)", () => {
@@ -78,9 +82,13 @@ describe("matchBooking — identity fields (PO/SKU/Shipper/FR)", () => {
     expect(r.comparisons.find((c) => c.field === "frCode")!.match).toBe(false);
   });
 
-  it("MISMATCH when the Shipper (manufacturer) differs", () => {
-    const r = matchBooking(excelExtraction(), { ...rightBooking, shipper: "ANANTA GARMENTS LTD" }, OPTS);
-    expect(r.outcome).toBe("MISMATCH");
+  it("PLW256 row MATCHES its own booking once the FR dynamic field reads correctly", () => {
+    // Excel row 2 of the real PackingLists.xlsx: PO 726936 / SKU LH / FR PLW256.
+    const plw = excelExtraction({ poNumber: "726936", countryCode: "LH", marketCode: "LH", frCode: "PLW256", grossWeight: val("106.52"), cartons: val("9"), quantity: val("360") });
+    const booking = { grossWeight: "106.52", cartons: "9", quantity: "360", poNumber: "726936/5-2027", sku: "LH/7656", frCode: "PLW256" };
+    const r = matchBooking(plw, booking, OPTS);
+    expect(r.outcome).toBe("MATCHED");
+    expect(r.comparisons.find((c) => c.field === "frCode")!.match).toBe(true);
   });
 
   it("identity fields are informational when the booking omits them (legacy PDF path)", () => {
@@ -92,7 +100,7 @@ describe("matchBooking — identity fields (PO/SKU/Shipper/FR)", () => {
   it("carton-only mismatch keeps identity intact (right booking, wrong cartons → correct on Damco)", () => {
     const r = matchBooking(excelExtraction(), { ...rightBooking, cartons: "18" }, OPTS);
     expect(r.outcome).toBe("MISMATCH");
-    const identityOk = r.comparisons.filter((c) => ["poNumber", "sku", "shipper", "frCode"].includes(c.field)).every((c) => c.match);
+    const identityOk = r.comparisons.filter((c) => ["poNumber", "sku", "frCode"].includes(c.field)).every((c) => c.match);
     expect(identityOk).toBe(true); // so live-run flags it for carton correction, not a wrong-booking
   });
 });
