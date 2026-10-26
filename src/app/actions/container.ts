@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { beginContainerSearch } from "@/server/container/run";
+import { beginContainerBatch, parseContainerList, retryContainerRow, type BeginBatchResult } from "@/server/container/batch";
 
 export interface ContainerSearchActionResult {
   id?: string;
@@ -44,5 +45,37 @@ export async function searchContainerAction(input: {
     return r;
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Container search failed." };
+  }
+}
+
+export type ContainerBatchActionResult = (BeginBatchResult & { error?: undefined }) | { error: string };
+
+/** Start a bulk container search from a free-text block of container numbers. */
+export async function startContainerBatchAction(text: string, force = false): Promise<ContainerBatchActionResult> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.CONTAINER_SEARCH)) return { error: "You do not have permission to run container searches." };
+
+  const parsed = parseContainerList(text ?? "");
+  try {
+    const r = await beginContainerBatch({ containers: parsed, actor: user.email, force });
+    if ("error" in r) return { error: r.error };
+    revalidatePath("/modules/container");
+    return r;
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Bulk container search failed." };
+  }
+}
+
+/** Retry one container row (re-runs the live search for that container). */
+export async function retryContainerAction(rowId: string): Promise<{ ok?: boolean; error?: string }> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.CONTAINER_SEARCH)) return { error: "You do not have permission to run container searches." };
+  try {
+    const r = await retryContainerRow(rowId, user.email);
+    return r.ok ? { ok: true } : { error: r.message };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Retry failed." };
   }
 }

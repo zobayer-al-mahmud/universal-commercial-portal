@@ -2,11 +2,20 @@ import Link from "next/link";
 import { PageHeader, StatusBadge } from "@/components/ui";
 import { listTemplates } from "@/server/customs-invoice/templates";
 import { learnLayout, type LearnedLayout } from "@/server/customs-invoice/learn-template";
+import { getGenerationConfig, hasCustomColumnPlan } from "@/server/customs-invoice/config";
+import { INVOICE_FIELD_LABELS } from "@/server/customs-invoice/types";
+import { CustomsInvoiceBulkGenerate } from "@/components/CustomsInvoiceBulkGenerate";
+import { GenerationMappingEditor } from "@/components/GenerationMappingEditor";
 
 export const dynamic = "force-dynamic";
 
 export default async function TemplateHealthPage() {
   const templates = listTemplates();
+  const [config, isCustom] = await Promise.all([getGenerationConfig(), hasCustomColumnPlan()]);
+  const fieldOptions = Object.entries(INVOICE_FIELD_LABELS).map(([key, label]) => ({ key, label }));
+  const templateFiles = templates.map((t) => t.filename);
+  const initialPlan = config.columnPlan.map((c) => ({ col: c.col, field: c.field as string, kind: c.kind }));
+  const initialOverrides = Object.entries(config.templateOverrides).map(([code, file]) => ({ code, file }));
   // Learn every template in parallel (ExcelJS loads are modest for these ~40KB files).
   const learned = await Promise.all(templates.map(async (t) => ({ t, l: await learnLayout(t.path) })));
 
@@ -28,6 +37,17 @@ export default async function TemplateHealthPage() {
         download, the writer uses this layout to populate the invoice — the cross-sheet formulas in
         <code> SUMMARY </code>/<code> CUSTOM INVOICE </code>/<code> MCO </code> cascade automatically.
       </p>
+
+      <div className="mb-4 grid gap-4 lg:grid-cols-2">
+        <CustomsInvoiceBulkGenerate />
+        <GenerationMappingEditor
+          initialPlan={initialPlan}
+          initialOverrides={initialOverrides}
+          fields={fieldOptions}
+          templateFiles={templateFiles}
+          isCustom={isCustom}
+        />
+      </div>
 
       <div className="card overflow-x-auto">
         <table className="w-full text-xs">

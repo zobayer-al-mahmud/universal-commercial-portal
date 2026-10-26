@@ -1,13 +1,17 @@
 import ExcelJS from "exceljs";
 import type { InvoiceFields } from "./types";
 import { INVOICE_FIELD_LABELS } from "./types";
-import { listTemplates, resolveTemplate } from "./templates";
+import { listTemplates, resolveTemplateWithOverrides } from "./templates";
 import type { LearnedLayout } from "./learn-template";
-import { patchTemplate } from "./zip-write";
+import { patchTemplate, type ColumnSpec } from "./zip-write";
 
 export interface WriteInvoiceOptions {
   /** When set, loads this specific template file. Falls back to resolver otherwise. */
   templatePath?: string;
+  /** Override the default field→cell mapping (from the editable generation config). */
+  columnPlan?: ColumnSpec[];
+  /** MARKET/SUB code (upper) → template filename, forcing a template for a code. */
+  templateOverrides?: Record<string, string>;
 }
 
 export interface WriteInvoiceResult {
@@ -36,7 +40,7 @@ export async function writeInvoiceXlsx(inv: InvoiceFields, opts: WriteInvoiceOpt
   const templates = listTemplates();
   let templatePath = opts.templatePath ?? "";
   if (!templatePath) {
-    const resolved = resolveTemplate(inv.marketCode, inv.marketSubCode || inv.countryCode, templates);
+    const resolved = resolveTemplateWithOverrides(inv.marketCode, inv.marketSubCode || inv.countryCode, templates, opts.templateOverrides ?? {});
     if (resolved) templatePath = resolved.path;
   }
 
@@ -45,7 +49,7 @@ export async function writeInvoiceXlsx(inv: InvoiceFields, opts: WriteInvoiceOpt
     // merged cell exactly as the template left them (ExcelJS's full
     // round-trip drops the `editAs="oneCell"` attribute on drawings, which
     // repositioned the ANANTA GARMENTS LTD / certification-logo header).
-    const r = await patchTemplate(templatePath, inv);
+    const r = await patchTemplate(templatePath, inv, opts.columnPlan);
     if (r) {
       return {
         buffer: r.buffer,

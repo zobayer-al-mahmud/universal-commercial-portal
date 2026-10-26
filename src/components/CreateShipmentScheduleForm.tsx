@@ -12,22 +12,21 @@ export function CreateShipmentScheduleForm() {
       <div className="mb-3">
         <h3 className="text-sm font-semibold text-slate-800">+ Create new Shipment Schedule</h3>
         <p className="mt-1 text-xs text-slate-500">
-          Title convention: <span className="font-mono">Week NN 1st cut off DD.MM.YYYY 2nd DD.MM.YYYY</span>. You can edit it later.
+          Just enter a <strong>week number</strong> (e.g. 32) to start — the title and cut-off dates can be added or edited later.
         </p>
       </div>
-      <div className="grid gap-3 sm:grid-cols-[1fr_120px_auto]">
-        <input
-          name="weekTitle"
-          required
-          placeholder="e.g. Week 43 1st cut off 19.10.2026 2nd 23.10.2026"
-          className="input w-full"
-        />
+      <div className="grid gap-3 sm:grid-cols-[120px_1fr_auto]">
         <input
           name="weekNo"
           type="number"
           min={1}
           max={60}
-          placeholder="Week No."
+          placeholder="Week No. *"
+          className="input w-full"
+        />
+        <input
+          name="weekTitle"
+          placeholder="Optional title (e.g. Week 32 1st cut off 05.08.2026) — editable later"
           className="input w-full"
         />
         <SubmitBtn />

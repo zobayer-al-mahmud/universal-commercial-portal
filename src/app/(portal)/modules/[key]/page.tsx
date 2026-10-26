@@ -5,7 +5,7 @@ import { PageHeader, StatusBadge } from "@/components/ui";
 import { isVisibleModule } from "@/server/modules/catalog";
 import { RenameForm } from "@/components/RenameForm";
 import { BookingCorrectionForm } from "@/components/BookingCorrectionForm";
-import { BookingBatchUpload } from "@/components/BookingBatchUpload";
+import { BookingExcelManager } from "@/components/BookingExcelManager";
 import { SalesContractPickBatch, type ExistingContractOption } from "@/components/SalesContractPickBatch";
 import { PdfCombinerManager, type ManagerCol, type ManagerRow, type ManagerMaster } from "@/components/PdfCombinerManager";
 import { ContainerSearchManager, type RecentSearch } from "@/components/ContainerSearchManager";
@@ -219,7 +219,7 @@ export default async function ModulePage({ params }: { params: { key: string } }
       <div>
         <PageHeader
           title="Container"
-          subtitle="Enter a container number to search the CTG Port system, verify the record, and capture the result as a downloadable PDF."
+          subtitle="Enter or import many container numbers, search the CTG Port system in bulk, verify each record, and capture one downloadable PDF per matched container."
           actions={<StatusBadge status={module.status} />}
         />
         <ContainerSearchManager
@@ -317,12 +317,14 @@ export default async function ModulePage({ params }: { params: { key: string } }
       {module.key === "booking-correction" ? (
         <>
           <div className="mb-6">
-            <h3 className="mb-1 text-sm font-semibold text-slate-800">Batch booking correction</h3>
+            <h3 className="mb-1 text-sm font-semibold text-slate-800">Excel-driven booking correction</h3>
             <p className="mb-3 text-sm text-slate-500">
-              Upload packing-list PDFs to extract Gross Weight, Cartons and Quantity, match them against the
-              booking, and return verified PDFs. A booking is never reported as confirmed unless it actually is.
+              Upload the PackingLists workbook, edit rows as needed, then process selected or all rows. Each row is
+              searched on Damco by PO + SKU; every candidate booking is opened and verified on PO, SKU, Shipper, FR,
+              Quantity, Cartons and Gross weight before a verified PDF is produced. A booking is never reported as
+              confirmed unless the portal actually confirms it, and carton mismatches are flagged for correction on Damco.
             </p>
-            <BookingBatchUpload />
+            <BookingExcelManager />
           </div>
           {await (async () => {
             const batches = await prisma.bookingBatch.findMany({ orderBy: { createdAt: "desc" }, take: 8 });
@@ -366,7 +368,7 @@ export default async function ModulePage({ params }: { params: { key: string } }
           <div className="panel-title">Recent jobs</div>
         </div>
         {jobs.length === 0 ? (
-          <div className="p-8 text-center text-sm text-slate-400">No jobs recorded for this module yet.</div>
+          <div className="p-8 text-center text-sm text-slate-400">No jobs recorded for this process yet.</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full">

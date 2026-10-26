@@ -8,7 +8,8 @@ import { extractFromPdf, applyManualCorrections, pdfIsReadable } from "./extract
 import { matchBooking } from "./match";
 import { validateStatus } from "./status";
 import { buildBookingPdf } from "./pdf-writer";
-import type { ExtractionResult, BookingState, MatchResult } from "./batch-types";
+import { rowHash, type PackingRow } from "./excel";
+import type { ExtractionResult, BookingState, MatchResult, ExtractedValue, ReviewReason } from "./batch-types";
 import type { BookingLiveStep } from "./progress";
 import {
   searchDamcoBookings,
@@ -136,6 +137,120 @@ export async function createBookingBatch(
   return { batchId: batch.id, accepted: valid.length, rejected, duplicates };
 }
 
+export interface CreateExcelBatchResult {
+  batchId: string;
+  accepted: number; // valid rows → processable documents
+  invalid: number; // rows with validation errors (created, but held in NEEDS_REVIEW)
+  duplicates: number; // identical rows skipped
+  rejected: { row: number; reason: string }[];
+}
+
+/**
+ * Create a batch from the supplied PackingLists workbook (Excel-driven workflow).
+ * The workbook is stored once; each non-empty row becomes one BookingDocument
+ * carrying the authoritative values (no PDF extraction). Valid rows start in
+ * UPLOADED; invalid rows start in NEEDS_REVIEW with the validation problems, so
+ * they appear in the editable grid and can be fixed before processing. Identical
+ * rows (same content hash) are de-duplicated.
+ */
+export async function createBookingExcelBatch(
+  workbook: { name: string; buffer: Buffer },
+  rows: PackingRow[],
+  opts: { company?: string; buyer?: string; actor?: string } = {},
+): Promise<CreateExcelBatchResult> {
+  const actor = opts.actor ?? "system";
+  const company = (opts.company || env.DAMCO_DEFAULT_COMPANY).trim();
+  const buyer = (opts.buyer || env.DAMCO_DEFAULT_BUYER).trim();
+
+  if (rows.length === 0) throw new Error("No data rows found in the workbook.");
+  if (rows.length > env.BOOKING_MAX_ROWS) throw new Error(`Too many rows: ${rows.length} exceeds the limit of ${env.BOOKING_MAX_ROWS}.`);
+
+  const sourceSha256 = createHash("sha256").update(workbook.buffer).digest("hex");
+  const batch = await prisma.bookingBatch.create({
+    data: {
+      createdBy: actor, company, buyer, damcoMode: env.INTEGRATION_MODE,
+      sourceType: "excel", sourceName: workbook.name, sourceSha256,
+      totalDocs: 0, status: "uploaded",
+    },
+  });
+
+  const dir = storageDir(batch.id);
+  await mkdir(dir, { recursive: true });
+  const sourcePath = join(dir, "source.xlsx");
+  await writeFile(sourcePath, workbook.buffer); // workbook preserved, never modified
+  await prisma.bookingBatch.update({ where: { id: batch.id }, data: { sourcePath } });
+
+  let accepted = 0, invalid = 0, duplicates = 0, serial = 0;
+  const rejected: { row: number; reason: string }[] = [];
+  const seen = new Set<string>();
+
+  for (const r of rows) {
+    const hash = rowHash(r);
+    if (seen.has(hash)) { duplicates++; continue; }
+    seen.add(hash);
+    serial++;
+    if (r.valid) accepted++;
+    else { invalid++; rejected.push({ row: r.rowNo, reason: r.errors.join("; ") }); }
+    await prisma.bookingDocument.create({
+      data: {
+        batchId: batch.id, serial,
+        sourceType: "excel", rowNo: r.rowNo,
+        originalName: `Row ${r.rowNo} · PO ${r.poNumber || "?"} / ${r.sku || "?"}`,
+        sha256: hash, sizeBytes: 0, storagePath: "",
+        company, buyer,
+        poNumber: r.poNumber, countryCode: r.sku, marketCode: r.sku,
+        shipper: r.shipper, frCode: r.frCode,
+        extractedGrossWeight: r.grossWeight, extractedCartons: r.cartons, extractedQuantity: r.quantity,
+        extractionConfidence: r.valid ? 1 : 0,
+        state: (r.valid ? "UPLOADED" : "NEEDS_REVIEW") satisfies BookingState,
+        warning: r.valid ? "" : r.errors.join("; "),
+      },
+    });
+  }
+
+  await prisma.bookingBatch.update({ where: { id: batch.id }, data: { totalDocs: accepted + invalid } });
+  await batchJobId(batch.id, actor);
+  await recomputeBatch(batch.id);
+  await audit({ entityType: "job", entityId: batch.id, action: "booking.batch.uploaded", actor, data: { source: "excel", file: workbook.name, accepted, invalid, duplicates, rows: rows.length } });
+
+  return { batchId: batch.id, accepted, invalid, duplicates, rejected };
+}
+
+/**
+ * Build an ExtractionResult straight from an Excel-sourced document's stored row
+ * values (the spreadsheet is the source of truth — no PDF to read). Mirrors the
+ * shape `extractFromPdf` produces so the rest of the pipeline is unchanged.
+ */
+function buildExcelExtraction(doc: {
+  poNumber: string; countryCode: string; marketCode: string; shipper: string; frCode: string;
+  extractedGrossWeight: string; extractedCartons: string; extractedQuantity: string;
+}): ExtractionResult {
+  const mk = (v: string, label: string): ExtractedValue | null => (v ? { value: v, normalized: v, label, page: 0, confidence: 1 } : null);
+  const reviewReasons: ReviewReason[] = [];
+  const grossWeight = mk(doc.extractedGrossWeight, "Excel · Gross weight");
+  const cartons = mk(doc.extractedCartons, "Excel · Packages/CARTON");
+  const quantity = mk(doc.extractedQuantity, "Excel · Quantity");
+  if (!doc.poNumber) reviewReasons.push({ code: "PO_MISSING", reason: "Row has no PO Number.", severity: "hard" });
+  if (!doc.countryCode) reviewReasons.push({ code: "SKU_MISSING", reason: "Row has no SKU/Item code (needed for the Damco search).", severity: "hard" });
+  if (!grossWeight) reviewReasons.push({ code: "GROSS_WEIGHT_MISSING", reason: "Row has no Gross weight.", severity: "hard" });
+  if (!cartons) reviewReasons.push({ code: "CARTONS_MISSING", reason: "Row has no Packages/Cartons.", severity: "hard" });
+  if (!quantity) reviewReasons.push({ code: "QUANTITY_MISSING", reason: "Row has no Quantity.", severity: "hard" });
+  const complete = !!grossWeight && !!cartons && !!quantity && !!doc.poNumber && !!doc.countryCode && reviewReasons.every((r) => r.severity !== "hard");
+  return {
+    poNumber: doc.poNumber,
+    countryCode: doc.countryCode,
+    marketCode: doc.marketCode,
+    shipper: doc.shipper,
+    frCode: doc.frCode,
+    grossWeight, cartons, quantity,
+    complete,
+    confidence: complete ? 1 : 0,
+    reviewReasons,
+    pages: 0,
+    textChars: 0,
+  };
+}
+
 async function docEvent(docId: string, stage: string, status: string, message: string, data: Record<string, unknown> = {}) {
   await prisma.bookingDocEvent.create({ data: { docId, stage, status, message, dataJson: JSON.stringify(data) } });
 }
@@ -167,19 +282,26 @@ export async function processDocument(docId: string, opts: { actor?: string; for
 
     // --- EXTRACTING -------------------------------------------------------
     await setState("EXTRACTING");
-    const { readFile } = await import("fs/promises");
-    const buffer = await readFile(doc.storagePath);
-    let extraction: ExtractionResult = await extractFromPdf(buffer, doc.originalName);
+    let extraction: ExtractionResult;
+    if (doc.sourceType === "excel") {
+      // Excel-driven: the spreadsheet row carries the authoritative values —
+      // there is no PDF to read. Reviewer edits are saved directly onto the row.
+      extraction = buildExcelExtraction(doc);
+    } else {
+      const { readFile } = await import("fs/promises");
+      const buffer = await readFile(doc.storagePath);
+      extraction = await extractFromPdf(buffer, doc.originalName);
 
-    // Honour reviewer corrections persisted on the document (§5 review flow).
-    if (doc.manualCorrected) {
-      extraction = applyManualCorrections(extraction, {
-        grossWeight: doc.extractedGrossWeight,
-        cartons: doc.extractedCartons,
-        quantity: doc.extractedQuantity,
-        poNumber: doc.poNumber,
-        countryCode: doc.countryCode,
-      });
+      // Honour reviewer corrections persisted on the document (§5 review flow).
+      if (doc.manualCorrected) {
+        extraction = applyManualCorrections(extraction, {
+          grossWeight: doc.extractedGrossWeight,
+          cartons: doc.extractedCartons,
+          quantity: doc.extractedQuantity,
+          poNumber: doc.poNumber,
+          countryCode: doc.countryCode,
+        });
+      }
     }
 
     const extractionJson = JSON.stringify({
@@ -254,7 +376,10 @@ export async function processDocument(docId: string, opts: { actor?: string; for
         await recomputeBatch(doc.batchId);
         return "PORTAL_AUTH_REQUIRED";
       }
-      if (!live.ok || !live.pickedBookingNumber) {
+      // Genuine search failure (auth OK but no candidates / portal error). The
+      // ambiguous and no-unique-match cases come back with ok:true + a non-MATCHED
+      // `match` (pickedBookingNumber may be empty) and are handled by the gate below.
+      if (!live.ok) {
         await setState("SEARCH_FAILED", { matchOutcome: "SEARCH_FAILED", error: live.message, processedAt: new Date() });
         await raiseReview(doc.batchId, actor, "SEARCH_FAILED", live.message, docId, doc.serial, doc.originalName);
         await prisma.bookingBatch.update({ where: { id: doc.batchId }, data: { liveStatus: "running", liveMessage: live.message, liveUpdatedAt: new Date() } });
@@ -377,7 +502,7 @@ export async function processDocument(docId: string, opts: { actor?: string; for
     });
     // Live mode already computed the match on the portal-read values; reuse it
     // so the stored result matches what gated the PDF. Mock mode matches here.
-    const match = liveMatch ?? matchBooking(extraction, { grossWeight: booking.grossWeight, cartons: booking.cartons, quantity: booking.quantity }, { grossWeightToleranceKg: env.BOOKING_GROSS_WEIGHT_TOLERANCE_KG });
+    const match = liveMatch ?? matchBooking(extraction, { grossWeight: booking.grossWeight, cartons: booking.cartons, quantity: booking.quantity, poNumber: booking.poNumber, sku: booking.countryCode }, { grossWeightToleranceKg: env.BOOKING_GROSS_WEIGHT_TOLERANCE_KG });
     await prisma.bookingDocument.update({ where: { id: docId }, data: { matchOutcome: match.outcome, matchJson: JSON.stringify(match) } });
     await docEvent(docId, "match", match.outcome === "MATCHED" ? "ok" : "failed", `${match.outcome}${match.notes.length ? " · " + match.notes.join("; ") : ""}`);
 
@@ -464,6 +589,30 @@ export async function recomputeBatch(batchId: string): Promise<void> {
   const inFlight = docs.length - completed - review - failed;
   const status = inFlight > 0 ? "processing" : failed + review === 0 ? "completed" : completed > 0 ? "partial" : "failed";
   await prisma.bookingBatch.update({ where: { id: batchId }, data: { completedDocs: completed, reviewDocs: review, failedDocs: failed, status } });
+}
+
+/** Run a specific subset of documents (Process Selected) with bounded concurrency. */
+export async function processSelected(batchId: string, docIds: string[], opts: { actor?: string; force?: boolean } = {}): Promise<void> {
+  const actor = opts.actor ?? "system";
+  if (docIds.length === 0) return;
+  await prisma.bookingBatch.update({ where: { id: batchId }, data: { status: "processing" } });
+  const docs = await prisma.bookingDocument.findMany({ where: { batchId, id: { in: docIds } }, orderBy: { serial: "asc" } });
+  const queue = docs.filter((d) => opts.force || !SUCCESS_STATES.includes(d.state as BookingState)).map((d) => d.id);
+
+  const limit = env.INTEGRATION_MODE === "live" ? 1 : Math.max(1, env.BOOKING_CONCURRENCY);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < queue.length) {
+      const id = queue[cursor++];
+      await processDocument(id, { actor, force: opts.force });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+  await recomputeBatch(batchId);
+  if (env.INTEGRATION_MODE === "live") {
+    await prisma.bookingBatch.update({ where: { id: batchId }, data: { liveStatus: "finished", liveStep: "", liveMessage: "Run finished.", liveUpdatedAt: new Date() } });
+  }
+  await audit({ entityType: "job", entityId: batchId, action: "booking.batch.processed", actor, data: { docs: queue.length, selected: docIds.length, mode: env.INTEGRATION_MODE } });
 }
 
 /** Run every not-yet-successful document in a batch with bounded concurrency. */

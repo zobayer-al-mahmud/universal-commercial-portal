@@ -21,7 +21,7 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <PageHeader title="Dashboard" subtitle="Operational status across your commercial automation modules." />
+      <PageHeader title="Dashboard" subtitle="Operational status across your commercial automation processes." />
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 lg:grid-cols-6">
         <Stat label="Total Jobs" value={jobs} href="/jobs" />
@@ -34,7 +34,7 @@ export default async function DashboardPage() {
 
       <div className="mt-8">
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-slate-800">Modules</h2>
+          <h2 className="text-sm font-semibold text-slate-800">Processes</h2>
           <Link href="/modules" className="text-xs font-medium text-ananta hover:underline">
             View all →
           </Link>
@@ -60,7 +60,7 @@ export default async function DashboardPage() {
               <Link href="/modules/sales-contract" className="font-medium text-ananta hover:underline">
                 Sales Contract
               </Link>{" "}
-              module.
+              process.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -68,7 +68,7 @@ export default async function DashboardPage() {
                 <thead className="bg-slate-50/70">
                   <tr>
                     <th className="th">Job</th>
-                    <th className="th">Module</th>
+                    <th className="th">Process</th>
                     <th className="th">Key</th>
                     <th className="th">Status</th>
                   </tr>

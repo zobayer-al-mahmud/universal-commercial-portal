@@ -37,7 +37,7 @@ export default async function JobsPage({ searchParams }: { searchParams: { statu
             <thead className="bg-slate-50/70">
               <tr>
                 <th className="th">Job</th>
-                <th className="th">Module</th>
+                <th className="th">Process</th>
                 <th className="th">Type</th>
                 <th className="th">Business key</th>
                 <th className="th">Status</th>

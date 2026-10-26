@@ -55,6 +55,7 @@ function problemText(r: SlotRes): string {
 }
 
 export async function runMatrixCombine(input: MatrixRunInput): Promise<MatrixRunResult> {
+  const perfT0 = Date.now();
   const root = env.PDF_COMBINER_ROOT;
   if (!root) throw new Error("PDF_COMBINER_ROOT is not configured — set it in .env to the Combiner Folders share.");
 
@@ -150,5 +151,6 @@ export async function runMatrixCombine(input: MatrixRunInput): Promise<MatrixRun
     data: { master: master.fileName, version: master.version, rows: selected.length, mode: wanted.size ? "rows" : "all", completed, failed, skipped, folders: foldersUsed },
   });
 
+  console.info(`[perf] pdf-combiner run ${run.id}: ${selected.length} rows (${completed} ok / ${failed} failed / ${skipped} skipped) in ${Date.now() - perfT0}ms`);
   return { runId: run.id, totalRows: selected.length, completed, failed, skipped };
 }

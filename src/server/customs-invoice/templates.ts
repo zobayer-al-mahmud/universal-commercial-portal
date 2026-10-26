@@ -151,6 +151,27 @@ export function resolveTemplate(
   return null;
 }
 
+/**
+ * Resolve a template honoring user-configured per-code overrides first (a
+ * MARKET/SUB code → template filename map from the editable generation config),
+ * then falling back to the normal `resolveTemplate` rules.
+ */
+export function resolveTemplateWithOverrides(
+  marketCode: string,
+  marketSubCode: string,
+  templates: InvoiceTemplate[],
+  overrides: Record<string, string>,
+): InvoiceTemplate | null {
+  const sub = (marketSubCode || "").trim().toUpperCase();
+  const mkt = (marketCode || "").trim().toUpperCase();
+  const forced = overrides[sub] || overrides[mkt];
+  if (forced) {
+    const t = templates.find((x) => x.filename === forced);
+    if (t) return t;
+  }
+  return resolveTemplate(marketCode, marketSubCode, templates);
+}
+
 /** Unique country codes available as templates (for a UI dropdown). */
 export function listCountryCodes(templates: InvoiceTemplate[]): string[] {
   const set = new Set<string>();

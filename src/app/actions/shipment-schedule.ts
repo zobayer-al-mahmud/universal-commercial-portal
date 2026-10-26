@@ -26,10 +26,14 @@ export async function createScheduleAction(_prev: CreateScheduleState, formData:
   if (!user) return { error: "Not authenticated." };
   if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "Forbidden." };
 
-  const weekTitle = String(formData.get("weekTitle") ?? "").trim();
+  const weekTitleRaw = String(formData.get("weekTitle") ?? "").trim();
   const weekNoRaw = String(formData.get("weekNo") ?? "").trim();
   const weekNo = weekNoRaw ? parseInt(weekNoRaw.replace(/[^\d]/g, ""), 10) : null;
-  if (!weekTitle) return { error: "Week title is required." };
+
+  // A bare week number is enough — the title/cut-off dates can be added later.
+  // When no title is typed but a week number is given, synthesize "Week N".
+  const weekTitle = weekTitleRaw || (Number.isFinite(weekNo as number) ? `Week ${weekNo}` : "");
+  if (!weekTitle) return { error: "Enter a week number (e.g. 32) or a title." };
 
   const { id } = await createSchedule({ weekTitle, weekNo: Number.isFinite(weekNo as number) ? (weekNo as number) : null, actor: user.email });
   revalidatePath("/shipment-schedule");

@@ -98,8 +98,8 @@ export async function beginContainerSearch(input: StartSearchInput): Promise<Sta
   return { id: row.id, status: "running", message: "Container search started." };
 }
 
-/** The heavy live run + persistence for one search row. */
-async function executeSearch(rowId: string, input: { containerNo: string; expectedLocation: string | null; actor: string }): Promise<void> {
+/** The heavy live run + persistence for one search row. Exported for batch reuse. */
+export async function executeSearch(rowId: string, input: { containerNo: string; expectedLocation: string | null; actor: string }): Promise<void> {
   const onProgress = async (step: ContainerStep, detail?: string) => {
     await prisma.containerSearch.update({ where: { id: rowId }, data: { step } }).catch(() => undefined);
     await logEvent(rowId, step, "info", detail ?? step, input.actor);

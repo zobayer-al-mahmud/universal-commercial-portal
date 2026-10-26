@@ -4,6 +4,7 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
 import { writeInvoiceXlsx } from "@/server/customs-invoice/write-xlsx";
+import { getGenerationConfig } from "@/server/customs-invoice/config";
 import type { InvoiceFields } from "@/server/customs-invoice/types";
 
 export async function GET(_req: Request, { params }: { params: { id: string } }) {
@@ -58,7 +59,8 @@ export async function GET(_req: Request, { params }: { params: { id: string } })
     packSet: inv.packSet,
   };
 
-  const r = await writeInvoiceXlsx(fields);
+  const config = await getGenerationConfig();
+  const r = await writeInvoiceXlsx(fields, { columnPlan: config.columnPlan, templateOverrides: config.templateOverrides });
   await audit({
     entityType: "customs-invoice",
     entityId: inv.id,

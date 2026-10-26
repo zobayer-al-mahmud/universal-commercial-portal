@@ -10,6 +10,7 @@ import {
   validatePortalPdf,
   type LiveBooking,
   type PortalPdfCapture,
+  type BookingDetailValues,
 } from "@/server/integrations/damco-live";
 import { parseCtnsQtyTable, normalizeNumber } from "./extract";
 import { normalizeStatus } from "./status";
@@ -228,95 +229,132 @@ export async function runLivePortalForDoc(input: {
     const candidates: BookingCandidate[] = search.bookings.map((b) =>
       toCandidate(b, { company: input.company, buyer: input.buyer, poNumber: input.extraction.poNumber, countryCode: input.extraction.countryCode }),
     );
-    const picked = candidates[0];
 
-    // STEP: Opening Booking Details.
-    await report("opening-detail", `Opening booking ${picked.soNumber}`);
-    const opened = await openBookingDetail(picked.soNumber);
-    if (!opened) {
-      return {
-        authRequired: false,
-        ok: false,
-        message: `Could not open booking ${picked.soNumber} detail page.`,
-        entryUrl,
-        poQuery,
-        countryQuery,
-        candidates,
-        pickedBookingNumber: picked.soNumber,
-        portalPdf: null,
-        portalPdfError: "",
-        portalValues: null,
-        match: null,
-      };
+    // STEP: Opening Booking Details — inspect EVERY candidate (spec §2). We never
+    // pick candidates[0] blindly: each booking's Details tab is opened and the
+    // relevant fields (GW/Cartons/Qty + PO/SKU/Shipper/FR) are read and matched
+    // against the Excel row. Only a UNIQUE full match is selected; 0 or ≥2 →
+    // flagged for manual review (never an arbitrary pick).
+    await report("opening-detail", `Inspecting ${candidates.length} candidate booking(s)`);
+
+    interface Inspected {
+      cand: BookingCandidate;
+      values: NonNullable<LivePortalResult["portalValues"]>;
+      details: BookingDetailValues | null;
+      match: MatchResult | null;
+      pdf: PortalPdfCapture | null; // cached if we had to generate it to read values
     }
+    const inspected: Inspected[] = [];
+    const IDENTITY_FIELDS: string[] = ["poNumber", "sku", "shipper", "frCode"];
+    const identityConflicts = (m: MatchResult | null): boolean =>
+      !!m && m.comparisons.some((c) => IDENTITY_FIELDS.includes(c.field) && !c.match);
 
-    // STEP: Verifying Values. Read the authoritative GW / Cartons / Quantity /
-    // status DIRECTLY from the Details tab DOM — the real portal data compared
-    // against the uploaded packing list.
-    await report("verifying-values", `Reading portal values for ${picked.soNumber}`);
-    const details = await readBookingDetails().catch(() => ({ grossWeight: "", cartons: "", quantity: "", status: "", confirmationNumber: "" }));
+    for (const cand of candidates) {
+      const opened = await openBookingDetail(cand.soNumber);
+      if (!opened) {
+        inspected.push({ cand, values: { grossWeight: "", cartons: "", quantity: "", headingStatus: cand.headingStatus, fieldStatus: cand.fieldStatus }, details: null, match: null, pdf: null });
+        continue;
+      }
+      await report("verifying-values", `Reading portal values for ${cand.soNumber}`);
+      const details = await readBookingDetails().catch(() => null);
+      const values: Inspected["values"] = {
+        grossWeight: details?.grossWeight ?? "",
+        cartons: details?.cartons ?? "",
+        quantity: details?.quantity ?? "",
+        headingStatus: details?.status || cand.headingStatus,
+        fieldStatus: details?.status || cand.fieldStatus,
+      };
 
-    let portalValues: LivePortalResult["portalValues"] = {
-      grossWeight: details.grossWeight,
-      cartons: details.cartons,
-      quantity: details.quantity,
-      headingStatus: details.status || picked.headingStatus,
-      fieldStatus: details.status || picked.fieldStatus,
-    };
-
-    // The genuine portal PDF — captured lazily. If the DOM read is incomplete we
-    // must generate it NOW to recover the values; otherwise we only generate it
-    // AFTER the values match (spec: "if all values match, generate the PDF").
-    let pdf: Awaited<ReturnType<typeof generateBookingPdf>> = null;
-    const domIncomplete = !portalValues.grossWeight || !portalValues.cartons || !portalValues.quantity;
-    if (domIncomplete) {
-      await report("generating-pdf", "Portal details incomplete — generating the booking PDF to read its values");
-      pdf = await generateBookingPdf(picked.soNumber);
-      if (pdf) {
-        try {
-          const pdfParseMod = await import("pdf-parse/lib/pdf-parse.js");
-          const parsed = await pdfParseMod.default(pdf.buffer);
-          const fromPdf = parsePortalPdfText(parsed.text ?? "");
-          portalValues = {
-            grossWeight: portalValues.grossWeight || fromPdf.grossWeight,
-            cartons: portalValues.cartons || fromPdf.cartons,
-            quantity: portalValues.quantity || fromPdf.quantity,
-            headingStatus: portalValues.headingStatus || fromPdf.headingStatus,
-            fieldStatus: portalValues.fieldStatus || fromPdf.fieldStatus,
-          };
-        } catch {
-          // pdf-parse fails on some Damco PDF variants — DOM read is the real source.
+      // If the Details DOM read is incomplete, recover the totals from the genuine
+      // portal PDF (cached so the chosen candidate reuses it rather than re-downloading).
+      let pdf: PortalPdfCapture | null = null;
+      if (!values.grossWeight || !values.cartons || !values.quantity) {
+        await report("generating-pdf", `Portal details incomplete for ${cand.soNumber} — reading its booking PDF`);
+        pdf = await generateBookingPdf(cand.soNumber);
+        if (pdf) {
+          try {
+            const pdfParseMod = await import("pdf-parse/lib/pdf-parse.js");
+            const parsed = await pdfParseMod.default(pdf.buffer);
+            const fromPdf = parsePortalPdfText(parsed.text ?? "");
+            values.grossWeight = values.grossWeight || fromPdf.grossWeight;
+            values.cartons = values.cartons || fromPdf.cartons;
+            values.quantity = values.quantity || fromPdf.quantity;
+            values.headingStatus = values.headingStatus || fromPdf.headingStatus;
+            values.fieldStatus = values.fieldStatus || fromPdf.fieldStatus;
+          } catch { /* DOM read is the real source; PDF text parse is best-effort */ }
         }
       }
+
+      // Enrich the candidate record (for the UI) with what the portal showed.
+      cand.grossWeight = values.grossWeight;
+      cand.cartons = values.cartons;
+      cand.quantity = values.quantity;
+      cand.headingStatus = values.headingStatus;
+      cand.fieldStatus = values.fieldStatus;
+
+      const m = matchBooking(
+        input.extraction,
+        {
+          grossWeight: values.grossWeight,
+          cartons: values.cartons,
+          quantity: values.quantity,
+          poNumber: details?.poNumber,
+          sku: details?.sku,
+          shipper: details?.manufacturer,
+          frCode: details?.frCode,
+        },
+        { grossWeightToleranceKg: tolerance },
+      );
+      inspected.push({ cand, values, details, match: m, pdf });
     }
 
-    // Compare the three totals against the uploaded packing list.
-    const match = matchBooking(
-      input.extraction,
-      { grossWeight: portalValues.grossWeight, cartons: portalValues.cartons, quantity: portalValues.quantity },
-      { grossWeightToleranceKg: tolerance },
-    );
+    const fullMatches = inspected.filter((i) => i.match?.outcome === "MATCHED");
 
-    // Spec gate: a non-match never produces a stored Damco PDF. (If we had to
-    // generate one above just to read the values, it is discarded here.)
-    if (match.outcome !== "MATCHED") {
+    // ≥2 full matches → ambiguous. Never pick arbitrarily; flag for manual review.
+    if (fullMatches.length > 1) {
+      const nums = fullMatches.map((f) => f.cand.soNumber).join(", ");
       return {
-        authRequired: false,
-        ok: true,
-        message: `Portal values did not match: ${match.notes.join("; ") || match.outcome}.`,
-        entryUrl,
-        poQuery,
-        countryQuery,
-        candidates,
-        pickedBookingNumber: picked.soNumber,
-        portalPdf: null,
-        portalPdfError: "",
-        portalValues,
-        match,
+        authRequired: false, ok: true,
+        message: `Ambiguous: ${fullMatches.length} bookings (${nums}) match the Excel row; manual review required.`,
+        entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: "",
+        portalPdf: null, portalPdfError: "", portalValues: null,
+        match: { outcome: "NEEDS_REVIEW", comparisons: fullMatches[0].match!.comparisons, notes: [`${fullMatches.length} candidate bookings (${nums}) matched PO/SKU/Shipper/FR + totals — UCP will not choose arbitrarily. Resolve in the portal and re-process.`] },
       };
     }
 
-    // STEP: Generating PDF — values matched, capture the genuine portal PDF.
+    // 0 full matches → prefer a "right booking, wrong totals" candidate (identity
+    // matched but a total differs, e.g. carton mismatch) so the reviewer gets the
+    // carton diff to correct on Damco; otherwise it is a genuine no-match → review.
+    if (fullMatches.length === 0) {
+      const wrongTotals = inspected.find((i) => i.match?.outcome === "MISMATCH" && !identityConflicts(i.match));
+      if (wrongTotals) {
+        return {
+          authRequired: false, ok: true,
+          message: `Booking ${wrongTotals.cand.soNumber} matches the Excel row's identity but a value differs: ${wrongTotals.match!.notes.join("; ")}. Correct it on Damco, then re-verify.`,
+          entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: wrongTotals.cand.soNumber,
+          portalPdf: null, portalPdfError: "", portalValues: wrongTotals.values, match: wrongTotals.match,
+        };
+      }
+      return {
+        authRequired: false, ok: true,
+        message: `No candidate booking matched the Excel row (PO ${poQuery}, SKU ${countryQuery}); manual review required.`,
+        entryUrl, poQuery, countryQuery, candidates, pickedBookingNumber: "",
+        portalPdf: null, portalPdfError: "", portalValues: inspected[0]?.values ?? null,
+        match: { outcome: "NEEDS_REVIEW", comparisons: inspected[0]?.match?.comparisons ?? [], notes: [`None of the ${candidates.length} candidate booking(s) matched on PO/SKU/Shipper/FR + totals.`] },
+      };
+    }
+
+    // Exactly one full match — this is the correct booking.
+    const chosen = fullMatches[0];
+    const picked = chosen.cand;
+    const portalValues: LivePortalResult["portalValues"] = chosen.values;
+    const match = chosen.match!;
+
+    // STEP: Generating PDF — re-open the chosen booking (we navigated through the
+    // other candidates) and capture its genuine portal PDF.
+    await report("opening-detail", `Opening matched booking ${picked.soNumber}`);
+    await openBookingDetail(picked.soNumber);
+    let pdf: Awaited<ReturnType<typeof generateBookingPdf>> = chosen.pdf;
     if (!pdf) {
       await report("generating-pdf", `Generating the Damco booking PDF for ${picked.soNumber}`);
       pdf = await generateBookingPdf(picked.soNumber);

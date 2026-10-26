@@ -61,7 +61,7 @@ export default async function SalesContractBatchPage({ params }: { params: { bat
             <button className="btn-ghost text-xs">↻ Reprocess non-drafted</button>
           </form>
         ) : null}
-        <Link href="/modules/sales-contract" className="btn-ghost text-xs">← Back to module</Link>
+        <Link href="/modules/sales-contract" className="btn-ghost text-xs">← Back to process</Link>
         <Link href="/review" className="btn-ghost text-xs">Review queue →</Link>
       </div>
 

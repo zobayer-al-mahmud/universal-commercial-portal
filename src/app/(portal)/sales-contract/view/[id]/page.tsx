@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { PageHeader } from "@/components/ui";
 import { SalesContractBannerEditor } from "@/components/SalesContractBannerEditor";
-import { SalesContractPoEditor, type SalesContractPoRow } from "@/components/SalesContractPoEditor";
+import { type SalesContractPoRow } from "@/components/SalesContractPoEditor";
+import { SalesContractGrid } from "@/components/SalesContractGrid";
 import { SalesContractImport } from "@/components/SalesContractImport";
 
 /**
@@ -109,15 +110,12 @@ export default async function SalesContractViewPage({ params }: { params: { id: 
         />
       </div>
 
-      <h3 className="mb-3 text-sm font-semibold text-slate-800">PO rows ({rows.length} total — each cell editable)</h3>
       {rows.length === 0 ? (
         <div className="card p-6 text-center text-sm text-slate-400">
-          No POs uploaded yet. Go back to the Sales Contract Creation module and upload a 3-PDF set — or use the bulk import below.
+          No POs uploaded yet. Go back to the Sales Contract Creation process and upload a 3-PDF set — or use the bulk import below.
         </div>
       ) : (
-        <div className="space-y-3">
-          {rows.map((r) => <SalesContractPoEditor key={r.poId} contractId={contract.id} po={r} />)}
-        </div>
+        <SalesContractGrid contractId={contract.id} pos={rows} />
       )}
 
       <div className="mt-6">

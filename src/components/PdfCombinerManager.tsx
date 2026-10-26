@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { combineAllRows, combineOneRow, saveMasterCells } from "@/app/actions/pdf-combiner";
+import { combineAllRows, combineOneRow, combineSelectedRows, saveMasterCells } from "@/app/actions/pdf-combiner";
 
 export interface ManagerCol { name: string; index: number }
 export interface ManagerRow { rowNo: number; cells: string[]; eligible: boolean; reason?: string }
@@ -26,6 +26,7 @@ export function PdfCombinerManager({
   const [query, setQuery] = useState("");
   const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [busyRow, setBusyRow] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
   const fileRef = useRef<HTMLInputElement>(null);
 
   const key = (rowNo: number, col: number) => `${rowNo}:${col}`;
@@ -50,6 +51,27 @@ export function PdfCombinerManager({
 
   const dirty = edits.size > 0;
 
+  // Selection operates over the currently-visible (search-filtered) ELIGIBLE rows.
+  const selectableRows = useMemo(() => filtered.filter((r) => r.eligible), [filtered]);
+  const allSelected = selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.rowNo));
+  const someSelected = selectableRows.some((r) => selected.has(r.rowNo));
+
+  const toggleRow = (rowNo: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowNo)) next.delete(rowNo);
+      else next.add(rowNo);
+      return next;
+    });
+  const toggleAll = () =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allSelected) for (const r of selectableRows) next.delete(r.rowNo);
+      else for (const r of selectableRows) next.add(r.rowNo);
+      return next;
+    });
+  const clearSelection = () => setSelected(new Set());
+
   const doSave = () =>
     start(async () => {
       setMsg(null);
@@ -71,6 +93,17 @@ export function PdfCombinerManager({
       setMsg(null);
       if (dirty) { setMsg({ tone: "err", text: "Save your edits first (or discard them) before combining." }); return; }
       const res = await combineAllRows();
+      if (res.error) setMsg({ tone: "err", text: res.error });
+      else if (res.runId) router.push(`/pdf-combiner/${res.runId}`);
+    });
+
+  const doCombineSelected = () =>
+    start(async () => {
+      setMsg(null);
+      if (dirty) { setMsg({ tone: "err", text: "Save your edits first (or discard them) before combining." }); return; }
+      const rowNos = [...selected];
+      if (rowNos.length === 0) { setMsg({ tone: "err", text: "Select at least one row to combine." }); return; }
+      const res = await combineSelectedRows(rowNos);
       if (res.error) setMsg({ tone: "err", text: res.error });
       else if (res.runId) router.push(`/pdf-combiner/${res.runId}`);
     });
@@ -131,7 +164,6 @@ export function PdfCombinerManager({
           <div className="flex flex-wrap items-center gap-2">
             <a href="/api/pdf-combiner/master/download" className="btn-ghost text-xs">⬇ Download Excel</a>
             <button onClick={doSave} disabled={pending || !dirty} className="btn-ghost text-xs disabled:opacity-40">💾 Save edits{dirty ? ` (${edits.size})` : ""}</button>
-            <button onClick={doCombineAll} disabled={pending || !master || master.eligible === 0} className="btn-primary text-xs disabled:opacity-40">▶ Combine All Rows</button>
           </div>
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3">
@@ -141,6 +173,34 @@ export function PdfCombinerManager({
           <span className="ml-auto text-xs text-slate-400">{folderNames.length} folder(s) on the share</span>
         </div>
         {msg ? <div className={`mt-3 text-sm ${msg.tone === "ok" ? "text-green-700" : "text-rose-600"}`}>{msg.text}</div> : null}
+      </div>
+
+      {/* Prominent combine action bar — lives OUTSIDE the table so it is always visible. */}
+      <div className="card flex flex-wrap items-center gap-3 border-sky-100 bg-sky-50/60 p-4">
+        <button
+          onClick={doCombineSelected}
+          disabled={pending || selected.size === 0}
+          className="btn-primary text-sm disabled:opacity-40"
+          title="Combine only the checked rows (one PDF per row)"
+        >
+          ▶ Combine Selected ({selected.size})
+        </button>
+        <button
+          onClick={doCombineAll}
+          disabled={pending || !master || master.eligible === 0}
+          className="btn-ghost text-sm disabled:opacity-40"
+          title="Combine every eligible row"
+        >
+          ▶ Combine All Rows
+        </button>
+        {selected.size > 0 ? (
+          <button onClick={clearSelection} disabled={pending} className="btn-ghost text-xs">✕ Clear selection</button>
+        ) : null}
+        <span className="ml-auto text-xs text-slate-500">
+          {selected.size > 0
+            ? `${selected.size} row(s) selected`
+            : "Tick rows below (or Select all), then Combine Selected. One Excel row = one combined PDF."}
+        </span>
       </div>
 
       {/* Editable / searchable grid */}
@@ -158,6 +218,16 @@ export function PdfCombinerManager({
           <table className="w-full text-xs">
             <thead className="bg-slate-50">
               <tr>
+                <th className="th w-8">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all eligible rows"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                    onChange={toggleAll}
+                    disabled={selectableRows.length === 0}
+                  />
+                </th>
                 <th className="th sticky left-0 bg-slate-50">Row</th>
                 <th className="th">Eligible</th>
                 {cols.map((c) => <th key={c.index} className="th whitespace-nowrap">{c.name}</th>)}
@@ -166,7 +236,17 @@ export function PdfCombinerManager({
             </thead>
             <tbody>
               {filtered.map((r) => (
-                <tr key={r.rowNo} className="border-t border-slate-100 align-top">
+                <tr key={r.rowNo} className={`border-t border-slate-100 align-top ${selected.has(r.rowNo) ? "bg-sky-50/50" : ""}`}>
+                  <td className="td">
+                    <input
+                      type="checkbox"
+                      aria-label={`Select row ${r.rowNo}`}
+                      checked={selected.has(r.rowNo)}
+                      onChange={() => toggleRow(r.rowNo)}
+                      disabled={!r.eligible}
+                      title={r.eligible ? "Select this row" : r.reason}
+                    />
+                  </td>
                   <td className="td sticky left-0 bg-white font-mono">{r.rowNo}</td>
                   <td className="td">
                     {r.eligible
@@ -200,7 +280,7 @@ export function PdfCombinerManager({
                 </tr>
               ))}
               {filtered.length === 0 ? (
-                <tr><td className="td text-slate-400" colSpan={cols.length + 3}>No rows match “{query}”.</td></tr>
+                <tr><td className="td text-slate-400" colSpan={cols.length + 4}>No rows match “{query}”.</td></tr>
               ) : null}
             </tbody>
           </table>

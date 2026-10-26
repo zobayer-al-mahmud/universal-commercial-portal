@@ -60,6 +60,21 @@ export async function combineAllRows(): Promise<CombineResult> {
   }
 }
 
+/** Combine a chosen set of worksheet rows of the active master into one PDF each. */
+export async function combineSelectedRows(rowNos: number[]): Promise<CombineResult> {
+  const { user, error } = await requireUser();
+  if (!user) return { error };
+  const clean = [...new Set((rowNos ?? []).map(Number).filter((n) => Number.isInteger(n) && n >= 1))];
+  if (clean.length === 0) return { error: "Select at least one row to combine." };
+  try {
+    const r = await runMatrixCombine({ actor: user.email, rowNos: clean });
+    revalidatePath("/modules/pdf-combiner");
+    return { runId: r.runId, totalRows: r.totalRows, completed: r.completed, failed: r.failed, skipped: r.skipped };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Combine selected failed." };
+  }
+}
+
 /** Combine a single worksheet row of the active master. */
 export async function combineOneRow(rowNo: number): Promise<CombineResult> {
   const { user, error } = await requireUser();

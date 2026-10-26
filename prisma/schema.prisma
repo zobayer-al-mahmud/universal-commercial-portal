@@ -576,6 +576,18 @@ model CustomsInvoiceEdit {
   @@index([invoiceId])
 }
 
+// User-editable generation config (single row, id="singleton"). Lets staff
+// adjust the field->template-cell column plan and country->template overrides
+// without a code change. Empty/invalid JSON falls back to the hardcoded default.
+model CustomsInvoiceConfig {
+  id                    String   @id @default("singleton")
+  columnPlanJson        String   @default("") // JSON: [{ col, field, kind }]
+  templateOverridesJson String   @default("") // JSON: { "<MARKET>": "<templateFile>" }
+  version               Int      @default(1)
+  updatedBy             String   @default("system")
+  updatedAt             DateTime @updatedAt
+}
+
 // ---------------------------------------------------------------------------
 // Booking Correction — original vs corrected booking diff (module 5)
 // Matched by OrderNo + market; field-level changes classified allowed/locked.
@@ -619,6 +631,11 @@ model BookingBatch {
   company       String    @default("ANANTA GARMENTS LIMITED")
   buyer         String    @default("H&M HENNES & MAURITZ GBC AB")
   damcoMode     String    @default("mock") // mock | dryrun | live
+  // Input source for the whole batch: packing-list PDFs (legacy) or one Excel workbook.
+  sourceType    String    @default("pdf") // pdf | excel
+  sourcePath    String    @default("") // stored workbook (excel batches)
+  sourceName    String    @default("") // original workbook filename
+  sourceSha256  String    @default("")
   totalDocs     Int       @default(0)
   completedDocs Int       @default(0)
   failedDocs    Int       @default(0)
@@ -647,7 +664,13 @@ model BookingDocument {
   originalName String
   sha256       String
   sizeBytes    Int
-  storagePath  String // immutable original upload (outside repo)
+  storagePath  String // immutable original upload (outside repo); "" for excel rows
+
+  // Input source: a packing-list PDF (legacy) or one row of the Excel workbook.
+  sourceType String @default("pdf") // pdf | excel
+  rowNo      Int    @default(0) // 1-based Excel data row (excel batches only)
+  shipper    String @default("") // Excel "Select Shipper" = booking line Manufacturer/vendor
+  frCode     String @default("") // Excel FR (booking dynamic field / Marks & numbers)
 
   // company / buyer snapshot (traceability)
   company String @default("")
@@ -959,9 +982,22 @@ model PdfCombineMaster {
 // Container Module — CTG Port (cpatos.gov.bd) container-search automation
 // ---------------------------------------------------------------------------
 
+model ContainerBatch {
+  id        String            @id @default(cuid())
+  total     Int               @default(0) // number of container rows created for this batch
+  actor     String            @default("system")
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  searches  ContainerSearch[]
+
+  @@index([createdAt])
+}
+
 model ContainerSearch {
   id              String                 @id @default(cuid())
   containerNo     String // the container number searched
+  batchId         String? // set when this search is part of a bulk batch
+  batch           ContainerBatch?        @relation(fields: [batchId], references: [id], onDelete: SetNull)
   expectedLocation String? // optional location from UCP, used to verify the match
   shipmentRef     String? // optional UCP shipment reference this search belongs to
   status          String                 @default("queued") // queued|running|completed|not_found|mismatch|failed|needs_auth
@@ -994,6 +1030,7 @@ model ContainerSearch {
 
   @@index([containerNo])
   @@index([createdAt])
+  @@index([batchId])
 }
 
 model ContainerSearchEvent {

@@ -1,8 +1,10 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { BOOKING_STEPS, type StepPhase } from "@/server/booking-correction/progress";
-import { retryBookingDocAction } from "@/app/actions/booking-batch";
+import type { StepPhase } from "@/server/booking-correction/progress";
+import { retryBookingDocAction, confirmBookingPdfAction } from "@/app/actions/booking-batch";
+import { ExtractionReview } from "@/components/ExtractionReview";
 
 interface Comparison {
   field: string;
@@ -22,8 +24,13 @@ interface DocStatus {
   stage: { current: number; phase: "running" | "done" | "error"; errorStep: number; steps: StepPhase[] };
   poNumber: string;
   countryCode: string;
+  shipper?: string;
+  frCode?: string;
+  sourceType?: string;
   bookingRef: string;
   finalStatus: string;
+  headingStatus?: string;
+  fieldStatus?: string;
   error: string;
   warning: string;
   extracted: { grossWeight: string; cartons: string; quantity: string };
@@ -47,6 +54,7 @@ interface StatusPayload {
 }
 
 const TERMINAL_ERROR = new Set(["MISMATCH", "STATUS_MISMATCH", "SEARCH_FAILED", "DOWNLOAD_FAILED", "FAILED", "NEEDS_REVIEW", "PORTAL_AUTH_REQUIRED"]);
+const REVIEWABLE = new Set(["NEEDS_REVIEW", "MISMATCH", "SEARCH_FAILED", "FAILED", "DOWNLOAD_FAILED", "STATUS_MISMATCH", "PORTAL_AUTH_REQUIRED"]);
 
 function stateLabel(state: string): string {
   return state.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
@@ -59,19 +67,6 @@ function stateTone(state: string): string {
     return "bg-rose-50 text-rose-700 ring-1 ring-rose-600/15";
   }
   return "bg-sky-50 text-sky-700 ring-1 ring-sky-600/15";
-}
-
-function StepDot({ phase, index }: { phase: StepPhase; index: number }) {
-  if (phase === "done") {
-    return <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500 text-[11px] text-white">✓</span>;
-  }
-  if (phase === "error") {
-    return <span className="flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-[11px] text-white">✕</span>;
-  }
-  if (phase === "running") {
-    return <span className="flex h-5 w-5 items-center justify-center rounded-full bg-sky-500 text-[11px] text-white"><span className="h-2 w-2 animate-ping rounded-full bg-white" /></span>;
-  }
-  return <span className="flex h-5 w-5 items-center justify-center rounded-full bg-slate-200 text-[11px] text-slate-500">{index + 1}</span>;
 }
 
 function ValueRow({ c }: { c: Comparison }) {
@@ -91,11 +86,44 @@ function ValueRow({ c }: { c: Comparison }) {
   );
 }
 
-function DocCard({ doc, batchId, canExport, canRetry, onRetried }: { doc: DocStatus; batchId: string; canExport: boolean; canRetry: boolean; onRetried: () => void }) {
+/** A doc whose real Damco status is still REQUESTED (or unverified) → eligible for verify-only confirm. */
+function isUnconfirmed(doc: DocStatus): boolean {
+  if (doc.state === "COMPLETED") return false;
+  return /requested/i.test(doc.finalStatus || "") || doc.state === "STATUS_MISMATCH" || doc.state === "PORTAL_AUTH_REQUIRED";
+}
+
+function needsAttention(doc: DocStatus): boolean {
+  return doc.state !== "COMPLETED" && (doc.stage.phase === "error" || isUnconfirmed(doc));
+}
+
+function DownloadLinks({ doc, canExport, canReview }: { doc: DocStatus; canExport: boolean; canReview: boolean }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+      {doc.hasPortalPdf && canExport ? (
+        <>
+          <a href={`/api/booking/doc/${doc.id}/portal`} target="_blank" rel="noreferrer" className="font-medium text-ananta hover:underline">👁 Damco PDF</a>
+          <a href={`/api/booking/doc/${doc.id}/portal?download=1`} className="text-ananta/70 hover:underline" title="Download the Damco portal PDF">⬇</a>
+        </>
+      ) : null}
+      {doc.hasGeneratedPdf && canExport ? (
+        <a href={`/api/booking/doc/${doc.id}/generated`} target="_blank" rel="noreferrer" className="text-slate-500 hover:underline">UCP PDF</a>
+      ) : null}
+      {doc.hasCorrectedPdf && canExport ? (
+        <a href={`/api/booking/doc/${doc.id}/corrected`} target="_blank" rel="noreferrer" className="text-emerald-700 hover:underline">edited</a>
+      ) : null}
+      {doc.hasOriginal && canExport ? (
+        <a href={`/api/booking/doc/${doc.id}/original`} target="_blank" rel="noreferrer" className="text-slate-500 hover:underline">original</a>
+      ) : null}
+      {canReview ? <Link href={`/booking/doc/${doc.id}/edit`} className="text-slate-700 hover:underline">✎ edit PDF text</Link> : null}
+    </div>
+  );
+}
+
+/** A focused panel for a document that still needs a human: error + value diff +
+ *  correction form + retry/confirm. It carries NO per-PDF progress indicator —
+ *  overall progress lives in the single batch bar above. */
+function AttentionItem({ doc, batchId, canExport, canRetry, canReview, canConfirm, onChanged }: { doc: DocStatus; batchId: string; canExport: boolean; canRetry: boolean; canReview: boolean; canConfirm: boolean; onChanged: () => void }) {
   const [pending, startTransition] = useTransition();
-  const [open, setOpen] = useState(false);
-  const isError = doc.stage.phase === "error";
-  const isDone = doc.stage.phase === "done";
 
   function retry() {
     const fd = new FormData();
@@ -103,13 +131,23 @@ function DocCard({ doc, batchId, canExport, canRetry, onRetried }: { doc: DocSta
     fd.set("batchId", batchId);
     startTransition(async () => {
       await retryBookingDocAction(fd);
-      setTimeout(onRetried, 700);
+      setTimeout(onChanged, 700);
+    });
+  }
+
+  function confirmBooking() {
+    const fd = new FormData();
+    fd.set("docId", doc.id);
+    fd.set("batchId", batchId);
+    startTransition(async () => {
+      await confirmBookingPdfAction(fd);
+      setTimeout(onChanged, 700);
     });
   }
 
   return (
-    <div className="card p-5">
-      <div className="flex flex-wrap items-start justify-between gap-3">
+    <div className="rounded-lg border border-slate-200 bg-white p-4">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="text-xs font-semibold text-slate-400">#{doc.serial}</span>
@@ -118,34 +156,20 @@ function DocCard({ doc, batchId, canExport, canRetry, onRetried }: { doc: DocSta
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
             {doc.poNumber ? <span>PO <span className="font-mono text-slate-700">{doc.poNumber}</span></span> : null}
             {doc.countryCode ? <span>SKU <span className="font-mono text-slate-700">{doc.countryCode}</span></span> : null}
+            {doc.shipper ? <span>Shipper <span className="text-slate-700">{doc.shipper}</span></span> : null}
+            {doc.frCode ? <span>FR <span className="font-mono text-slate-700">{doc.frCode}</span></span> : null}
             {doc.bookingRef ? <span>Booking <span className="font-mono text-slate-700">{doc.bookingRef}</span></span> : null}
           </div>
         </div>
         <span className={`badge ${stateTone(doc.state)}`}>{stateLabel(doc.state)}</span>
       </div>
 
-      {/* 10-stage indicator */}
-      <ol className="mt-4 grid gap-1.5 sm:grid-cols-2">
-        {BOOKING_STEPS.map((step, i) => {
-          const phase = doc.stage?.steps?.[i] ?? "pending";
-          return (
-            <li key={step} className="flex items-center gap-2 text-sm">
-              <StepDot phase={phase} index={i} />
-              <span className={phase === "pending" ? "text-slate-400" : phase === "error" ? "font-medium text-rose-700" : "text-slate-700"}>{step}</span>
-            </li>
-          );
-        })}
-      </ol>
-
-      {/* Error / warning */}
-      {isError && (doc.error || doc.warning) ? (
-        <div className="mt-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">{doc.error || doc.warning}</div>
-      ) : null}
-      {!isError && doc.warning ? (
-        <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">{doc.warning}</div>
+      {doc.error || doc.warning ? (
+        <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${doc.stage.phase === "error" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-800"}`}>
+          {doc.error || doc.warning}
+        </div>
       ) : null}
 
-      {/* Value comparison */}
       {doc.match && (doc.match.comparisons?.length ?? 0) > 0 ? (
         <div className="mt-3 overflow-x-auto rounded-lg border border-slate-200">
           <table className="w-full text-xs">
@@ -164,41 +188,35 @@ function DocCard({ doc, batchId, canExport, canRetry, onRetried }: { doc: DocSta
         </div>
       ) : null}
 
-      {/* Actions */}
-      <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
-        {doc.hasPortalPdf && canExport ? (
-          <>
-            <a href={`/api/booking/doc/${doc.id}/portal`} target="_blank" rel="noreferrer" className="font-medium text-ananta hover:underline">👁 Preview Damco PDF</a>
-            <a href={`/api/booking/doc/${doc.id}/portal?download=1`} className="font-medium text-ananta hover:underline">⬇ Download</a>
-          </>
-        ) : null}
-        {doc.hasGeneratedPdf && canExport ? (
-          <a href={`/api/booking/doc/${doc.id}/generated`} target="_blank" rel="noreferrer" className="text-slate-500 hover:underline">UCP summary PDF</a>
-        ) : null}
-        {doc.hasOriginal && canExport ? (
-          <a href={`/api/booking/doc/${doc.id}/original`} target="_blank" rel="noreferrer" className="text-slate-500 hover:underline">Original upload</a>
-        ) : null}
-        {canRetry && (isError || isDone) ? (
-          <button onClick={retry} disabled={pending} className="btn-ghost btn-xs ml-auto">
-            {pending ? "Retrying…" : "↻ Retry"}
-          </button>
-        ) : null}
-        <button onClick={() => setOpen((o) => !o)} className="text-slate-400 hover:text-slate-600">
-          {open ? "Hide log" : "Show log"}
-        </button>
-      </div>
-
-      {open ? (
-        <div className="mt-3 max-h-56 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-[11px]">
-          {(doc.events?.length ?? 0) === 0 ? <div className="text-slate-400">No events yet.</div> : (doc.events ?? []).map((e, i) => (
-            <div key={i} className="flex gap-2">
-              <span className="shrink-0 text-slate-400">{e.at.slice(11, 19)}</span>
-              <span className={`shrink-0 font-medium ${e.status === "failed" ? "text-rose-600" : e.status === "ok" ? "text-emerald-600" : "text-slate-500"}`}>{e.step}</span>
-              <span className="text-slate-600">{e.message}</span>
-            </div>
-          ))}
+      {canReview && REVIEWABLE.has(doc.state) ? (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50/60 p-3">
+          <div className="mb-2 text-xs font-semibold text-amber-800">Review &amp; correct extracted values</div>
+          <ExtractionReview
+            docId={doc.id}
+            poNumber={doc.poNumber}
+            countryCode={doc.countryCode}
+            grossWeight={doc.extracted.grossWeight}
+            cartons={doc.extracted.cartons}
+            quantity={doc.extracted.quantity}
+          />
         </div>
       ) : null}
+
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <DownloadLinks doc={doc} canExport={canExport} canReview={canReview} />
+        <div className="ml-auto flex items-center gap-2">
+          {canConfirm && isUnconfirmed(doc) ? (
+            <button onClick={confirmBooking} disabled={pending} className="btn-ghost btn-xs text-emerald-700" title="Re-check the live Damco status; marks CONFIRMED only if the portal itself reports CONFIRMED.">
+              {pending ? "Verifying…" : "✓ Confirm Booking"}
+            </button>
+          ) : null}
+          {canRetry ? (
+            <button onClick={retry} disabled={pending} className="btn-ghost btn-xs">
+              {pending ? "Retrying…" : "↻ Retry"}
+            </button>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -207,15 +225,22 @@ export function BookingLiveProgress({
   batchId,
   canExport,
   canRetry,
+  canReview = false,
+  canConfirm = false,
   initialRunning,
 }: {
   batchId: string;
   canExport: boolean;
   canRetry: boolean;
+  canReview?: boolean;
+  canConfirm?: boolean;
   initialRunning: boolean;
 }) {
   const [data, setData] = useState<StatusPayload | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [retrying, startRetryAll] = useTransition();
+  const [showLog, setShowLog] = useState(false);
+  const [showAll, setShowAll] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stop = useCallback(() => {
@@ -247,28 +272,155 @@ export function BookingLiveProgress({
     void poll();
   }, [poll]);
 
+  const failedDocs = (data?.docs ?? []).filter((d) => d.stage.phase === "error");
+  const retryAllFailed = useCallback(() => {
+    startRetryAll(async () => {
+      for (const d of failedDocs) {
+        const fd = new FormData();
+        fd.set("docId", d.id);
+        fd.set("batchId", batchId);
+        await retryBookingDocAction(fd);
+      }
+      restart();
+    });
+  }, [failedDocs, batchId, restart]);
+
   if (!data) {
     return (
       <div className="card flex items-center gap-3 p-5 text-sm text-slate-500">
-        <span className="spinner" /> Loading live progress…
+        <span className="spinner" /> Loading batch progress…
       </div>
     );
   }
 
+  // --- Overall batch summary (one bar for all uploaded PDFs) -----------------
+  const docs = data.docs;
+  const total = data.totals.total || docs.length;
+  const confirmed = docs.filter((d) => d.state === "COMPLETED").length;
+  const requested = docs.filter((d) => isUnconfirmed(d)).length;
+  const failed = docs.filter((d) => d.stage.phase === "error" && !isUnconfirmed(d) && d.state !== "COMPLETED").length;
+  const doneCount = docs.filter((d) => d.stage.phase === "done" || d.stage.phase === "error").length;
+  const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
+  const currentDoc = docs.find((d) => d.stage.phase === "running");
+  const attention = docs.filter(needsAttention);
+
+  // Combined, chronological live log across every document (successes + errors).
+  const combinedLog = docs
+    .flatMap((d) => (d.events ?? []).map((e) => ({ ...e, serial: d.serial, docName: d.name })))
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .slice(-200);
+
   return (
     <div className="space-y-4">
-      {data.liveMessage ? (
-        <div className={`rounded-lg border px-3 py-2 text-xs ${data.liveStatus === "blocked" ? "border-amber-200 bg-amber-50 text-amber-800" : data.liveStatus === "failed" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-ananta-100 bg-ananta-50 text-ananta-800"}`}>
-          <strong>Automation:</strong> {data.liveStatus ?? data.status} · {data.liveMessage}
-          {data.running ? <span className="ml-2 inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> live</span> : null}
+      {/* The one unified batch progress bar + summary counts + centralized log. */}
+      <div className="card p-5">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-800">Batch progress</h3>
+          <div className="flex items-center gap-2 text-xs">
+            {canRetry && failedDocs.length > 0 ? (
+              <button onClick={retryAllFailed} disabled={retrying} className="btn-ghost btn-xs">
+                {retrying ? "Retrying…" : `↻ Retry all failed (${failedDocs.length})`}
+              </button>
+            ) : null}
+            {data.running ? <span className="inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> live</span> : <span className="text-slate-400">done</span>}
+          </div>
         </div>
-      ) : null}
+        <div className="mb-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-100">
+          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <span className="font-semibold text-slate-700">{total} uploaded</span>
+          <span className="text-emerald-700">{confirmed} confirmed</span>
+          <span className="text-amber-700">{requested} requested</span>
+          <span className="text-rose-700">{failed} failed</span>
+          <span className="ml-auto text-slate-500">{doneCount}/{total} processed · {pct}%</span>
+        </div>
+        {currentDoc ? (
+          <div className="mt-2 text-xs text-slate-500">
+            Current: <span className="font-medium text-slate-700">#{currentDoc.serial} {currentDoc.name}</span>
+            {currentDoc.liveStep ? <span> · {currentDoc.liveStep}</span> : null}
+          </div>
+        ) : null}
+        {data.liveMessage ? (
+          <div className={`mt-3 rounded-lg border px-3 py-2 text-xs ${data.liveStatus === "blocked" ? "border-amber-200 bg-amber-50 text-amber-800" : data.liveStatus === "failed" ? "border-rose-200 bg-rose-50 text-rose-700" : "border-ananta-100 bg-ananta-50 text-ananta-800"}`}>
+            <strong>Automation:</strong> {data.liveStatus ?? data.status} · {data.liveMessage}
+          </div>
+        ) : null}
+        <div className="mt-3 border-t border-slate-100 pt-2">
+          <button onClick={() => setShowLog((v) => !v)} className="text-xs text-slate-400 hover:text-slate-600">
+            {showLog ? "Hide processing log" : `Show processing log (${combinedLog.length})`}
+          </button>
+          {showLog ? (
+            <div className="mt-2 max-h-64 space-y-1 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-[11px]">
+              {combinedLog.length === 0 ? <div className="text-slate-400">No events yet.</div> : combinedLog.map((e, i) => (
+                <div key={i} className="flex gap-2">
+                  <span className="shrink-0 text-slate-400">{e.at.slice(11, 19)}</span>
+                  <span className="shrink-0 font-mono text-slate-400">#{e.serial}</span>
+                  <span className={`shrink-0 font-medium ${e.status === "failed" ? "text-rose-600" : e.status === "ok" ? "text-emerald-600" : "text-slate-500"}`}>{e.step}</span>
+                  <span className="text-slate-600">{e.message}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </div>
+
       {err ? <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">Progress poll error: {err}</div> : null}
 
-      <div className="grid gap-4">
-        {data.docs.map((doc) => (
-          <DocCard key={doc.id} doc={doc} batchId={batchId} canExport={canExport} canRetry={canRetry} onRetried={restart} />
-        ))}
+      {/* Items that still need a human: review / retry / confirm — no per-PDF bar. */}
+      {attention.length > 0 ? (
+        <div className="card p-5">
+          <h3 className="mb-3 text-sm font-semibold text-slate-800">Needs attention ({attention.length})</h3>
+          <div className="space-y-3">
+            {attention.map((doc) => (
+              <AttentionItem key={doc.id} doc={doc} batchId={batchId} canExport={canExport} canRetry={canRetry} canReview={canReview} canConfirm={canConfirm} onChanged={restart} />
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* All documents — files, values and downloads only (no status indicator). */}
+      <div className="card p-5">
+        <button onClick={() => setShowAll((v) => !v)} className="flex w-full items-center justify-between text-sm font-semibold text-slate-800">
+          <span>All documents ({docs.length})</span>
+          <span className="text-xs font-normal text-slate-400">{showAll ? "Hide" : "Show"}</span>
+        </button>
+        {showAll ? (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full whitespace-nowrap text-xs">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="px-3 py-1.5 text-left font-semibold">SL</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Row / File</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">PO · SKU</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Shipper</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">FR</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Booking</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">GW in / bk</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Ctn in / bk</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Qty in / bk</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Files</th>
+                </tr>
+              </thead>
+              <tbody>
+                {docs.map((d) => (
+                  <tr key={d.id} className="border-t border-slate-100">
+                    <td className="px-3 py-1.5 text-slate-500">{d.serial}</td>
+                    <td className="px-3 py-1.5 max-w-[180px] truncate" title={d.name}>{d.name}</td>
+                    <td className="px-3 py-1.5 font-mono">{d.poNumber || "—"} <span className="text-slate-400">{d.countryCode}</span></td>
+                    <td className="px-3 py-1.5 max-w-[160px] truncate" title={d.shipper || ""}>{d.shipper || "—"}</td>
+                    <td className="px-3 py-1.5 font-mono">{d.frCode || "—"}</td>
+                    <td className="px-3 py-1.5 font-mono">{d.bookingRef || "—"}</td>
+                    <td className="px-3 py-1.5">{d.extracted.grossWeight || "—"} / {d.booking.grossWeight || "—"}</td>
+                    <td className="px-3 py-1.5">{d.extracted.cartons || "—"} / {d.booking.cartons || "—"}</td>
+                    <td className="px-3 py-1.5">{d.extracted.quantity || "—"} / {d.booking.quantity || "—"}</td>
+                    <td className="px-3 py-1.5"><DownloadLinks doc={d} canExport={canExport} canReview={canReview} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
       </div>
     </div>
   );

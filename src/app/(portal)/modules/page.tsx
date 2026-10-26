@@ -10,7 +10,7 @@ export default async function ModulesPage() {
   const modules = visibleModules(all);
   return (
     <div>
-      <PageHeader title="Modules" subtitle="Your commercial automation work areas. Select a module to begin." />
+      <PageHeader title="Processes" subtitle="Your commercial automation work areas. Select a process to begin." />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {modules.map((m) => (
           <Link key={m.key} href={`/modules/${m.key}`} className="card card-hover flex flex-col p-5">

@@ -170,6 +170,11 @@ export interface BookingDetailValues {
   quantity: string;
   status: string;
   confirmationNumber: string;
+  // Identity fields used to verify the correct booking was selected (§9).
+  poNumber: string; // booking-line "PO number" (e.g. "728045/5-2027")
+  sku: string; // booking-line "SKU/Item" (e.g. "OF/7656")
+  frCode: string; // dynamic field "FR" (e.g. "NLW174")
+  manufacturer: string; // HTS/Manufacturer (e.g. "ABM FASHIONS…")
 }
 
 /**
@@ -184,7 +189,7 @@ export interface BookingDetailValues {
 export async function readBookingDetails(): Promise<BookingDetailValues> {
   const page = await getDamcoPage();
   if (!/ViewSOAction/i.test(page.url())) {
-    return { grossWeight: "", cartons: "", quantity: "", status: "", confirmationNumber: "" };
+    return { grossWeight: "", cartons: "", quantity: "", status: "", confirmationNumber: "", poNumber: "", sku: "", frCode: "", manufacturer: "" };
   }
 
   // Click the DETAILS sub-tab so the SUMMARY + BOOKING LINES sections render.
@@ -236,6 +241,44 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
     if (!cartons) cartons = sumInputsByName("package") || sumInputsByName("carton");
     if (!grossWeight) grossWeight = sumInputsByName("grossWeight") || sumInputsByName("weight");
 
+    // --- Identity fields (verify the right booking) ------------------------
+    // The booking line shows "PO number"/"SKU/Item" as label→value pairs (often
+    // plain text, not inputs); "FR" is a dynamic-field input; the Manufacturer
+    // is in the HTS/Country/Region of Origin/Manufacturer cell.
+    const valueForLabel = (labelPattern: RegExp): string => {
+      const nodes = [...document.querySelectorAll("label, td, th, div, span, b, strong")];
+      for (const node of nodes) {
+        const text = (node.textContent || "").trim();
+        if (!labelPattern.test(text)) continue;
+        // Input value next to / under the label.
+        const findInput = (root: Element | null | undefined): string => {
+          const el = root?.querySelector("input, select, textarea") as HTMLInputElement | null;
+          return el ? (el.value || "").trim() : "";
+        };
+        const fromInput = findInput(node.nextElementSibling) || findInput(node.parentElement);
+        if (fromInput) return fromInput;
+        // Plain-text value in the next sibling cell.
+        const sib = node.nextElementSibling;
+        if (sib && !sib.querySelector("input, select, textarea")) {
+          const t = (sib.textContent || "").trim();
+          if (t && t !== text) return t;
+        }
+      }
+      return "";
+    };
+
+    const poNumber = valueForLabel(/^PO\s*number$/i) || valueForLabel(/^PO\s*number\b/i);
+    const sku = valueForLabel(/^SKU\s*\/?\s*Item$/i) || valueForLabel(/^SKU\b/i);
+    const frCode = valueForLabel(/^FR$/i) || valueForLabel(/^FR\b/i);
+    // Manufacturer: the HTS row's manufacturer select/input value, else a label match.
+    let manufacturer = valueForLabel(/Manufacturer/i);
+    if (!manufacturer) {
+      const el = [...document.querySelectorAll<HTMLInputElement>("input, select")]
+        .map((e) => (e.value || "").trim())
+        .find((v) => /FASHION|GARMENTS|JEANS|SPORTSWEAR|TEXTILE|APPAREL/i.test(v));
+      manufacturer = el || "";
+    }
+
     // Status + confirmation number appear in the HEADER section's read-only fields.
     const bodyText = (document.body.innerText || "").replace(/\s+/g, " ");
     const statusMatch = bodyText.match(/\bStatus\b[^A-Za-z0-9]{0,8}(CONFIRMED|REQUESTED|DELIVERED|CANCELLED|AMENDED|REJECTED)\b/i);
@@ -254,6 +297,10 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
       quantity: normalize(quantity),
       status,
       confirmationNumber,
+      poNumber: poNumber.trim(),
+      sku: sku.trim(),
+      frCode: frCode.trim(),
+      manufacturer: manufacturer.trim(),
     };
   });
 }

@@ -8,9 +8,12 @@ import { audit } from "@/lib/audit";
 import { normalizeNumber } from "@/server/booking-correction/extract";
 import {
   createBookingBatch,
+  createBookingExcelBatch,
   processBatch,
+  processSelected,
   processDocument,
 } from "@/server/booking-correction/batch";
+import { parsePackingListXlsx } from "@/server/booking-correction/excel";
 import { writeCorrectedPdf, type CorrectedPdfValues } from "@/server/booking-correction/corrected-pdf";
 import { env } from "@/lib/env";
 import { createHash } from "crypto";
@@ -54,6 +57,166 @@ export async function uploadBookingBatchAction(_prev: UploadState, formData: For
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Upload failed." };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Excel-driven workflow (replaces the bulk-PDF upload entry point).
+// ---------------------------------------------------------------------------
+
+export interface ExcelRowDTO {
+  docId: string;
+  rowNo: number;
+  poNumber: string;
+  sku: string;
+  shipper: string;
+  frCode: string;
+  quantity: string;
+  cartons: string;
+  grossWeight: string;
+  state: string;
+  valid: boolean;
+  warning: string;
+}
+
+export interface ExcelUploadState {
+  error?: string;
+  batchId?: string;
+  rows?: ExcelRowDTO[];
+  accepted?: number;
+  invalid?: number;
+  duplicates?: number;
+}
+
+function rowIsValid(r: { poNumber: string; sku: string; quantity: string; cartons: string; grossWeight: string }): boolean {
+  return !!r.poNumber && !!r.sku && Number(r.quantity) > 0 && Number(r.cartons) > 0 && Number(r.grossWeight) > 0;
+}
+
+async function loadExcelRows(batchId: string): Promise<ExcelRowDTO[]> {
+  const docs = await prisma.bookingDocument.findMany({ where: { batchId }, orderBy: { serial: "asc" } });
+  return docs.map((d) => {
+    const base = { poNumber: d.poNumber, sku: d.countryCode, quantity: d.extractedQuantity, cartons: d.extractedCartons, grossWeight: d.extractedGrossWeight };
+    return {
+      docId: d.id, rowNo: d.rowNo,
+      poNumber: d.poNumber, sku: d.countryCode, shipper: d.shipper, frCode: d.frCode,
+      quantity: d.extractedQuantity, cartons: d.extractedCartons, grossWeight: d.extractedGrossWeight,
+      state: d.state, warning: d.warning, valid: rowIsValid(base),
+    };
+  });
+}
+
+/** Upload (or re-import) a PackingLists.xlsx → parse → create batch + editable rows. */
+export async function uploadBookingExcelAction(_prev: ExcelUploadState, formData: FormData): Promise<ExcelUploadState> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "You do not have permission to create jobs." };
+
+  const file = formData.get("file");
+  if (!(file instanceof File) || file.size === 0 || file.name === "") return { error: "Select an .xlsx workbook." };
+  if (!/\.xlsx$/i.test(file.name)) return { error: "File must be an .xlsx workbook (the PackingLists format)." };
+  const maxBytes = env.BOOKING_MAX_FILE_MB * 1024 * 1024;
+  if (file.size > maxBytes) return { error: `Workbook exceeds the ${env.BOOKING_MAX_FILE_MB} MB limit.` };
+
+  const company = String(formData.get("company") ?? "").trim() || undefined;
+  const buyer = String(formData.get("buyer") ?? "").trim() || undefined;
+
+  try {
+    const buffer = Buffer.from(await file.arrayBuffer());
+    const parsed = await parsePackingListXlsx(buffer);
+    if (!parsed.headerOk) return { error: `Workbook is missing required column(s): ${parsed.missingColumns.join(", ")}.` };
+    if (parsed.rows.length === 0) return { error: "No data rows found in the workbook." };
+
+    const res = await createBookingExcelBatch({ name: file.name, buffer }, parsed.rows, { company, buyer, actor: user.email });
+    const rows = await loadExcelRows(res.batchId);
+    revalidatePath("/modules/booking-correction");
+    revalidatePath(`/booking/${res.batchId}`);
+    revalidatePath("/jobs");
+    revalidatePath("/dashboard");
+    return { batchId: res.batchId, rows, accepted: res.accepted, invalid: res.invalid, duplicates: res.duplicates };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Upload failed." };
+  }
+}
+
+/** Persist spreadsheet-grid edits; re-validate each row (invalid → NEEDS_REVIEW). */
+export async function saveBookingExcelRowsAction(formData: FormData): Promise<{ error?: string; ok?: boolean }> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "You do not have permission." };
+
+  const batchId = String(formData.get("batchId") ?? "");
+  let rows: ExcelRowDTO[];
+  try {
+    rows = JSON.parse(String(formData.get("rows") ?? "[]"));
+  } catch {
+    return { error: "Could not read the edited rows." };
+  }
+  if (!batchId || !Array.isArray(rows)) return { error: "Nothing to save." };
+
+  const IN_FLIGHT = ["EXTRACTING", "READY_TO_SEARCH", "PORTAL_SEARCH", "BOOKING_MATCHING", "PDF_GENERATING", "STATUS_VALIDATION"];
+  for (const r of rows) {
+    const doc = await prisma.bookingDocument.findFirst({ where: { id: r.docId, batchId } });
+    if (!doc || doc.sourceType !== "excel") continue;
+    if (IN_FLIGHT.includes(doc.state)) continue; // never edit a row mid-processing
+
+    const poNumber = String(r.poNumber ?? "").trim();
+    const sku = String(r.sku ?? "").trim().toUpperCase();
+    const shipper = String(r.shipper ?? "").trim();
+    const frCode = String(r.frCode ?? "").trim().toUpperCase();
+    const quantity = normalizeNumber(String(r.quantity ?? ""));
+    const cartons = normalizeNumber(String(r.cartons ?? ""));
+    const grossWeight = normalizeNumber(String(r.grossWeight ?? ""));
+    const valid = rowIsValid({ poNumber, sku, quantity, cartons, grossWeight });
+    const problems: string[] = [];
+    if (!poNumber) problems.push("PO Number required");
+    if (!sku) problems.push("SKU/Item required");
+    if (!(Number(quantity) > 0)) problems.push("Quantity invalid");
+    if (!(Number(cartons) > 0)) problems.push("Cartons invalid");
+    if (!(Number(grossWeight) > 0)) problems.push("Gross weight invalid");
+
+    await prisma.bookingDocument.update({
+      where: { id: doc.id },
+      data: {
+        poNumber, countryCode: sku, marketCode: sku, shipper, frCode,
+        extractedQuantity: quantity, extractedCartons: cartons, extractedGrossWeight: grossWeight,
+        extractionConfidence: valid ? 1 : 0,
+        originalName: `Row ${doc.rowNo} · PO ${poNumber || "?"} / ${sku || "?"}`,
+        // Reset a non-in-flight row to UPLOADED (valid) / NEEDS_REVIEW (invalid) so
+        // it can be (re)processed with the edited values; clears stale results.
+        state: valid ? "UPLOADED" : "NEEDS_REVIEW",
+        matchOutcome: "", warning: valid ? "" : problems.join("; "), error: "",
+      },
+    });
+  }
+  await audit({ entityType: "job", entityId: batchId, action: "booking.excel.saved", actor: user.email, data: { rows: rows.length } });
+  revalidatePath(`/booking/${batchId}`);
+  revalidatePath("/modules/booking-correction");
+  return { ok: true };
+}
+
+/** Process a selected subset of rows (Process Selected). Runs in the background. */
+export async function processSelectedBookingAction(formData: FormData): Promise<void> {
+  const user = await getSessionUser();
+  if (!user || !userHasPermission(user, PERMISSIONS.JOB_CREATE)) return;
+  const batchId = String(formData.get("batchId") ?? "");
+  let docIds: string[] = [];
+  try { docIds = JSON.parse(String(formData.get("docIds") ?? "[]")); } catch { docIds = []; }
+  if (!batchId || docIds.length === 0) return;
+  void processSelected(batchId, docIds, { actor: user.email }).catch((e) => console.error("[booking] process selected failed", e));
+  await audit({ entityType: "job", entityId: batchId, action: "booking.excel.process-selected", actor: user.email, data: { count: docIds.length } });
+  revalidatePath(`/booking/${batchId}`);
+  revalidatePath("/dashboard");
+}
+
+/** Process every valid, not-yet-completed row (Process All). Runs in the background. */
+export async function processAllBookingAction(formData: FormData): Promise<void> {
+  const user = await getSessionUser();
+  if (!user || !userHasPermission(user, PERMISSIONS.JOB_CREATE)) return;
+  const batchId = String(formData.get("batchId") ?? "");
+  if (!batchId) return;
+  void processBatch(batchId, { actor: user.email }).catch((e) => console.error("[booking] process all failed", e));
+  await audit({ entityType: "job", entityId: batchId, action: "booking.excel.process-all", actor: user.email, data: {} });
+  revalidatePath(`/booking/${batchId}`);
+  revalidatePath("/dashboard");
 }
 
 /** Retry a single document independently (§4). */

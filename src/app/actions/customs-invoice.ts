@@ -5,6 +5,8 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { createInvoiceForOrder, deleteInvoice, updateInvoiceFields } from "@/server/customs-invoice/intake";
 import { INVOICE_FLOAT_FIELDS, INVOICE_INT_FIELDS, INVOICE_STRING_FIELDS, type InvoiceFields } from "@/server/customs-invoice/types";
+import { saveGenerationConfig } from "@/server/customs-invoice/config";
+import type { ColumnSpec } from "@/server/customs-invoice/zip-write";
 
 export interface CustomsInvoiceCreateState {
   error?: string;
@@ -72,6 +74,39 @@ export async function updateInvoiceAction(
     return { updated: r.updated };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Save failed." };
+  }
+}
+
+export interface SaveConfigActionResult { ok?: boolean; error?: string }
+
+/** Save the editable generation mapping (field→column plan + template overrides). */
+export async function saveGenerationConfigAction(
+  columnPlan: ColumnSpec[],
+  templateOverrides: Record<string, string>,
+): Promise<SaveConfigActionResult> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "You do not have permission to edit the generation config." };
+  try {
+    const r = await saveGenerationConfig({ columnPlan, templateOverrides }, user.email);
+    revalidatePath("/customs-invoice/templates");
+    return r.ok ? { ok: true } : { error: r.error };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Save failed." };
+  }
+}
+
+/** Reset the generation mapping back to the built-in defaults. */
+export async function resetGenerationConfigAction(): Promise<SaveConfigActionResult> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "You do not have permission to edit the generation config." };
+  try {
+    await saveGenerationConfig({ columnPlan: null, templateOverrides: null }, user.email);
+    revalidatePath("/customs-invoice/templates");
+    return { ok: true };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Reset failed." };
   }
 }
 

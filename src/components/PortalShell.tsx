@@ -26,7 +26,7 @@ function Icon({ path }: { path: ReactNode }) {
 
 const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: <Icon path={<><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></>} /> },
-  { href: "/modules", label: "Modules", icon: <Icon path={<><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>} /> },
+  { href: "/modules", label: "Processes", icon: <Icon path={<><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>} /> },
   { href: "/jobs", label: "Jobs", icon: <Icon path={<><path d="M4 7h16M4 12h16M4 17h10" /></>} /> },
   { href: "/review", label: "Review Queue", icon: <Icon path={<><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>} /> },
   { href: "/audit", label: "Audit Trail", icon: <Icon path={<><path d="M12 8v4l3 2" /><circle cx="12" cy="12" r="9" /></>} /> },

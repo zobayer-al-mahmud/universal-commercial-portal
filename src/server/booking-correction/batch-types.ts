@@ -28,6 +28,13 @@ export type BookingState =
 /** The three shipment-level totals the workflow compares, plus search keys. */
 export type RequiredField = "grossWeight" | "cartons" | "quantity";
 
+/**
+ * Every field compared when selecting + verifying a booking (§9). The three
+ * numeric totals plus the identity/disambiguation fields the Excel row carries
+ * (PO Number, SKU/Item, Shipper = booking Manufacturer, FR).
+ */
+export type MatchField = RequiredField | "poNumber" | "sku" | "shipper" | "frCode";
+
 export interface ExtractedValue {
   value: string; // raw value as found
   normalized: string; // normalised numeric form ("" if none)
@@ -40,6 +47,9 @@ export interface ExtractionResult {
   poNumber: string;
   countryCode: string;
   marketCode: string;
+  /** Excel-driven inputs: "Select Shipper" (= booking Manufacturer) and FR. */
+  shipper?: string;
+  frCode?: string;
   grossWeight: ExtractedValue | null;
   cartons: ExtractedValue | null;
   quantity: ExtractedValue | null;
@@ -58,7 +68,7 @@ export interface ReviewReason {
 }
 
 export interface FieldComparison {
-  field: RequiredField;
+  field: MatchField;
   label: string;
   input: string; // normalised input value
   booking: string; // normalised booking value

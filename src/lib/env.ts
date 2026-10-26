@@ -58,6 +58,8 @@ const schema = z.object({
   // --- Booking Correction batch upload limits -----------------------------
   BOOKING_MAX_FILES: z.coerce.number().int().positive().default(25),
   BOOKING_MAX_FILE_MB: z.coerce.number().positive().default(20),
+  // Excel-driven workflow: max data rows accepted from one PackingLists.xlsx.
+  BOOKING_MAX_ROWS: z.coerce.number().int().positive().default(500),
   BOOKING_CONCURRENCY: z.coerce.number().int().positive().max(16).default(4),
   // Gross-weight tolerance (kg) and carton/qty precision policy (§9 matching).
   BOOKING_GROSS_WEIGHT_TOLERANCE_KG: z.coerce.number().nonnegative().default(0.5),
@@ -144,6 +146,10 @@ const schema = z.object({
   CONTAINER_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
   // Where captured container result PDFs are stored (under STORAGE_ROOT).
   CONTAINER_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Max container numbers accepted in one bulk batch.
+  CONTAINER_MAX_BATCH: z.coerce.number().int().positive().default(100),
+  // Max size (MB) for an uploaded .xlsx of container numbers.
+  CONTAINER_MAX_FILE_MB: z.coerce.number().positive().default(5),
 });
 
 const parsed = schema.safeParse(process.env);

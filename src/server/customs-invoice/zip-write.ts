@@ -151,7 +151,14 @@ function setCell(rowXml: string, ref: string, kind: "s" | "n", valueOrIndex: str
   return rowXml.replace(/<\/row>$/, `${newCell}</row>`);
 }
 
-const COLUMN_PLAN: { col: string; field: keyof InvoiceFields; kind: "string" | "number" | "integer" }[] = [
+export interface ColumnSpec {
+  col: string;
+  field: keyof InvoiceFields;
+  kind: "string" | "number" | "integer";
+}
+
+/** Default field→PAYMENT INVOICE column mapping. User config may override this. */
+export const COLUMN_PLAN: ColumnSpec[] = [
   { col: "A", field: "buyerCode", kind: "string" },
   { col: "B", field: "contractNo", kind: "string" },
   { col: "C", field: "contractDate", kind: "string" },
@@ -182,7 +189,7 @@ export interface ZipWriteResult {
  * merged cells, formulas (column R) and all other sheets are preserved
  * byte-for-byte.
  */
-export async function patchTemplate(templatePath: string, inv: InvoiceFields): Promise<ZipWriteResult | null> {
+export async function patchTemplate(templatePath: string, inv: InvoiceFields, plan: ColumnSpec[] = COLUMN_PLAN): Promise<ZipWriteResult | null> {
   if (!templatePath || !existsSync(templatePath)) return null;
   const buf = await readFile(templatePath);
   const zip = await JSZip.loadAsync(buf);
@@ -207,7 +214,7 @@ export async function patchTemplate(templatePath: string, inv: InvoiceFields): P
   let rowXml = rowMatch[0];
 
   const fieldsWritten: string[] = [];
-  for (const spec of COLUMN_PLAN) {
+  for (const spec of plan) {
     const raw = (inv as unknown as Record<string, unknown>)[spec.field];
     if (raw == null || raw === "") continue;
     const ref = `${spec.col}${inputRow}`;
