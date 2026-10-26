@@ -7,8 +7,7 @@ import { BookingExcelManager } from "@/components/BookingExcelManager";
 import { SalesContractPickBatch, type ExistingContractOption } from "@/components/SalesContractPickBatch";
 import { PdfCombinerManager, type ManagerCol, type ManagerRow, type ManagerMaster } from "@/components/PdfCombinerManager";
 import { ContainerSearchManager, type RecentSearch } from "@/components/ContainerSearchManager";
-import { PdfRenameManager } from "@/components/PdfRenameManager";
-import { listRenameFolders } from "@/server/pdf-rename/folder-rename";
+import { LocalFolderRename } from "@/components/LocalFolderRename";
 import { listRootFolders } from "@/server/pdf-combiner/folders";
 import { ensureActiveMaster, readActiveMasterBytes, extractMatrixGrid } from "@/server/pdf-combiner/master-store";
 import { parseMatrixGrid } from "@/server/pdf-combiner/parse-matrix";
@@ -230,38 +229,15 @@ export default async function ModulePage({ params }: { params: { key: string } }
   }
 
   if (module.key === "pdf-rename") {
-    let folders: { name: string; fileCount: number }[] = [];
-    let folderError = "";
-    if (env.PDF_RENAME_ROOT) {
-      try {
-        folders = await listRenameFolders(env.PDF_RENAME_ROOT, env.PDF_RENAME_OUTPUT_SUBDIR);
-      } catch (e) {
-        folderError = `Cannot read the rename source folder: ${e instanceof Error ? e.message : String(e)}`;
-      }
-    }
-    const jobRows = await prisma.renameJob.findMany({ orderBy: { createdAt: "desc" }, take: 20 });
-    const recentJobs = jobRows.map((j) => ({
-      id: j.id, folder: j.folder, status: j.status, total: j.totalItems,
-      renamed: j.renamedItems, review: j.reviewItems, failed: j.failedItems,
-      createdAt: j.createdAt.toISOString(), finishedAt: j.finishedAt ? j.finishedAt.toISOString() : null, createdBy: j.createdBy,
-    }));
     return (
       <div>
         <PageHeader
           title="PDF File Rename"
-          subtitle="Extract invoice numbers, validate them, and rename PDFs in bulk. Select a server folder, preview the extraction, then run one batch job — duplicates and unreadable files go to manual review, never a guessed name."
+          subtitle="Pick a folder on your computer, deep-scan each PDF's invoice number (text + OCR), preview the proposed names, then rename in bulk — duplicates and unreadable files go to manual review, never a guessed name."
           actions={<StatusBadge status={module.status} />}
         />
         <div className="mb-6">
-          <PdfRenameManager
-            folders={folders}
-            rootConfigured={Boolean(env.PDF_RENAME_ROOT)}
-            rootPath={env.PDF_RENAME_ROOT ?? ""}
-            ocrEnabled={env.OCR_ENABLED}
-            outputSubdir={env.PDF_RENAME_OUTPUT_SUBDIR}
-            recentJobs={recentJobs}
-            configError={folderError || undefined}
-          />
+          <LocalFolderRename />
         </div>
       </div>
     );

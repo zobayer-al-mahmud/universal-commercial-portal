@@ -19,6 +19,7 @@ export interface ModuleCatalogEntry {
  * integration adapter that Booking Correction relies on are untouched.
  */
 export const HIDDEN_MODULE_KEYS: ReadonlySet<string> = new Set([
+  "hm-sales-contract",
   "hm-portal",
   "bb-portal",
   "damco-portal",
