@@ -46,10 +46,10 @@ describe("detectDocType", () => {
 });
 
 describe("extractInvoice — FCR", () => {
-  it("reads the numeric key from 'INV NO : 64408TW' and keeps the country suffix", () => {
+  it("reads 'INV NO : 64408TW' and PRESERVES the full token (incl. the TW suffix)", () => {
     const r = extractInvoice(FCR_TEXT);
     expect(r.docType).toBe("fcr");
-    expect(r.invoiceNumber).toBe("64408");
+    expect(r.invoiceNumber).toBe("64408TW");
     expect(r.raw).toBe("64408TW");
     expect(r.countryToken).toBe("TW");
     expect(r.method).toBe("text-fcr");
@@ -87,6 +87,6 @@ describe("extractInvoice — never invents", () => {
     // FCR dates use dashes (13-09-2026), so the dotted box-44 rule must not fire.
     const r = extractInvoice(FCR_TEXT);
     expect(r.method).toBe("text-fcr");
-    expect(r.invoiceNumber).toBe("64408");
+    expect(r.invoiceNumber).toBe("64408TW");
   });
 });

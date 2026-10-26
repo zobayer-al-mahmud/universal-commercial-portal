@@ -293,6 +293,93 @@ model RenameItem {
 }
 
 // ---------------------------------------------------------------------------
+// PDF File Rename — DB-backed folder job (module 4, deep-extraction workflow).
+// Background, resumable bulk rename with per-file evidence + review. Distinct
+// from the legacy CSV-plan `RenameItem` above.
+// ---------------------------------------------------------------------------
+
+model RenameJob {
+  id              String    @id @default(cuid())
+  createdBy       String    @default("system")
+  root            String
+  folder          String
+  outputSubdir    String    @default("UCP Renamed")
+  status          String    @default("queued") // queued | processing | paused | completed | partial | failed
+  concurrency     Int       @default(3)
+  minConfidence   Float     @default(0.75)
+  ocrEnabled      Boolean   @default(false)
+  totalItems      Int       @default(0)
+  processedItems  Int       @default(0)
+  renamedItems    Int       @default(0)
+  reviewItems     Int       @default(0)
+  failedItems     Int       @default(0)
+  currentActivity String    @default("")
+  error           String    @default("")
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  items RenameJobItem[]
+
+  @@index([folder])
+  @@index([status])
+}
+
+model RenameJobItem {
+  id             String    @id @default(cuid())
+  jobId          String
+  job            RenameJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  serial         Int       @default(0)
+  originalName   String
+  sha256         String    @default("")
+  sizeBytes      Int       @default(0)
+  docType        String    @default("unknown") // fcr | bill-of-export | unknown
+  state          String    @default("PENDING") // PENDING | PROCESSING | RENAMED | REVIEW_REQUIRED | FAILED
+  invoiceNumber  String    @default("")
+  raw            String    @default("")
+  countryToken   String    @default("")
+  source         String    @default("") // text | ocr | both
+  method         String    @default("")
+  confidence     Float     @default(0)
+  pages          Int       @default(0)
+  textChars      Int       @default(0)
+  candidatesJson String    @default("[]") // [{value,label,page,method,confidence,evidence}]
+  evidenceJson   String    @default("{}")
+  reviewReason   String    @default("") // reason code (INVOICE_NUMBER_NOT_FOUND, ...)
+  reasonText     String    @default("")
+  newName        String?
+  outputPath     String?
+  reviewId       String    @default("") // id used in REVIEW_REQUIRED_<id>.pdf
+  manualInvoice  String    @default("")
+  correctedBy    String?
+  attempts       Int       @default(0)
+  startedAt      DateTime?
+  processedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  events RenameJobEvent[]
+
+  @@index([jobId])
+  @@index([state])
+  @@index([sha256])
+}
+
+model RenameJobEvent {
+  id        String        @id @default(cuid())
+  itemId    String
+  item      RenameJobItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  stage     String
+  status    String        @default("info") // info | ok | failed
+  message   String        @default("")
+  dataJson  String        @default("{}")
+  createdAt DateTime      @default(now())
+
+  @@index([itemId])
+}
+
+// ---------------------------------------------------------------------------
 // Week Wise Shipment Schedule — per-market invoice line (module 2)
 // Mirrors the Week workbook "Summary" grain: one line per order x market, with a
 // sequential invoice number and a cut-off assignment.

@@ -19,7 +19,8 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { extractInvoice, type RenameDocKind } from "./invoice-rules";
-import { ocrPdfText } from "./ocr";
+import { ocrPdfText, ocrPdfPages } from "./ocr";
+import { validateInvoice, type PageText, type ValidationResult } from "./validate";
 
 export type RenameItemStatus = "planned" | "collision" | "needs_review" | "skipped";
 
@@ -72,6 +73,103 @@ async function parsePdfText(buffer: Buffer): Promise<{ text: string; pages: numb
   const result = pdfChain.then(run, run);
   pdfChain = result.then(() => undefined, () => undefined);
   return result;
+}
+
+/** Per-page native text (serialized). Mirrors pdf-parse's default line-break
+ *  heuristic but keeps each page separate so candidates carry a page number. */
+async function parsePdfPages(buffer: Buffer): Promise<{ pages: { page: number; text: string }[]; numpages: number }> {
+  const run = async () => {
+    const pdfParse = (await import("pdf-parse/lib/pdf-parse.js")).default;
+    const pages: { page: number; text: string }[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const pagerender = (pageData: any) =>
+      pageData.getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false }).then((tc: { items: { str: string; transform: number[] }[] }) => {
+        let lastY: number | undefined;
+        let text = "";
+        for (const item of tc.items) {
+          if (lastY === item.transform[5] || lastY === undefined) text += item.str;
+          else text += "\n" + item.str;
+          lastY = item.transform[5];
+        }
+        pages.push({ page: pages.length + 1, text });
+        return text;
+      });
+    const run2 = async () => {
+      pages.length = 0;
+      const d = await pdfParse(buffer, { pagerender });
+      return { pages: [...pages], numpages: d.numpages ?? pages.length };
+    };
+    try {
+      return await run2();
+    } catch {
+      return await run2();
+    }
+  };
+  const result = pdfChain.then(run, run);
+  pdfChain = result.then(() => undefined, () => undefined);
+  return result as Promise<{ pages: { page: number; text: string }[]; numpages: number }>;
+}
+
+export interface AnalyzeResult {
+  validation: ValidationResult;
+  pages: number;
+  textChars: number;
+  usedOcr: boolean;
+  ocrError?: string;
+  parseError?: string;
+}
+
+/**
+ * Deep-analyze one PDF buffer: per-page native text, OCR fallback for scanned
+ * pages, then the cross-validating decision (`validate.ts`). Pure of folder I/O.
+ */
+export async function analyzePdf(buffer: Buffer, opts: { minConfidence: number }): Promise<AnalyzeResult> {
+  let nativePages: { page: number; text: string }[] = [];
+  let numpages = 0;
+  try {
+    const r = await parsePdfPages(buffer);
+    nativePages = r.pages;
+    numpages = r.numpages;
+  } catch (e) {
+    return {
+      validation: {
+        docType: "unknown", invoiceNumber: null, numericKey: null, countryToken: null, candidates: [],
+        source: "none", method: "none", confidence: 0, pageRefs: [],
+        decision: "REVIEW", reasonCode: "PDF_UNREADABLE_OR_CORRUPTED",
+        reasonText: `PDF could not be parsed: ${e instanceof Error ? e.message : String(e)}`,
+      },
+      pages: 0, textChars: 0, usedOcr: false, parseError: e instanceof Error ? e.message : String(e),
+    };
+  }
+
+  const textChars = nativePages.reduce((s, p) => s + p.text.replace(/\s+/g, "").length, 0);
+  const pageTexts: PageText[] = nativePages
+    .filter((p) => p.text.replace(/\s+/g, "").length > 0)
+    .map((p) => ({ page: p.page, text: p.text, method: "text" as const }));
+
+  let usedOcr = false;
+  let ocrError: string | undefined;
+  if (textChars < MIN_TEXT_CHARS) {
+    const ocr = await ocrPdfPages(buffer);
+    ocrError = ocr.error;
+    usedOcr = ocr.pages.length > 0;
+    for (const op of ocr.pages) pageTexts.push({ page: op.page, text: op.text, method: "ocr", ocrConfidence: op.confidence });
+  }
+
+  if (pageTexts.length === 0) {
+    return {
+      validation: {
+        docType: "unknown", invoiceNumber: null, numericKey: null, countryToken: null, candidates: [],
+        source: "none", method: "none", confidence: 0, pageRefs: [],
+        decision: "REVIEW", reasonCode: "INVOICE_NUMBER_NOT_FOUND",
+        reasonText: ocrError ? `Scanned PDF — ${ocrError}. Manual review needed.` : "No readable text; scanned PDF needs OCR (enable OCR_ENABLED) or manual review.",
+      },
+      pages: numpages, textChars, usedOcr, ocrError,
+    };
+  }
+
+  const validation = validateInvoice(pageTexts, { minConfidence: opts.minConfidence });
+  return { validation, pages: numpages || nativePages.length, textChars, usedOcr, ocrError };
 }
 
 /**

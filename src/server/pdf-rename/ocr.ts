@@ -128,7 +128,7 @@ export async function extractG4Pages(pdf: Buffer, maxPages: number): Promise<Pag
 // --- Tesseract worker (lazy singleton, serialized) -------------------------
 // The WASM worker is expensive to spin up, so one is reused for a whole batch.
 // recognize() is not re-entrant on a single worker, so calls are serialized.
-type TessWorker = { recognize: (img: Buffer) => Promise<{ data: { text: string } }>; terminate: () => Promise<unknown> };
+type TessWorker = { recognize: (img: Buffer) => Promise<{ data: { text: string; confidence?: number } }>; terminate: () => Promise<unknown> };
 let workerPromise: Promise<TessWorker> | null = null;
 let ocrChain: Promise<unknown> = Promise.resolve();
 
@@ -153,16 +153,29 @@ async function getWorker(): Promise<TessWorker> {
   return workerPromise;
 }
 
-/** Run OCR over one TIFF page image (serialized). */
-async function recognize(tiff: Buffer): Promise<string> {
+/** Run OCR over one TIFF page image (serialized). Returns text + mean confidence (0..1). */
+async function recognize(tiff: Buffer): Promise<{ text: string; confidence: number }> {
   const run = async () => {
     const worker = await getWorker();
     const { data } = await worker.recognize(tiff);
-    return (data.text ?? "").replace(/\r/g, "");
+    const conf = typeof data.confidence === "number" ? Math.max(0, Math.min(1, data.confidence / 100)) : 0.85;
+    return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf };
   };
   const result = ocrChain.then(run, run);
   ocrChain = result.then(() => undefined, () => undefined);
   return result;
+}
+
+export interface OcrPage {
+  page: number; // 1-based
+  text: string;
+  confidence: number; // 0..1 mean OCR confidence
+}
+
+export interface OcrPagesResult {
+  pages: OcrPage[];
+  engineAvailable: boolean;
+  error?: string;
 }
 
 export interface OcrResult {
@@ -179,22 +192,40 @@ export interface OcrResult {
  * fabricated result.
  */
 export async function ocrPdfText(pdf: Buffer): Promise<OcrResult> {
-  if (!env.OCR_ENABLED) return { text: "", pagesOcred: 0, engineAvailable: false, error: "OCR disabled (OCR_ENABLED=false)" };
+  const r = await ocrPdfPages(pdf);
+  return {
+    text: r.pages.map((p) => p.text).join("\n"),
+    pagesOcred: r.pages.length,
+    engineAvailable: r.engineAvailable,
+    error: r.error,
+  };
+}
+
+/**
+ * OCR a scanned PDF PER PAGE (so candidates keep page attribution + a per-page
+ * confidence for the deep validator). Gated by OCR_ENABLED; honest failure on an
+ * unavailable engine / non-G4 pages.
+ */
+export async function ocrPdfPages(pdf: Buffer): Promise<OcrPagesResult> {
+  if (!env.OCR_ENABLED) return { pages: [], engineAvailable: false, error: "OCR disabled (OCR_ENABLED=false)" };
   let images: PageImage[];
   try {
     images = await extractG4Pages(pdf, env.OCR_MAX_PAGES);
   } catch (e) {
-    return { text: "", pagesOcred: 0, engineAvailable: true, error: `Image extraction failed: ${e instanceof Error ? e.message : String(e)}` };
+    return { pages: [], engineAvailable: true, error: `Image extraction failed: ${e instanceof Error ? e.message : String(e)}` };
   }
-  if (images.length === 0) return { text: "", pagesOcred: 0, engineAvailable: true, error: "No CCITT Group-4 page image found to OCR" };
+  if (images.length === 0) return { pages: [], engineAvailable: true, error: "No CCITT Group-4 page image found to OCR" };
 
-  const parts: string[] = [];
+  const pages: OcrPage[] = [];
   try {
-    for (const img of images) parts.push(await recognize(img.tiff));
+    for (const img of images) {
+      const { text, confidence } = await recognize(img.tiff);
+      pages.push({ page: img.page + 1, text, confidence });
+    }
   } catch (e) {
-    return { text: parts.join("\n"), pagesOcred: parts.length, engineAvailable: false, error: `OCR engine error: ${e instanceof Error ? e.message : String(e)}` };
+    return { pages, engineAvailable: false, error: `OCR engine error: ${e instanceof Error ? e.message : String(e)}` };
   }
-  return { text: parts.join("\n"), pagesOcred: parts.length, engineAvailable: true };
+  return { pages, engineAvailable: true };
 }
 
 /** Release the OCR worker (used by scripts/tests; the web app keeps it warm). */

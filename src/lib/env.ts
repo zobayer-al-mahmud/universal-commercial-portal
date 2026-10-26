@@ -127,6 +127,9 @@ const schema = z.object({
   // so FCR / soft-copy / scanned outputs never mix and originals stay intact.
   PDF_RENAME_OUTPUT_SUBDIR: z.string().default("UCP Renamed"),
   PDF_RENAME_MAX_FILES: z.coerce.number().int().positive().default(2000),
+  // Deep-extraction job: min confidence to auto-rename (else → review) + workers.
+  PDF_RENAME_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
+  PDF_RENAME_CONCURRENCY: z.coerce.number().int().positive().max(16).default(3),
 
   // --- Container Module (CTG Port / cpatos.gov.bd) ----------------------------
   // The Port Community System entry page (holds the public container search

@@ -106,7 +106,9 @@ export function extractInvoice(text: string, hint: RenameDocKind = "unknown"): I
     if (detected === "bill-of-export") return none("bill-of-export");
   }
 
-  // FCR: explicit "INV NO :" label.
+  // FCR: explicit "INV NO :" label. The business key PRESERVES the trailing
+  // market/country suffix (e.g. "64408TW"), per the naming convention — only the
+  // numeric run is split out as a sub-field for traceability.
   const fcr = t.match(FCR_INV);
   if (fcr) {
     const raw = fcr[1];
@@ -114,7 +116,7 @@ export function extractInvoice(text: string, hint: RenameDocKind = "unknown"): I
     if (!key) return none("fcr");
     return {
       docType: "fcr",
-      invoiceNumber: key,
+      invoiceNumber: raw,
       raw,
       countryToken: raw.slice(key.length) || null,
       method: "text-fcr",

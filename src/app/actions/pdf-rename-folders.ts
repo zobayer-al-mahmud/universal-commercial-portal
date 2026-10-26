@@ -5,6 +5,8 @@ import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
 import { env } from "@/lib/env";
 import { scanFolder, applyPlan, type PlanItem, type PlanSummary } from "@/server/pdf-rename/folder-rename";
+import { startRenameJob, runJob, retryItem, resumeJob, applyManualCorrection } from "@/server/pdf-rename/job-run";
+import { revalidatePath } from "next/cache";
 
 /**
  * Server actions for the PDF File Rename folder workflow (module 4).
@@ -120,6 +122,56 @@ export async function renameAllAction(folder: string): Promise<FolderScanView> {
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Rename all failed." };
   }
+}
+
+// ---------------------------------------------------------------------------
+// DB-backed job workflow (background, resumable, unified progress + review).
+// ---------------------------------------------------------------------------
+
+export interface StartJobView { error?: string; jobId?: string; total?: number; alreadyRunning?: boolean }
+
+/** Start (or resume) a background rename job for a folder ("Rename All PDFs"). */
+export async function startRenameJobAction(folder: string): Promise<StartJobView> {
+  const { user, error } = await requireAuth(PERMISSIONS.RENAME_APPLY);
+  if (!user) return { error };
+  if (!env.PDF_RENAME_ROOT) return { error: "PDF_RENAME_ROOT is not configured." };
+  try {
+    const res = await startRenameJob(env.PDF_RENAME_ROOT, folder, { actor: user.email });
+    // Run in the BACKGROUND so the UI can poll the unified progress indicator.
+    void runJob(res.jobId, { actor: user.email }).catch((e) => console.error("[rename] job run failed", e));
+    revalidatePath("/modules/pdf-rename");
+    return { jobId: res.jobId, total: res.total, alreadyRunning: Boolean(res.existingJobId) };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Could not start the rename job." };
+  }
+}
+
+/** Resume / retry all not-yet-renamed items in a job. */
+export async function resumeRenameJobAction(formData: FormData): Promise<void> {
+  const { user } = await requireAuth(PERMISSIONS.RENAME_APPLY);
+  if (!user) return;
+  const jobId = String(formData.get("jobId") ?? "");
+  if (!jobId) return;
+  void resumeJob(jobId, { actor: user.email }).catch((e) => console.error("[rename] resume failed", e));
+}
+
+/** Retry one item (re-analyze + re-apply). */
+export async function retryRenameItemAction(formData: FormData): Promise<void> {
+  const { user } = await requireAuth(PERMISSIONS.RENAME_APPLY);
+  if (!user) return;
+  const itemId = String(formData.get("itemId") ?? "");
+  if (!itemId) return;
+  void retryItem(itemId, { actor: user.email }).catch((e) => console.error("[rename] retry failed", e));
+}
+
+/** Apply a reviewer-entered invoice number to an item (manual correction). */
+export async function correctRenameItemAction(formData: FormData): Promise<{ ok: boolean; message: string }> {
+  const { user, error } = await requireAuth(PERMISSIONS.RENAME_APPLY);
+  if (!user) return { ok: false, message: error ?? "Not permitted." };
+  const itemId = String(formData.get("itemId") ?? "");
+  const invoiceNumber = String(formData.get("invoiceNumber") ?? "");
+  if (!itemId) return { ok: false, message: "No item specified." };
+  return applyManualCorrection(itemId, invoiceNumber, { actor: user.email });
 }
 
 /** Gated apply of a single file ("Rename One PDF"). */
