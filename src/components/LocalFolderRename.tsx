@@ -25,6 +25,7 @@ interface FsDirHandle {
   values(): AsyncIterableIterator<FsFileHandle | FsDirHandle>;
   getDirectoryHandle(name: string, opts?: { create?: boolean }): Promise<FsDirHandle>;
   getFileHandle(name: string, opts?: { create?: boolean }): Promise<FsFileHandle>;
+  removeEntry(name: string, opts?: { recursive?: boolean }): Promise<void>;
 }
 function getDirectoryPicker(): ((opts?: { mode?: "read" | "readwrite" }) => Promise<FsDirHandle>) | null {
   if (typeof window === "undefined") return null;
@@ -53,12 +54,17 @@ interface Row extends Partial<Analysis> {
   state: RowState;
   finalName?: string;
   stateMsg?: string;
+  corrected?: boolean; // final name was set/confirmed by a manual rename
   handle?: FsFileHandle; // FS Access mode
   file?: File; // upload fallback mode
 }
 interface HistoryEntry { at: string; folder: string; total: number; renamed: number; review: number; failed: number; mode: string }
+/** One manual correction, kept so the UI, the output folder and the log agree. */
+interface CorrectionEntry { at: string; folder: string; path: string; from: string; to: string; action: string }
 
 const HISTORY_KEY = "ucp.pdfrename.local.history";
+const CORR_KEY = "ucp.pdfrename.local.corrections"; // folder\0path -> {invoice, finalName, at}
+const CORRLOG_KEY = "ucp.pdfrename.local.corrections.log";
 
 function loadHistory(): HistoryEntry[] {
   try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") as HistoryEntry[]; } catch { return []; }
@@ -66,7 +72,27 @@ function loadHistory(): HistoryEntry[] {
 function saveHistory(list: HistoryEntry[]) {
   try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, 25))); } catch { /* storage may be unavailable */ }
 }
+
+type CorrMap = Record<string, { invoice: string; finalName: string; at: string }>;
+const corrKey = (folder: string, path: string) => `${folder}\u0000${path}`;
+function loadCorrections(): CorrMap {
+  try { return JSON.parse(localStorage.getItem(CORR_KEY) || "{}") as CorrMap; } catch { return {}; }
+}
+function saveCorrections(map: CorrMap) {
+  try { localStorage.setItem(CORR_KEY, JSON.stringify(map)); } catch { /* storage may be unavailable */ }
+}
+function loadCorrLog(): CorrectionEntry[] {
+  try { return JSON.parse(localStorage.getItem(CORRLOG_KEY) || "[]") as CorrectionEntry[]; } catch { return []; }
+}
+function saveCorrLog(list: CorrectionEntry[]) {
+  try { localStorage.setItem(CORRLOG_KEY, JSON.stringify(list.slice(0, 100))); } catch { /* storage may be unavailable */ }
+}
+
 function reviewName(): string { return `REVIEW_REQUIRED_${Math.random().toString(16).slice(2, 8)}.pdf`; }
+/** Sanitise a user-typed invoice number into a safe filename stem (no path/illegal chars, no extension). */
+function toStem(raw: string): string {
+  return raw.trim().replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "").trim();
+}
 
 function Stat({ label, value, accent }: { label: string; value: string | number; accent: string }) {
   return (
@@ -93,17 +119,21 @@ export function LocalFolderRename() {
   const [log, setLog] = useState<string[]>([]);
   const [msg, setMsg] = useState<{ tone: "ok" | "err"; text: string } | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [corrLog, setCorrLog] = useState<CorrectionEntry[]>([]);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
   const uploadRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setMounted(true);
     setFsaPicker(() => getDirectoryPicker());
     setHistory(loadHistory());
+    setCorrLog(loadCorrLog());
   }, []);
 
   const addLog = useCallback((s: string) => setLog((l) => [...l.slice(-199), `${new Date().toLocaleTimeString()}  ${s}`]), []);
 
-  const reset = () => { setRows([]); setMsg(null); setLog([]); setProgress(null); setQuery(""); setFilter("all"); };
+  const reset = () => { setRows([]); setMsg(null); setLog([]); setProgress(null); setQuery(""); setFilter("all"); setEditingKey(null); };
 
   // --- Folder selection --------------------------------------------------
   const pickViaFsa = async () => {
@@ -174,9 +204,12 @@ export function LocalFolderRename() {
         try {
           const blob = r.handle ? await r.handle.getFile() : r.file!;
           const a = await analyzeOne(blob, r.path.split("/").pop() || r.path);
-          next[i] = { ...r, ...a, state: "scanned" };
+          // Fresh analysis for THIS batch: clear any rename-output fields left
+          // over from a previous run of these rows, so no stale "renamed"
+          // name/flag survives into the newly-scanned state.
+          next[i] = { ...r, ...a, state: "scanned", finalName: undefined, corrected: false, stateMsg: undefined };
         } catch (e) {
-          next[i] = { ...r, decision: "REVIEW", reviewReason: "PDF_UNREADABLE_OR_CORRUPTED", reasonText: (e as Error).message, state: "scanned", proposedName: null, invoiceNumber: null, confidence: 0 };
+          next[i] = { ...r, decision: "REVIEW", reviewReason: "PDF_UNREADABLE_OR_CORRUPTED", reasonText: (e as Error).message, state: "scanned", proposedName: null, invoiceNumber: null, confidence: 0, finalName: undefined, corrected: false, stateMsg: undefined };
         }
         done++;
         setProgress({ done, total });
@@ -184,11 +217,32 @@ export function LocalFolderRename() {
       }
     };
     await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, total) }, worker));
+    // Re-apply manual corrections saved earlier for this folder. A correction
+    // is shown as "renamed" ONLY when its corrected copy is actually present in
+    // THIS folder's output sub-folder (verified on disk). Otherwise we keep the
+    // user's chosen invoice number as a proposal ("will rename") but never claim
+    // a rename that isn't there — so a previous batch's status can't leak in.
+    const corr = loadCorrections();
+    let restored = 0;
+    let outDir: FsDirHandle | null = null;
+    if (dirHandle) { try { outDir = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR); } catch { outDir = null; } }
+    for (let i = 0; i < next.length; i++) {
+      const c = corr[corrKey(folderName, next[i].path)];
+      if (!c) continue;
+      const verified = outDir ? await exists(outDir, c.finalName) : false;
+      if (verified) {
+        next[i] = { ...next[i], invoiceNumber: c.invoice, proposedName: `${c.invoice}.pdf`, finalName: c.finalName, decision: "RENAME", state: "renamed", corrected: true, stateMsg: `manual → ${c.finalName}` };
+        restored++;
+      } else {
+        next[i] = { ...next[i], invoiceNumber: c.invoice, proposedName: `${c.invoice}.pdf`, finalName: undefined, decision: "RENAME", state: "scanned", corrected: false, stateMsg: undefined };
+      }
+    }
     setRows([...next]);
     setBusy("");
     const willRename = next.filter((r) => r.decision === "RENAME").length;
-    addLog(`Scan complete: ${willRename} ready to rename, ${total - willRename} need review. No files changed.`);
-    setMsg({ tone: "ok", text: `Scanned ${total} PDF(s): ${willRename} ready, ${total - willRename} need review. No files changed.` });
+    const restoredNote = restored ? ` ${restored} manual correction(s) restored.` : "";
+    addLog(`Scan complete: ${willRename} ready to rename, ${total - willRename} need review.${restoredNote} No files changed.`);
+    setMsg({ tone: "ok", text: `Scanned ${total} PDF(s): ${willRename} ready, ${total - willRename} need review.${restoredNote} No files changed.` });
   };
 
   // --- Rename ------------------------------------------------------------
@@ -282,9 +336,71 @@ export function LocalFolderRename() {
     await w.write(data);
     await w.close();
   }
+  /** Dedupe, but treat `except` (this row's own current output file) as free so a
+   *  re-save keeps its name instead of spawning a "-2" copy. Never overwrites a
+   *  DIFFERENT existing file. */
+  async function dedupeNameExcept(dir: FsDirHandle, name: string, except?: string): Promise<string> {
+    const d = name.lastIndexOf("."); const stem = d > 0 ? name.slice(0, d) : name; const ext = d > 0 ? name.slice(d) : ".pdf";
+    let candidate = name; let n = 2;
+    const taken = async (c: string) => (except && c.toLowerCase() === except.toLowerCase() ? false : await exists(dir, c));
+    while (await taken(candidate)) candidate = `${stem}-${n++}${ext}`;
+    return candidate;
+  }
 
   const pushHistory = (e: Omit<HistoryEntry, "at">) => {
     setHistory((prev) => { const nextH = [{ at: new Date().toISOString(), ...e }, ...prev].slice(0, 25); saveHistory(nextH); return nextH; });
+  };
+
+  const recordCorrection = (path: string, invoice: string, finalName: string, action: string) => {
+    const map = loadCorrections();
+    map[corrKey(folderName, path)] = { invoice, finalName, at: new Date().toISOString() };
+    saveCorrections(map);
+    setCorrLog((prev) => {
+      const nextL = [{ at: new Date().toISOString(), folder: folderName, path, from: path.split("/").pop() || path, to: finalName, action }, ...prev].slice(0, 100);
+      saveCorrLog(nextL);
+      return nextL;
+    });
+  };
+
+  // --- Manual rename (per file, incl. REVIEW_REQUIRED) -------------------
+  const manualRename = async (key: string, rawInvoice: string) => {
+    const stem = toStem(rawInvoice);
+    const row = rows.find((r) => r.key === key);
+    if (!row) return;
+    if (!stem) { setMsg({ tone: "err", text: "Enter an invoice number before saving." }); return; }
+    const finalBase = `${stem}.pdf`;
+    setBusy("rename");
+    try {
+      const file = row.handle ? await row.handle.getFile() : row.file!;
+      const bytes = await file.arrayBuffer();
+      if (dirHandle) {
+        // In-place: write the corrected copy into the output folder and drop the
+        // file's previous output name so the folder reflects exactly one copy.
+        const out = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR, { create: true });
+        const oldName = row.finalName;
+        const finalName = await dedupeNameExcept(out, finalBase, oldName);
+        await writeInto(out, finalName, bytes);
+        if (oldName && oldName.toLowerCase() !== finalName.toLowerCase()) { try { await out.removeEntry(oldName); } catch { /* old copy already gone */ } }
+        setRows((rs) => rs.map((r) => (r.key === key ? { ...r, state: "renamed", decision: "RENAME", invoiceNumber: stem, proposedName: finalBase, finalName, corrected: true, stateMsg: `manual → ${finalName}` } : r)));
+        recordCorrection(row.path, stem, finalName, "manual rename (write-back)");
+        addLog(`Manual rename: ${row.path} → ${finalName}${oldName && oldName !== finalName ? ` (replaced ${oldName})` : ""}`);
+        setMsg({ tone: "ok", text: `Saved: ${row.path} → ${finalName}. Original preserved.` });
+      } else {
+        // Upload mode: no folder handle, so download the single corrected copy.
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href = url; a.download = finalBase; a.click(); URL.revokeObjectURL(url);
+        setRows((rs) => rs.map((r) => (r.key === key ? { ...r, state: "renamed", decision: "RENAME", invoiceNumber: stem, proposedName: finalBase, finalName: finalBase, corrected: true, stateMsg: `manual → ${finalBase} (downloaded)` } : r)));
+        recordCorrection(row.path, stem, finalBase, "manual rename (download)");
+        addLog(`Manual rename (download): ${row.path} → ${finalBase}`);
+        setMsg({ tone: "ok", text: `Downloaded corrected copy “${finalBase}”. Original unchanged.` });
+      }
+      setEditingKey(null);
+    } catch (e) {
+      setMsg({ tone: "err", text: `Manual rename failed: ${(e as Error).message}` });
+    } finally {
+      setBusy("");
+    }
   };
 
   // --- Derived ------------------------------------------------------------
@@ -383,6 +499,7 @@ export function LocalFolderRename() {
                 <th className="px-3 py-1.5 text-left font-semibold">Conf.</th>
                 <th className="px-3 py-1.5 text-left font-semibold">Via</th>
                 <th className="px-3 py-1.5 text-left font-semibold">Status</th>
+                <th className="px-3 py-1.5 text-left font-semibold">Manual rename</th>
               </tr></thead>
               <tbody>
                 {filtered.map((r) => (
@@ -395,14 +512,30 @@ export function LocalFolderRename() {
                     <td className="px-3 py-1.5">{!r.source || r.source === "none" ? "—" : r.source}</td>
                     <td className="px-3 py-1.5">
                       {r.state === "pending" ? <span className="text-slate-400">—</span>
-                        : r.state === "renamed" ? <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/15" title={r.stateMsg}>renamed</span>
+                        : r.state === "renamed" ? <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/15" title={r.stateMsg}>{r.corrected ? "renamed ✎" : "renamed"}</span>
                         : r.state === "failed" ? <span className="badge bg-rose-50 text-rose-700 ring-1 ring-rose-600/15" title={r.stateMsg}>failed</span>
-                        : r.decision === "RENAME" ? <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/15">will rename</span>
+                        : r.decision === "RENAME" && r.proposedName ? <span className="badge bg-emerald-50 text-emerald-700 ring-1 ring-emerald-600/15">will rename</span>
                         : <span className="badge bg-amber-50 text-amber-700 ring-1 ring-amber-600/20" title={r.reasonText}>{r.reviewReason || "review"}</span>}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      {editingKey === r.key ? (
+                        <div className="flex items-center gap-1.5">
+                          <input autoFocus value={editValue} onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === "Enter") manualRename(r.key, editValue); if (e.key === "Escape") setEditingKey(null); }}
+                            placeholder="invoice no." className="w-24 rounded border border-slate-300 px-1.5 py-0.5 font-mono text-[11px]" />
+                          <span className="font-mono text-[11px] text-slate-400">{toStem(editValue) ? `${toStem(editValue)}.pdf` : ""}</span>
+                          <button onClick={() => manualRename(r.key, editValue)} disabled={busy !== "" || !toStem(editValue)} className="text-[11px] font-medium text-emerald-700 hover:underline disabled:opacity-40">Save</button>
+                          <button onClick={() => setEditingKey(null)} className="text-[11px] text-slate-400 hover:underline">Cancel</button>
+                        </div>
+                      ) : r.state === "pending" ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        <button onClick={() => { setEditingKey(r.key); setEditValue(r.invoiceNumber || ""); setMsg(null); }} className="text-[11px] font-medium text-ananta hover:underline">✎ Rename</button>
+                      )}
                     </td>
                   </tr>
                 ))}
-                {filtered.length === 0 ? <tr><td className="px-3 py-3 text-slate-400" colSpan={7}>No files match.</td></tr> : null}
+                {filtered.length === 0 ? <tr><td className="px-3 py-3 text-slate-400" colSpan={8}>No files match.</td></tr> : null}
               </tbody>
             </table>
           </div>
@@ -415,6 +548,39 @@ export function LocalFolderRename() {
           <div className="mb-2 text-sm font-semibold text-slate-800">Processing log</div>
           <div className="max-h-56 space-y-0.5 overflow-y-auto rounded-lg border border-slate-100 bg-slate-50/60 p-3 font-mono text-[11px] text-slate-600">
             {log.slice().reverse().map((l, i) => <div key={i}>{l}</div>)}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Manual corrections log (this browser) */}
+      {corrLog.length > 0 ? (
+        <div className="card p-4">
+          <div className="mb-1 flex items-center gap-2">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="text-slate-400" aria-hidden><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>
+            <div className="text-sm font-semibold text-slate-800">Manual Corrections</div>
+          </div>
+          <p className="mb-3 text-xs text-slate-500">Invoice numbers you set by hand (stored in this browser; the output folder already holds the renamed copy).</p>
+          <div className="overflow-x-auto">
+            <table className="w-full whitespace-nowrap text-xs">
+              <thead className="bg-slate-50 text-slate-500"><tr>
+                <th className="px-3 py-1.5 text-left font-semibold">Date</th>
+                <th className="px-3 py-1.5 text-left font-semibold">Folder</th>
+                <th className="px-3 py-1.5 text-left font-semibold">Original</th>
+                <th className="px-3 py-1.5 text-left font-semibold">New name</th>
+                <th className="px-3 py-1.5 text-left font-semibold">Action</th>
+              </tr></thead>
+              <tbody>
+                {corrLog.map((c, i) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-3 py-1.5 text-slate-600">{c.at.slice(0, 16).replace("T", " ")}</td>
+                    <td className="px-3 py-1.5 max-w-[160px] truncate" title={c.folder}>{c.folder}</td>
+                    <td className="px-3 py-1.5 font-mono max-w-[200px] truncate" title={c.path}>{c.from}</td>
+                    <td className="px-3 py-1.5 font-mono text-emerald-700">{c.to}</td>
+                    <td className="px-3 py-1.5 text-slate-500">{c.action}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       ) : null}
