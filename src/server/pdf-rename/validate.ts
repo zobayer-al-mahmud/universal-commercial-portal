@@ -29,6 +29,9 @@ export interface PageText {
   method: "text" | "ocr";
   /** OCR mean confidence 0..1 (text pages omit it). */
   ocrConfidence?: number;
+  /** Per-word OCR confidence (0..100). Lets a candidate be scored by its own
+   *  words rather than the whole page's (often low) mean. OCR pages only. */
+  words?: { text: string; confidence: number }[];
 }
 
 export interface Candidate {
@@ -64,6 +67,13 @@ const FCR_INV_G = /\bINV\s*NO\s*[:#]?\s*([A-Z0-9]{3,})\b/gi;
 const BILL_INV_G = /\b(\d{4,6})\s+([A-Z][A-Z0-9/\-]+)\s+\d{1,2}\.\d{1,2}\.\d{4}\b/g;
 // Generic invoice label elsewhere (lower trust); value may carry a letter suffix.
 const GENERIC_INV_G = /\b(?:INVOICE|INV)\s*(?:NO|NUMBER|#)\s*[:#]?\s*([0-9][A-Z0-9]{2,})\b/gi;
+// Commercial-invoice sheet header: the exporter's invoice page labels the invoice
+// as `Number : 61753 KS`, directly under the "Invoice no and date" heading. The
+// trailing market code (KS/ZA/PL) is consumed into the match so its (usually
+// clean) OCR corroborates the number, but only the numeric run becomes the value.
+// Gated by INV_SHEET_MARK so a stray "Number" on the customs page never fires.
+const INV_SHEET_NUM_G = /\bNumber\s*[:#]?\s*([0-9]{4,6})(?:\s+[A-Z][A-Z0-9/\-]*)?/gi;
+const INV_SHEET_MARK = /invoice\s+no\s+and\s+date|exporter'?s?\s+ref|H\s*&\s*M\s+order\s+no/i;
 // Date tokens (dd-mm-yyyy or dd.mm.yyyy) — never an invoice value.
 const DATE_RE = /^\d{1,2}[.\-/]\d{1,2}[.\-/]\d{2,4}$/;
 
@@ -84,6 +94,36 @@ function inExcludedContext(text: string, idx: number): boolean {
   return /\b(ORDER\s*NO|PO\s*(?:NO|NUMBER)?|S\/?C\s*NO|EXP\s*NO|HS\s*CODE|B\/?L|BOOKING)\b[^A-Za-z0-9]*$/i.test(before);
 }
 
+/**
+ * Confidence of the SPECIFIC matched token(s), not the whole page. A scanned
+ * customs declaration can OCR at a low page mean (dense boxes, stamps, signatures)
+ * while the invoice number, its country token and its date are each read clearly.
+ * Scoring the structured match by its own words — rather than the page mean —
+ * stops a correctly-read invoice from being pushed to review by unrelated page
+ * noise, WITHOUT lowering the decision threshold. Returns the mean per-word
+ * confidence (0..1) of the words that compose the match, or null when none can be
+ * mapped (the caller then falls back to the page mean).
+ */
+function ocrTokenConfidence(words: { text: string; confidence: number }[] | undefined, matched: string): number | null {
+  if (!words || words.length === 0) return null;
+  const strip = (s: string) => s.toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, "");
+  const want = matched.split(/\s+/).map(strip).filter((t) => t.length >= 2);
+  if (want.length === 0) return null;
+  const confs: number[] = [];
+  const used = new Set<number>();
+  for (const w of words) {
+    const wt = strip(w.text || "");
+    if (!wt) continue;
+    const i = want.findIndex((t, k) => !used.has(k) && t === wt);
+    if (i >= 0) {
+      used.add(i);
+      confs.push(Math.max(0, Math.min(1, (w.confidence || 0) / 100)));
+    }
+  }
+  if (confs.length === 0) return null;
+  return confs.reduce((a, b) => a + b, 0) / confs.length;
+}
+
 function pushCandidate(
   out: Candidate[],
   p: PageText,
@@ -98,7 +138,10 @@ function pushCandidate(
   if (inExcludedContext(p.text, idx)) return; // PO / S-C / EXP / HS — not an invoice
   const numericKey = leadingNumeric(value);
   if (!numericKey) return;
-  const methodFactor = p.method === "ocr" ? (p.ocrConfidence ?? 0.85) : 1;
+  const methodFactor =
+    p.method === "ocr"
+      ? ocrTokenConfidence(p.words, p.text.slice(idx, idx + matchLen)) ?? p.ocrConfidence ?? 0.85
+      : 1;
   const confidence = Math.max(0, Math.min(1, baseConfidence * methodFactor));
   out.push({
     value,
@@ -131,6 +174,12 @@ export function collectPageCandidates(p: PageText): Candidate[] {
   GENERIC_INV_G.lastIndex = 0;
   while ((m = GENERIC_INV_G.exec(t))) {
     pushCandidate(out, p, m[1], "'Invoice No' label", 0.78, m.index, m[0].length);
+  }
+  if (INV_SHEET_MARK.test(t)) {
+    INV_SHEET_NUM_G.lastIndex = 0;
+    while ((m = INV_SHEET_NUM_G.exec(t))) {
+      pushCandidate(out, p, m[1], "Invoice sheet 'Number :' label", 0.9, m.index, m[0].length);
+    }
   }
   return out;
 }

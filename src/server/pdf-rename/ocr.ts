@@ -128,7 +128,8 @@ export async function extractG4Pages(pdf: Buffer, maxPages: number): Promise<Pag
 // --- Tesseract worker (lazy singleton, serialized) -------------------------
 // The WASM worker is expensive to spin up, so one is reused for a whole batch.
 // recognize() is not re-entrant on a single worker, so calls are serialized.
-type TessWorker = { recognize: (img: Buffer) => Promise<{ data: { text: string; confidence?: number } }>; terminate: () => Promise<unknown> };
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TessWorker = { recognize: (img: Buffer, opts?: unknown, output?: unknown) => Promise<{ data: { text: string; confidence?: number; blocks?: any[] } }>; terminate: () => Promise<unknown> };
 let workerPromise: Promise<TessWorker> | null = null;
 let ocrChain: Promise<unknown> = Promise.resolve();
 
@@ -153,13 +154,31 @@ async function getWorker(): Promise<TessWorker> {
   return workerPromise;
 }
 
-/** Run OCR over one TIFF page image (serialized). Returns text + mean confidence (0..1). */
-async function recognize(tiff: Buffer): Promise<{ text: string; confidence: number }> {
+/** One OCR'd word: its text and the engine's per-word confidence (0..100). */
+export interface OcrWord {
+  text: string;
+  confidence: number;
+}
+
+/**
+ * Run OCR over one TIFF page image (serialized). Returns the page text, the mean
+ * page confidence (0..1) AND every word with its own confidence — the validator
+ * scores the matched invoice token by its OWN words, not the (often low) page
+ * mean, so a clearly-read number on a noisy customs page is not sent to review.
+ */
+async function recognize(tiff: Buffer): Promise<{ text: string; confidence: number; words: OcrWord[] }> {
   const run = async () => {
     const worker = await getWorker();
-    const { data } = await worker.recognize(tiff);
+    // v5: pass an output spec to get structured blocks (→ per-word confidence).
+    const { data } = await worker.recognize(tiff, {}, { blocks: true, text: true });
     const conf = typeof data.confidence === "number" ? Math.max(0, Math.min(1, data.confidence / 100)) : 0.85;
-    return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf };
+    const words: OcrWord[] = [];
+    for (const b of data.blocks ?? [])
+      for (const par of b?.paragraphs ?? [])
+        for (const ln of par?.lines ?? [])
+          for (const w of ln?.words ?? [])
+            words.push({ text: typeof w?.text === "string" ? w.text : "", confidence: typeof w?.confidence === "number" ? w.confidence : 0 });
+    return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf, words };
   };
   const result = ocrChain.then(run, run);
   ocrChain = result.then(() => undefined, () => undefined);
@@ -170,6 +189,7 @@ export interface OcrPage {
   page: number; // 1-based
   text: string;
   confidence: number; // 0..1 mean OCR confidence
+  words: OcrWord[]; // per-word confidence for token-level scoring
 }
 
 export interface OcrPagesResult {
@@ -219,8 +239,8 @@ export async function ocrPdfPages(pdf: Buffer): Promise<OcrPagesResult> {
   const pages: OcrPage[] = [];
   try {
     for (const img of images) {
-      const { text, confidence } = await recognize(img.tiff);
-      pages.push({ page: img.page + 1, text, confidence });
+      const { text, confidence, words } = await recognize(img.tiff);
+      pages.push({ page: img.page + 1, text, confidence, words });
     }
   } catch (e) {
     return { pages, engineAvailable: false, error: `OCR engine error: ${e instanceof Error ? e.message : String(e)}` };

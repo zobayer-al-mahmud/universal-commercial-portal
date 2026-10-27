@@ -153,7 +153,7 @@ export async function analyzePdf(buffer: Buffer, opts: { minConfidence: number }
     const ocr = await ocrPdfPages(buffer);
     ocrError = ocr.error;
     usedOcr = ocr.pages.length > 0;
-    for (const op of ocr.pages) pageTexts.push({ page: op.page, text: op.text, method: "ocr", ocrConfidence: op.confidence });
+    for (const op of ocr.pages) pageTexts.push({ page: op.page, text: op.text, method: "ocr", ocrConfidence: op.confidence, words: op.words });
   }
 
   if (pageTexts.length === 0) {

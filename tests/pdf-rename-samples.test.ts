@@ -31,16 +31,18 @@ describe.skipIf(!existsSync(SOFT))("Bill of Export 65341.pdf (digital)", () => {
 });
 
 // Scanned 3-page copy — only runs when OCR is actually enabled + available.
+// The invoice box `61753 KS 10.08.2026` sits on the dense Bill-of-Export page
+// (OCR page mean ~64%) while its own tokens read clearly; the H&M order number
+// 734041/8305 must NOT be selected. This is the spec's mandatory regression.
 describe.skipIf(!existsSync(SCAN) || !env.OCR_ENABLED)("Bill of Export 61753.pdf (scanned, OCR)", () => {
-  it("extracts 61753 via OCR", async () => {
+  it("extracts 61753 via OCR, not the H&M order number", async () => {
     const r = await analyzePdf(readFileSync(SCAN), OPTS);
-    // OCR must have been attempted; if the engine/traineddata is missing the
-    // result is a REVIEW with an OCR reason (still honest, not a wrong rename).
-    if (r.validation.decision === "RENAME") {
-      expect(r.validation.invoiceNumber).toBe("61753");
-      expect(r.usedOcr).toBe(true);
-    } else {
-      expect(["OCR_LOW_CONFIDENCE", "INVOICE_NUMBER_NOT_FOUND"]).toContain(r.validation.reasonCode);
-    }
+    expect(r.usedOcr).toBe(true);
+    expect(r.validation.decision).toBe("RENAME");
+    expect(r.validation.invoiceNumber).toBe("61753");
+    expect(r.validation.numericKey).toBe("61753");
+    // The H&M order number (734041/8305) and the date must never be selected.
+    expect(r.validation.invoiceNumber).not.toContain("734041");
+    expect(r.validation.candidates.length).toBeGreaterThan(0);
   }, 60000);
 });

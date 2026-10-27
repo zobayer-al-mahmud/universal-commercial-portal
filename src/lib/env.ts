@@ -27,8 +27,11 @@ const schema = z.object({
   OCR_LANG: z.string().default("eng"),
   OCR_TESSDATA_DIR: z.string().default("./var/ocr-tessdata"),
   // How many leading pages of a scanned PDF to OCR when hunting for the invoice
-  // number (it is on the first declaration page in every observed sample).
-  OCR_MAX_PAGES: z.coerce.number().int().positive().max(10).default(2),
+  // number. Multi-page declarations (Bill of Export + attached commercial
+  // invoice) can carry the invoice box / header on a later page, so every page
+  // of a typical packet is read, not just the first — the validator still only
+  // accepts a labelled, cross-checked candidate.
+  OCR_MAX_PAGES: z.coerce.number().int().positive().max(10).default(5),
   BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional().or(z.literal("")),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().or(z.literal("")),
 
