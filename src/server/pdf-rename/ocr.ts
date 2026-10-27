@@ -160,36 +160,126 @@ export interface OcrWord {
   confidence: number;
 }
 
+interface BBox { x0: number; y0: number; x1: number; y1: number }
+interface RichWord extends OcrWord { bbox?: BBox }
+
+/** Serialize every OCR call on the single WASM worker (recognize is not re-entrant). */
+function serialize<T>(run: () => Promise<T>): Promise<T> {
+  const result = ocrChain.then(run, run);
+  ocrChain = result.then(() => undefined, () => undefined);
+  return result;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wordsFromData(data: { blocks?: any[] }): RichWord[] {
+  const words: RichWord[] = [];
+  for (const b of data.blocks ?? [])
+    for (const par of b?.paragraphs ?? [])
+      for (const ln of par?.lines ?? [])
+        for (const w of ln?.words ?? [])
+          words.push({
+            text: typeof w?.text === "string" ? w.text : "",
+            confidence: typeof w?.confidence === "number" ? w.confidence : 0,
+            bbox: w?.bbox && typeof w.bbox.x0 === "number" ? { x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 } : undefined,
+          });
+  return words;
+}
+
 /**
  * Run OCR over one TIFF page image (serialized). Returns the page text, the mean
- * page confidence (0..1) AND every word with its own confidence — the validator
- * scores the matched invoice token by its OWN words, not the (often low) page
- * mean, so a clearly-read number on a noisy customs page is not sent to review.
+ * page confidence (0..1) AND every word with its own confidence + bbox — the
+ * validator scores the matched invoice token by its OWN words, not the (often
+ * low) page mean, so a clearly-read number on a noisy customs page is not sent to
+ * review.
  */
-async function recognize(tiff: Buffer): Promise<{ text: string; confidence: number; words: OcrWord[] }> {
-  const run = async () => {
+async function recognize(tiff: Buffer): Promise<{ text: string; confidence: number; words: RichWord[] }> {
+  return serialize(async () => {
     const worker = await getWorker();
     // v5: pass an output spec to get structured blocks (→ per-word confidence).
     const { data } = await worker.recognize(tiff, {}, { blocks: true, text: true });
     const conf = typeof data.confidence === "number" ? Math.max(0, Math.min(1, data.confidence / 100)) : 0.85;
-    const words: OcrWord[] = [];
-    for (const b of data.blocks ?? [])
-      for (const par of b?.paragraphs ?? [])
-        for (const ln of par?.lines ?? [])
-          for (const w of ln?.words ?? [])
-            words.push({ text: typeof w?.text === "string" ? w.text : "", confidence: typeof w?.confidence === "number" ? w.confidence : 0 });
-    return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf, words };
-  };
-  const result = ocrChain.then(run, run);
-  ocrChain = result.then(() => undefined, () => undefined);
-  return result;
+    return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf, words: wordsFromData(data) };
+  });
+}
+
+/**
+ * Re-OCR a tight RECTANGLE around one line (serialized). Tesseract rescales the
+ * cropped region, so a small/noisy invoice number that read poorly on the full
+ * page is read far more confidently here — this is the "targeted OCR of the
+ * invoice region / retry" step, done with no extra image dependency.
+ */
+async function recognizeRect(tiff: Buffer, rect: { left: number; top: number; width: number; height: number }): Promise<RichWord[]> {
+  return serialize(async () => {
+    const worker = await getWorker();
+    const { data } = await worker.recognize(tiff, { rectangle: rect }, { blocks: true, text: true });
+    return wordsFromData(data);
+  });
+}
+
+// Candidate invoice-number contexts on a page (STRUCTURAL — no hardcoded values):
+//  - Bill box-46 reference:  <num> <market token> <dd.mm.yyyy>  (dotted date)
+//  - commercial-invoice sheet:  Number : <num>
+//  - any INV / Invoice label followed by a number
+const CAND_NUM_RES = [
+  /\b(\d{4,6})\s+[A-Z0-9][A-Z0-9/\-]{1,10}\s+\d{1,2}\.\d{1,2}\.\d{4}\b/gi,
+  /\bNumber\s*[:#]?\s*(\d{4,6})\b/gi,
+  /\b(?:INV|INVOICE)\b[^0-9]{0,12}(\d{4,6})\b/gi,
+];
+
+/**
+ * For each likely invoice number on the page that the full-page pass read with
+ * less-than-solid confidence, re-OCR a tight rectangle around its line and return
+ * the better-read words. These are ADDED to the page's words (never replace the
+ * text), so the validator — which scores a candidate by the best read of each of
+ * its tokens — gets the stronger reading. Bounded (few candidate lines per page)
+ * so bulk runs stay fast. Pure of invoice policy: it only re-reads numbers that a
+ * structural invoice context already points at.
+ */
+async function refinePage(img: PageImage, full: { text: string; words: RichWord[] }): Promise<OcrWord[]> {
+  const cands = new Set<string>();
+  for (const re of CAND_NUM_RES) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(full.text))) if (m[1]) cands.add(m[1]);
+  }
+  if (cands.size === 0) return [];
+
+  const candidates = full.words.filter((w) => w.bbox && /^\d{4,6}$/.test(w.text.trim()) && cands.has(w.text.trim()) && w.confidence < 88);
+  const seen = new Set<string>();
+  const picked: RichWord[] = [];
+  for (const w of candidates.sort((a, b) => a.confidence - b.confidence)) {
+    const k = w.text.trim();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    picked.push(w);
+    if (picked.length >= 3) break; // cap re-OCRs per page
+  }
+
+  const out: OcrWord[] = [];
+  for (const w of picked) {
+    const bb = w.bbox!;
+    const left = Math.max(0, bb.x0 - 12);
+    const rect = {
+      left,
+      top: Math.max(0, bb.y0 - 16),
+      width: Math.min(img.width - left, bb.x1 - bb.x0 + 560), // widen right to take in the market token + date
+      height: bb.y1 - bb.y0 + 32,
+    };
+    try {
+      const rw = await recognizeRect(img.tiff, rect);
+      for (const x of rw) if (x.text && x.confidence > 0) out.push({ text: x.text, confidence: x.confidence });
+    } catch {
+      /* a failed targeted pass is non-fatal — the full-page read still stands */
+    }
+  }
+  return out;
 }
 
 export interface OcrPage {
   page: number; // 1-based
   text: string;
   confidence: number; // 0..1 mean OCR confidence
-  words: OcrWord[]; // per-word confidence for token-level scoring
+  words: OcrWord[]; // per-word confidence for token-level scoring (full page + targeted re-reads)
 }
 
 export interface OcrPagesResult {
@@ -239,8 +329,10 @@ export async function ocrPdfPages(pdf: Buffer): Promise<OcrPagesResult> {
   const pages: OcrPage[] = [];
   try {
     for (const img of images) {
-      const { text, confidence, words } = await recognize(img.tiff);
-      pages.push({ page: img.page + 1, text, confidence, words });
+      const full = await recognize(img.tiff);
+      const extra = await refinePage(img, full);
+      const words: OcrWord[] = [...full.words.map((w) => ({ text: w.text, confidence: w.confidence })), ...extra];
+      pages.push({ page: img.page + 1, text: full.text, confidence: full.confidence, words });
     }
   } catch (e) {
     return { pages, engineAvailable: false, error: `OCR engine error: ${e instanceof Error ? e.message : String(e)}` };

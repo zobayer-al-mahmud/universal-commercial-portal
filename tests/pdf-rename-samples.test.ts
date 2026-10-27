@@ -9,7 +9,6 @@ import { env } from "@/lib/env";
 const BASE = join(__dirname, "..", "..", "4. PDF File Rename");
 const FCR = join(BASE, "FCR EXTRACT & RENAME", "64408.pdf");
 const SOFT = join(BASE, "SHIPPING BILL SOFT COPY", "65341.pdf");
-const SCAN = join(BASE, "WEEK- 41 SHIPPING BILL SCAN COPY", "61753.pdf");
 const OPTS = { minConfidence: env.PDF_RENAME_MIN_CONFIDENCE };
 
 describe.skipIf(!existsSync(FCR))("FCR 64408.pdf", () => {
@@ -30,19 +29,30 @@ describe.skipIf(!existsSync(SOFT))("Bill of Export 65341.pdf (digital)", () => {
   });
 });
 
-// Scanned 3-page copy — only runs when OCR is actually enabled + available.
-// The invoice box `61753 KS 10.08.2026` sits on the dense Bill-of-Export page
-// (OCR page mean ~64%) while its own tokens read clearly; the H&M order number
-// 734041/8305 must NOT be selected. This is the spec's mandatory regression.
-describe.skipIf(!existsSync(SCAN) || !env.OCR_ENABLED)("Bill of Export 61753.pdf (scanned, OCR)", () => {
-  it("extracts 61753 via OCR, not the H&M order number", async () => {
-    const r = await analyzePdf(readFileSync(SCAN), OPTS);
-    expect(r.usedOcr).toBe(true);
-    expect(r.validation.decision).toBe("RENAME");
-    expect(r.validation.invoiceNumber).toBe("61753");
-    expect(r.validation.numericKey).toBe("61753");
-    // The H&M order number (734041/8305) and the date must never be selected.
-    expect(r.validation.invoiceNumber).not.toContain("734041");
-    expect(r.validation.candidates.length).toBeGreaterThan(0);
-  }, 60000);
-});
+// Scanned 3-page copies — only run when OCR is actually enabled + available.
+// Each has the invoice box `<num> <market> <dd.mm.yyyy>` on the dense
+// Bill-of-Export page (low page-mean OCR) plus a `Number : <num>` header on the
+// commercial-invoice page; the H&M order number must NEVER be selected. These are
+// the spec's mandatory regressions (general extraction, no hardcoded values):
+//  - 61753: market token "KS" (letters)
+//  - 64995: digits read low on the full page — rescued by targeted re-OCR
+//  - 65037: market token OCR-garbles to "00" — box-44 must still match
+const SCANS: Array<[string, string]> = [
+  ["61753", "734041"],
+  ["64995", "707722"],
+  ["65037", "648769"],
+];
+for (const [inv, hmOrder] of SCANS) {
+  const file = join(BASE, "WEEK- 41 SHIPPING BILL SCAN COPY", `${inv}.pdf`);
+  describe.skipIf(!existsSync(file) || !env.OCR_ENABLED)(`Bill of Export ${inv}.pdf (scanned, OCR)`, () => {
+    it(`extracts ${inv} via OCR, not the H&M order number`, async () => {
+      const r = await analyzePdf(readFileSync(file), OPTS);
+      expect(r.usedOcr).toBe(true);
+      expect(r.validation.decision).toBe("RENAME");
+      expect(r.validation.invoiceNumber).toBe(inv);
+      expect(r.validation.numericKey).toBe(inv);
+      expect(r.validation.invoiceNumber).not.toContain(hmOrder); // H&M order never wins
+      expect(r.validation.candidates.length).toBeGreaterThan(0);
+    }, 90000);
+  });
+}

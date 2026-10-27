@@ -48,7 +48,9 @@ export interface InvoiceExtraction {
 
 const FCR_INV = /\bINV\s*NO\s*[:#]?\s*([A-Z0-9]{3,})\b/i;
 // Box-44 invoice token on the Bill of Export: <4-6 digits> <market/country> <dd.mm.yyyy>.
-const BILL_INV = /\b(\d{4,6})\s+([A-Z][A-Z0-9/\-]+)\s+\d{1,2}\.\d{1,2}\.\d{4}\b/;
+// Market token matched as a short alphanumeric run (it can OCR-garble to digits);
+// the dotted date keeps it specific to the invoice reference.
+const BILL_INV = /\b(\d{4,6})\s+([A-Z0-9][A-Z0-9/\-]{1,10})\s+\d{1,2}\.\d{1,2}\.\d{4}\b/;
 
 /** The leading numeric run of a token ("64408TW" -> "64408"), or "". */
 function numericKey(token: string): string {

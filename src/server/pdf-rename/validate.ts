@@ -64,7 +64,11 @@ export interface ValidationResult {
 // --- Patterns ---------------------------------------------------------------
 const FCR_INV_G = /\bINV\s*NO\s*[:#]?\s*([A-Z0-9]{3,})\b/gi;
 // Box-44 on the Bill of Export: <4-6 digits> <market/country token> <dd.mm.yyyy>.
-const BILL_INV_G = /\b(\d{4,6})\s+([A-Z][A-Z0-9/\-]+)\s+\d{1,2}\.\d{1,2}\.\d{4}\b/g;
+// The market token may OCR as letters ("KS"/"PL") or garble to digits ("00" for a
+// code the scan mangled), so it is matched as a short alphanumeric run rather than
+// letter-led — the mandatory dotted date keeps the pattern specific to the invoice
+// reference (EXP-no and other refs on the form use slash dates).
+const BILL_INV_G = /\b(\d{4,6})\s+([A-Z0-9][A-Z0-9/\-]{1,10})\s+\d{1,2}\.\d{1,2}\.\d{4}\b/g;
 // Generic invoice label elsewhere (lower trust); value may carry a letter suffix.
 const GENERIC_INV_G = /\b(?:INVOICE|INV)\s*(?:NO|NUMBER|#)\s*[:#]?\s*([0-9][A-Z0-9]{2,})\b/gi;
 // Commercial-invoice sheet header: the exporter's invoice page labels the invoice
@@ -109,17 +113,19 @@ function ocrTokenConfidence(words: { text: string; confidence: number }[] | unde
   const strip = (s: string) => s.toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, "");
   const want = matched.split(/\s+/).map(strip).filter((t) => t.length >= 2);
   if (want.length === 0) return null;
-  const confs: number[] = [];
-  const used = new Set<number>();
+  // Best (max-confidence) read of each wanted token — a token may be read twice
+  // (full page + a targeted re-OCR of its line); take the stronger reading.
+  const best: Array<number | undefined> = new Array(want.length).fill(undefined);
   for (const w of words) {
     const wt = strip(w.text || "");
     if (!wt) continue;
-    const i = want.findIndex((t, k) => !used.has(k) && t === wt);
-    if (i >= 0) {
-      used.add(i);
-      confs.push(Math.max(0, Math.min(1, (w.confidence || 0) / 100)));
+    for (let k = 0; k < want.length; k++) {
+      if (want[k] !== wt) continue;
+      const c = Math.max(0, Math.min(1, (w.confidence || 0) / 100));
+      if (best[k] === undefined || c > (best[k] as number)) best[k] = c;
     }
   }
+  const confs = best.filter((c): c is number => c !== undefined);
   if (confs.length === 0) return null;
   return confs.reduce((a, b) => a + b, 0) / confs.length;
 }
