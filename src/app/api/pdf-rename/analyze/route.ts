@@ -32,11 +32,15 @@ export async function POST(req: Request) {
   try {
     const a = await analyzePdf(buffer, { minConfidence: env.PDF_RENAME_MIN_CONFIDENCE });
     const v = a.validation;
+    // Filename key = the leading NUMBER only (e.g. "64408"), dropping any country
+    // suffix like "TW"/"GB" so the renamed file matches the source naming (just
+    // the invoice number). Falls back to the full token if no numeric run.
+    const nameKey = v.numericKey || v.invoiceNumber;
     return NextResponse.json({
       originalName,
       docType: v.docType,
-      invoiceNumber: v.invoiceNumber ?? null,
-      proposedName: v.decision === "RENAME" && v.invoiceNumber ? `${v.invoiceNumber}.pdf` : null,
+      invoiceNumber: v.decision === "RENAME" ? nameKey ?? null : v.invoiceNumber ?? null,
+      proposedName: v.decision === "RENAME" && nameKey ? `${nameKey}.pdf` : null,
       confidence: v.confidence,
       decision: v.decision,
       reviewReason: v.reasonCode ?? "",
