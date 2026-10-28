@@ -7,6 +7,7 @@ import { BookingExcelManager } from "@/components/BookingExcelManager";
 import { SalesContractPickBatch, type ExistingContractOption } from "@/components/SalesContractPickBatch";
 import { PdfCombinerManager, type ManagerCol, type ManagerRow, type ManagerMaster } from "@/components/PdfCombinerManager";
 import { ContainerSearchManager, type RecentSearch } from "@/components/ContainerSearchManager";
+import { ExpAutomationManager, type ExpRecentJob } from "@/components/ExpAutomationManager";
 import { LocalFolderRename } from "@/components/LocalFolderRename";
 import { listRootFolders } from "@/server/pdf-combiner/folders";
 import { ensureActiveMaster, readActiveMasterBytes, extractMatrixGrid } from "@/server/pdf-combiner/master-store";
@@ -223,6 +224,36 @@ export default async function ModulePage({ params }: { params: { key: string } }
           recent={recent}
           liveEnabled={env.CONTAINER_LIVE_ENABLED}
           authConfigured={Boolean(env.CTG_PORT_USERNAME && env.CTG_PORT_PASSWORD)}
+        />
+      </div>
+    );
+  }
+
+  if (module.key === "exp-automation") {
+    const jobs = await prisma.expJob.findMany({ orderBy: { createdAt: "desc" }, take: 30 });
+    const recentJobs: ExpRecentJob[] = jobs.map((j) => ({
+      id: j.id,
+      kind: j.kind,
+      sourceName: j.sourceName,
+      total: j.total,
+      matched: j.matched,
+      changed: j.changed,
+      downloaded: j.downloaded,
+      failed: j.failed,
+      status: j.status,
+      createdAt: j.createdAt.toISOString().slice(0, 16).replace("T", " "),
+    }));
+    return (
+      <div>
+        <PageHeader
+          title="EXP Automation"
+          subtitle="Bangladesh Bank EXP portal — fill & verify Issued EXP Corrections and Duplicate EXP Reporting (never submits), and bulk-download EXP PDFs from Excel."
+          actions={<StatusBadge status={module.status} />}
+        />
+        <ExpAutomationManager
+          liveEnabled={env.EXP_LIVE_ENABLED}
+          credsConfigured={Boolean(env.EXP_USERNAME && env.EXP_PASSWORD)}
+          recentJobs={recentJobs}
         />
       </div>
     );

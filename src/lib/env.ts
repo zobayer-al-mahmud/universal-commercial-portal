@@ -158,6 +158,29 @@ const schema = z.object({
   CONTAINER_MAX_BATCH: z.coerce.number().int().positive().default(100),
   // Max size (MB) for an uploaded .xlsx of container numbers.
   CONTAINER_MAX_FILE_MB: z.coerce.number().positive().default(5),
+
+  // --- EXP Automation (Bangladesh Bank EXP portal) --------------------------
+  // The authorised login entry point (Oracle APEX). The bot signs in here and
+  // navigates the Transaction menu to the Correction / Duplicate / Search pages
+  // — deep f?p links carry a session id and are not reused. Credentials come
+  // ONLY from env (never source/logs); read solely by the live driver, which
+  // stays gated behind EXP_LIVE_ENABLED. The correction + duplicate workflows
+  // FILL and VERIFY the form only — a final Update/Submit/Acknowledge is never
+  // performed by the bot (hard-coded; no flag enables it).
+  EXP_PORTAL_URL: z.string().default("https://exp.bb.org.bd/ords/f?p=112:LOGIN:0:::::"),
+  EXP_USERNAME: z.string().optional().or(z.literal("")),
+  EXP_PASSWORD: z.string().optional().or(z.literal("")),
+  EXP_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Visible browser for the automation (own CDP port + profile so it never
+  // clashes with the Damco/Container windows).
+  EXP_BROWSER_PATH: z.string().optional().or(z.literal("")),
+  EXP_CDP_PORT: z.coerce.number().int().min(1024).max(65535).default(9335),
+  EXP_SESSION_DIR: z.string().default("./var/exp-session"),
+  EXP_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
+  // Max data rows accepted from one uploaded workbook.
+  EXP_MAX_ROWS: z.coerce.number().int().positive().default(2000),
+  // Max size (MB) for an uploaded EXP .xlsx.
+  EXP_MAX_FILE_MB: z.coerce.number().positive().default(25),
 });
 
 const parsed = schema.safeParse(process.env);

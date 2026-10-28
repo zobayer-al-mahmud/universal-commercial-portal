@@ -140,6 +140,24 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
       "Should outputs also be written back to a server folder (currently download/ZIP only)?",
     ],
   },
+  "exp-automation": {
+    key: "exp-automation",
+    sources: "Live Bangladesh Bank EXP portal (https://exp.bb.org.bd/ords/f?p=112). Three operator Excel templates: EXP Correction Form FINAL.xlsx (sheet 'BE Received (Y N)'), EXP Duplication Format V 0.1.2 DT 2026.xlsx (sheet 'DATA FOR DUP.'), EXP Download Form Format V 0.1.2 usd SL-23.xlsx (sheet 'EXP DOWNLOAD TEST BY AHSANF'). Portal forms verified against operator screenshots 2026-10-28; APEX selectors require live confirmation.",
+    status: "partial",
+    scope: [
+      "Three Excel-driven workflows under one module: Issued EXP Correction, Duplicate EXP Reporting, and Download EXP — each with upload, parsed editable preview (individual + select-all checkboxes), single-row and bulk processing, one unified progress indicator, live per-row logs, persisted job + per-row history, retry of failed rows, and downloadable reports.",
+      "Issued EXP Correction: searches each record by ADSCODE + EXP Serial + EXP Year, compares the portal form against the Excel row, leaves matching records untouched, and fills ONLY the mismatched fields from the Excel values — preserving leading zeros, dates and numeric precision.",
+      "Duplicate EXP Reporting: searches by ADSCODE + EXP Serial + EXP Year, compares and fills only mismatched fields (Custom Office + Transport Doc Type selected by their Excel display text).",
+      "Download EXP: searches by AD Code + EXP Serial + EXP Year, verifies the returned record matches the requested EXP No, downloads the EXP PDF named by the Excel Save_As value (no overwrite), and offers per-file + ZIP download.",
+      "SAFETY (hard-coded): the correction and duplicate workflows NEVER click Update, Submit, Acknowledge or any final-save control — the bot fills and verifies, then leaves the form ready for the operator's manual review and submission. No config flag can enable an auto-submit.",
+      "Fail-closed like the Damco/Container modules: gated on EXP_LIVE_ENABLED + server-side credentials; a visible browser drives the portal one record at a time; CAPTCHA/OTP pause for manual completion and are never bypassed; nothing is fabricated when live automation is off.",
+    ],
+    openQuestions: [
+      "Live confirmation of the Oracle APEX field selectors for all three forms (the driver uses label-anchored locators that must be pinned against the real DOM once credentials are available).",
+      "Exact portal field-name ↔ Excel-column mapping edge cases (e.g. Incoterm value set, Sector values, date input format the APEX items expect).",
+      "Retention policy for downloaded EXP PDFs.",
+    ],
+  },
   container: {
     key: "container",
     sources: "Live CTG Port Port Community System (https://www.cpatos.gov.bd/pcs/). Selectors + behaviour verified live 2026-10-24 against real records (e.g. TLLU4872965).",

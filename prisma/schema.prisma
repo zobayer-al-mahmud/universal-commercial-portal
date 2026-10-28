@@ -1132,3 +1132,88 @@ model ContainerSearchEvent {
 
   @@index([searchId, createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// EXP Automation (Bangladesh Bank EXP portal) — module `exp-automation`.
+// One job per uploaded Excel of one KIND (correction | duplicate | download).
+// Each job has one row per Excel data row. The correction/duplicate workflows
+// only FILL + VERIFY the portal form (they NEVER submit); download captures the
+// EXP PDF. Fail-closed when EXP_LIVE_ENABLED is off — nothing is fabricated.
+// ---------------------------------------------------------------------------
+
+model ExpJob {
+  id         String   @id @default(cuid())
+  kind       String // correction | duplicate | download
+  sourceName String   @default("") // uploaded workbook filename
+  sourceSha256 String  @default("")
+  sheetName  String   @default("")
+  total      Int      @default(0) // rows created
+  // Running counters (updated as rows finish):
+  processed  Int      @default(0)
+  matched    Int      @default(0) // correction/duplicate: portal already matched Excel (unchanged)
+  changed    Int      @default(0) // correction/duplicate: mismatched fields filled (not submitted)
+  downloaded Int      @default(0) // download: PDFs captured
+  skipped    Int      @default(0)
+  failed     Int      @default(0)
+  status     String   @default("created") // created | running | completed | failed
+  actor      String   @default("system")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  rows       ExpJobRow[]
+
+  @@index([kind, createdAt])
+  @@index([createdAt])
+}
+
+model ExpJobRow {
+  id        String @id @default(cuid())
+  jobId     String
+  job       ExpJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  rowNo     Int // 1-based Excel data row number (as shown to the user)
+  kind      String // mirrors the job kind for convenience
+
+  // Shared search identifiers (preserved exactly, leading zeros intact):
+  adscode   String @default("")
+  expSerial String @default("")
+  expYear   String @default("")
+  expNo     String @default("") // 20/18-digit EXP No (duplicate + download)
+  invoiceNo String @default("")
+  saveAs    String @default("") // download: desired PDF filename
+
+  // Full parsed Excel row (header -> value), so the driver has every field:
+  dataJson  String @default("{}")
+
+  status    String @default("pending") // pending | queued | running | matched | filled | downloaded | skipped | not_found | mismatch | failed | needs_auth
+  step      String @default("")
+  // correction/duplicate verification detail:
+  portalValuesJson   String @default("{}") // values read back from the portal form
+  mismatchedFields   String @default("[]") // field names that differed and were filled
+  // download result:
+  pdfPath   String?
+  pdfSha256 String?
+  pdfPages  Int    @default(0)
+
+  error       String   @default("")
+  retryCount  Int      @default(0)
+  actor       String   @default("system")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  processedAt DateTime?
+  events      ExpJobRowEvent[]
+
+  @@index([jobId, rowNo])
+  @@index([status])
+}
+
+model ExpJobRowEvent {
+  id        String    @id @default(cuid())
+  rowId     String
+  row       ExpJobRow @relation(fields: [rowId], references: [id], onDelete: Cascade)
+  step      String
+  status    String // info | ok | failed
+  message   String    @default("")
+  actor     String    @default("system")
+  createdAt DateTime  @default(now())
+
+  @@index([rowId, createdAt])
+}

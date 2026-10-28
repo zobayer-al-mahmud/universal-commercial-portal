@@ -22,6 +22,7 @@ const MODULES = [
   { key: "pdf-combiner", name: "PDF Combiner", sortOrder: 6, status: "active", description: "Merge document sets into one PDF per row using a master Excel and the server's source folders." },
   { key: "booking-correction", name: "Booking Correction", sortOrder: 7, status: "active", description: "Match packing-list weights, cartons and quantities against bookings and return verified PDFs." },
   { key: "container", name: "Container", sortOrder: 8, status: "active", description: "Search a container on the CTG Port system, verify the record, and capture the result as a PDF." },
+  { key: "exp-automation", name: "EXP Automation", sortOrder: 9, status: "active", description: "Bangladesh Bank EXP portal: fill & verify Issued EXP Corrections and Duplicate EXP Reporting (never submits), and bulk-download EXP PDFs from Excel." },
 ];
 
 const ADAPTERS = [
