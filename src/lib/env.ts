@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * Centralised, validated environment access (SRS §5.2, SC-NFR-08).
+ * Centralised, validated environment access (SRS Â§5.2, SC-NFR-08).
  * No business value or secret is hardcoded elsewhere in the codebase.
  */
 const schema = z.object({
@@ -33,12 +33,12 @@ const schema = z.object({
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().or(z.literal("")),
 
   // --- Damco Shipper Portal (Booking Correction) --------------------------
-  // Credentials come ONLY from the environment / a secrets manager — never from
+  // Credentials come ONLY from the environment / a secrets manager – never from
   // source. They are read solely by the live adapter path, which stays gated
   // behind DAMCO_LIVE_ENABLED + INTEGRATION_MODE=live. In mock/dryrun they are
   // unused. A live run never performs a status-changing portal action on its own.
   // The single authorised bot entry point (the portal dashboard). The bot logs
-  // in here and navigates the portal UI to search/open bookings — no other
+  // in here and navigates the portal UI to search/open bookings – no other
   // portal URL or example booking-detail deep link is retained or constructed.
   DAMCO_PORTAL_URL: z.string().default("https://booking.damco.com/ShipperPortalWeb/ViewDashboardAction.action"),
   DAMCO_USERNAME: z.string().optional().or(z.literal("")),
@@ -59,10 +59,10 @@ const schema = z.object({
   BOOKING_MAX_FILES: z.coerce.number().int().positive().default(25),
   BOOKING_MAX_FILE_MB: z.coerce.number().positive().default(20),
   BOOKING_CONCURRENCY: z.coerce.number().int().positive().max(16).default(4),
-  // Gross-weight tolerance (kg) and carton/qty precision policy (§9 matching).
+  // Gross-weight tolerance (kg) and carton/qty precision policy (Â§9 matching).
   BOOKING_GROSS_WEIGHT_TOLERANCE_KG: z.coerce.number().nonnegative().default(0.5),
 
-  // --- Sales Contract bulk-PDF batch limits (module 1, Oct-2026 addendum §3) --
+  // --- Sales Contract bulk-PDF batch limits (module 1, Oct-2026 addendum Â§3) --
   SALES_MAX_FILES: z.coerce.number().int().positive().default(50),
   SALES_MAX_FILE_MB: z.coerce.number().positive().default(20),
   SALES_CONCURRENCY: z.coerce.number().int().positive().max(16).default(4),
@@ -77,11 +77,11 @@ const schema = z.object({
   // The user's live Sales Contract workbook. The writer NEVER modifies this
   // file; it is only read and copyFile'd to a new output path. Leave blank to
   // force the user to upload the template themselves.
-  HM_SALES_CONTRACT_TEMPLATE_PATH: z
+  SALES_CONTRACT_TEMPLATE_PATH: z
     .string()
     .optional()
     .or(z.literal("")),
-  HM_SALES_CONTRACT_MAX_FILE_MB: z.coerce.number().positive().default(20),
+  SALES_CONTRACT_MAX_FILE_MB: z.coerce.number().positive().default(20),
 
   // --- Customs Invoice Generation (module 3) --------------------------------
   // Folder holding the country-wise `<invoiceNo> <countryCode>.xlsx` templates.
@@ -150,7 +150,7 @@ const parsed = schema.safeParse(process.env);
 
 if (!parsed.success) {
   // Fail fast and loud: a misconfigured environment must not boot silently.
-  console.error("❌ Invalid environment configuration:", parsed.error.flatten().fieldErrors);
+  console.error("âŒ Invalid environment configuration:", parsed.error.flatten().fieldErrors);
   throw new Error("Invalid environment configuration");
 }
 

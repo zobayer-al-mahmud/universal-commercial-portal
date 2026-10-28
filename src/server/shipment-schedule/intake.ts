@@ -55,7 +55,7 @@ export async function updateCutoff(id: string, label: string, date: string, acto
 export async function deleteCutoff(id: string, actor: string): Promise<void> {
   const prev = await prisma.shipmentScheduleCutoff.findUnique({ where: { id } });
   if (!prev) return;
-  // Row-level cascade will clear the rows that were assigned to this cutoff —
+  // Row-level cascade will clear the rows that were assigned to this cutoff –
   // this is intentional: deleting a cutoff throws away its PDFs' extracted rows.
   await prisma.shipmentScheduleCutoff.delete({ where: { id } });
   await audit({ entityType: "shipment-schedule", entityId: prev.scheduleId, action: "cutoff.deleted", actor, data: { id, label: prev.label } });
@@ -88,7 +88,7 @@ export interface ProcessResult {
  *   recognised and the earlier row is kept (idempotent).
  * - Storage: PDFs are copied verbatim into
  *   STORAGE_ROOT/shipment-schedule/<scheduleId>/<sha256>.pdf
- * - Sales-contract hydration is best-effort — unmatched PDFs still create a
+ * - Sales-contract hydration is best-effort – unmatched PDFs still create a
  *   row (so the user sees it) with matched=false + matchReason explaining why.
  */
 export async function uploadPdfsToCutoff(opts: {
@@ -128,8 +128,17 @@ export async function uploadPdfsToCutoff(opts: {
       pdfFields.warnings.push("pdf_parse_failed");
     }
 
+    // Decide the order-no prefix to match on: the filename-derived digits win
+    // when present (it's what the user named the file for); otherwise fall back
+    // to the PO: value extracted from the PDF text (e.g. "698518/5-2027" →
+    // "698518"). This lets a bare "698518.pdf" filename still hydrate properly.
+    const pdfPrefix = pdfFields.pdfOrderNo
+      ? (pdfFields.pdfOrderNo.match(/^(\d{4,})/)?.[1] ?? "")
+      : "";
+    const orderNoPrefix = filenameParts.orderNoPrefix || pdfPrefix;
+
     // Look up sales-contract candidates by the orderNo prefix. We fetch a
-    // small window: all READY POs whose orderNo starts with the digits.
+    // small window: all POs whose orderNo starts with the digits.
     let matchReason = "no_sales_contract_po";
     let matched = false;
     let hydrated: {
@@ -143,10 +152,12 @@ export async function uploadPdfsToCutoff(opts: {
       composition: string;
       cat: string;
       hts: string;
+      marketCode: string;
+      marketSubCode: string;
     } | undefined;
-    if (filenameParts.ok) {
-      const pos = await prisma.hmSalesContractPo.findMany({
-        where: { orderNo: { startsWith: filenameParts.orderNoPrefix + "-" } },
+    if (orderNoPrefix) {
+      const pos = await prisma.salesContractPo.findMany({
+        where: { orderNo: { startsWith: orderNoPrefix + "-" } },
         include: { contract: true },
         take: 20,
       });
@@ -162,13 +173,22 @@ export async function uploadPdfsToCutoff(opts: {
         state: p.state,
         rowsJson: p.rowsJson,
       }));
-      const m = matchByOrderNoPrefix(filenameParts.orderNoPrefix, candidates);
+      const m = matchByOrderNoPrefix(orderNoPrefix, candidates);
       matched = m.matched;
       matchReason = m.reason;
       hydrated = m.hydrated;
     } else {
       matchReason = `bad_filename:${filenameParts.reason ?? "unknown"}`;
     }
+
+    // Resolve the market+sub code. Priority: filename → PDF categories cell
+    // (e.g. "PAW317") → Sales Contract hydration (anchor row's market).
+    const marketSubFromPdf = pdfFields.categories || "";
+    const marketSubCode = filenameParts.marketSubCode || marketSubFromPdf || hydrated?.marketSubCode || "";
+    const marketCode =
+      filenameParts.marketCode ||
+      (marketSubFromPdf ? marketSubFromPdf.slice(0, 2) : "") ||
+      hydrated?.marketCode || "";
 
     // Idempotency: if this (schedule, sha) is already stored, update the
     // existing row's cutoff to the newly chosen one (user may have changed
@@ -189,8 +209,11 @@ export async function uploadPdfsToCutoff(opts: {
       cat: hydrated?.cat ?? "",
       hts: hydrated?.hts ?? "",
       pdfOrderNo: pdfFields.pdfOrderNo,
-      marketCode: filenameParts.marketCode,
-      marketSubCode: filenameParts.marketSubCode,
+      // Market+Sub = country code + sub (e.g. "AUW118" / "PAW317"); Market =
+      // country code alone (e.g. "AU" / "PA"). Resolution priority defined
+      // above: filename → PDF Categories cell → Sales Contract hydration.
+      marketCode,
+      marketSubCode,
       skuItem: pdfFields.skuItem,
       bookingRef: pdfFields.bookingRef,
       bcn: pdfFields.bcn,
@@ -203,6 +226,7 @@ export async function uploadPdfsToCutoff(opts: {
       grossWeightKg: pdfFields.grossWeightKg,
       cartons: pdfFields.cartons,
       measurementCbm: pdfFields.measurementCbm,
+      expectedDelivery: pdfFields.expectedDelivery,
       pdfFileName: f.name,
       pdfSha256: sha,
       pdfPath: storagePath,
@@ -252,6 +276,140 @@ export async function moveRowToCutoff(rowId: string, cutoffId: string, actor: st
   if (!dst || dst.scheduleId !== row.scheduleId) throw new Error("Target cut-off does not belong to this schedule.");
   await prisma.shipmentScheduleRow.update({ where: { id: rowId }, data: { cutoffId } });
   await audit({ entityType: "shipment-schedule", entityId: row.scheduleId, action: "row.moved", actor, data: { rowId, from: row.cutoffId, to: cutoffId } });
+}
+
+/**
+ * Lookup a row that already owns a given invoiceNo. Used to enforce the global
+ * uniqueness rule: an invoice number may appear on at most one
+ * ShipmentScheduleRow across every schedule + cut-off (user spec 2026-10-28).
+ *
+ * Returns null when the number is free (including when it's blank — "" is
+ * never considered a duplicate because many rows start without a number).
+ */
+export async function findRowOwningInvoiceNo(
+  invoiceNo: string,
+  excludeRowId?: string,
+): Promise<
+  | {
+      rowId: string;
+      scheduleId: string;
+      weekTitle: string;
+      cutoffLabel: string;
+      orderNo: string;
+    }
+  | null
+> {
+  const trimmed = (invoiceNo ?? "").trim();
+  if (!trimmed) return null;
+  const owner = await prisma.shipmentScheduleRow.findFirst({
+    where: {
+      invoiceNo: trimmed,
+      ...(excludeRowId ? { NOT: { id: excludeRowId } } : {}),
+    },
+    include: {
+      schedule: { select: { weekTitle: true } },
+      cutoff: { select: { label: true } },
+    },
+  });
+  if (!owner) return null;
+  return {
+    rowId: owner.id,
+    scheduleId: owner.scheduleId,
+    weekTitle: owner.schedule.weekTitle,
+    cutoffLabel: owner.cutoff.label,
+    orderNo: owner.orderNo,
+  };
+}
+
+/**
+ * Allocate sequential invoice numbers across every row of this week's
+ * schedule. Numbering runs cut-off by cut-off (sortOrder ascending), then row
+ * by row (createdAt ascending). Example: start=2000 with a week whose 1st
+ * cut-off has 6 rows and 2nd cut-off has 4 rows produces 2000..2005 on the
+ * 1st cut-off, 2006..2009 on the 2nd.
+ *
+ * Every row is OVERWRITTEN (no "skip when already set"), because the user's
+ * flow is "I'm numbering this week from X" — if they want to protect one row
+ * they can edit it afterwards. Change history is recorded in
+ * ShipmentScheduleRowEdit so the previous value stays auditable.
+ *
+ * Globally-unique precheck: before writing anything, the full target range
+ * [start .. start+N-1] is checked against every OTHER schedule. If any number
+ * in the range already lives on a row outside this schedule, the whole
+ * allocation aborts (no partial writes). This upholds the invariant that one
+ * invoice number appears on at most one row across every week + cut-off.
+ */
+export async function allocateInvoiceNumbers(opts: {
+  scheduleId: string;
+  startNumber: number;
+  actor: string;
+}): Promise<{
+  updated: number;
+  firstAssigned: string;
+  lastAssigned: string;
+}> {
+  const { scheduleId, actor } = opts;
+  const start = Math.floor(opts.startNumber);
+  if (!Number.isFinite(start) || start < 0) {
+    throw new Error("Starting invoice number must be a non-negative integer.");
+  }
+  const cutoffs = await prisma.shipmentScheduleCutoff.findMany({
+    where: { scheduleId },
+    orderBy: { sortOrder: "asc" },
+    include: { rows: { orderBy: { createdAt: "asc" } } },
+  });
+  // Flatten to [row, row, …] in the exact order the user asked for.
+  const flat = cutoffs.flatMap((c) => c.rows);
+  if (flat.length === 0) {
+    return { updated: 0, firstAssigned: "", lastAssigned: "" };
+  }
+
+  // Pre-check: no number in the target range may already live on a row of
+  // ANOTHER schedule. Doing this before any write keeps the allocation atomic
+  // from the user's point of view (either every row updates, or none do).
+  const range: string[] = [];
+  for (let i = 0; i < flat.length; i++) range.push(String(start + i));
+  const clashes = await prisma.shipmentScheduleRow.findMany({
+    where: { invoiceNo: { in: range }, scheduleId: { not: scheduleId } },
+    select: { invoiceNo: true, scheduleId: true, schedule: { select: { weekTitle: true } } },
+    take: 10,
+  });
+  if (clashes.length > 0) {
+    const sample = clashes
+      .map((c) => `${c.invoiceNo} (already in “${c.schedule.weekTitle}”)`)
+      .join(", ");
+    throw new Error(
+      `Invoice numbers must be unique across every week. These numbers are already in use: ${sample}.`,
+    );
+  }
+
+  let n = start;
+  for (const row of flat) {
+    const next = String(n);
+    if (row.invoiceNo !== next) {
+      await prisma.shipmentScheduleRow.update({ where: { id: row.id }, data: { invoiceNo: next } });
+      await prisma.shipmentScheduleRowEdit.create({
+        data: {
+          rowId: row.id,
+          field: "invoiceNo",
+          oldValue: row.invoiceNo,
+          newValue: next,
+          reason: `Auto-allocated from ${start}`,
+          editor: actor,
+        },
+      });
+    }
+    n++;
+  }
+  const last = String(n - 1);
+  await audit({
+    entityType: "shipment-schedule",
+    entityId: scheduleId,
+    action: "invoice.allocated",
+    actor,
+    data: { start: String(start), end: last, rows: flat.length },
+  });
+  return { updated: flat.length, firstAssigned: String(start), lastAssigned: last };
 }
 
 /** Delete a row (and its edit history). The PDF file stays on disk for audit. */

@@ -4,7 +4,6 @@ import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge } from "@/components/ui";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { confirmContractAction } from "@/app/actions/handoffs";
 import { RenameApply } from "@/components/RenameApply";
 
 export const dynamic = "force-dynamic";
@@ -15,8 +14,6 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
     include: {
       documents: true,
       stageEvents: { orderBy: { createdAt: "asc" } },
-      poRows: { orderBy: { sl: "asc" } },
-      contractRows: true,
       reviewTickets: true,
       renameItems: { orderBy: { createdAt: "asc" } },
       bookingCorrections: true,
@@ -25,36 +22,16 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
   if (!job) notFound();
 
   const user = await getSessionUser();
-  const openReviewCount = job.reviewTickets.filter((t) => t.status === "open").length;
-  const canConfirm =
-    job.module === "sales-contract" &&
-    job.status === "draft" &&
-    openReviewCount === 0 &&
-    job.contractRows.length > 0 &&
-    userHasPermission(user, PERMISSIONS.CONTRACT_APPROVE);
+  // Sales Contract confirmation moved to the dedicated /sales-contract flow
+  // on 2026-10-26; this generic job view no longer carries that action.
 
   return (
     <div>
       <PageHeader
         title={`Job ${job.id.slice(0, 8)}`}
         subtitle={`${job.module} · ${job.type} · key ${job.businessKey ?? "—"}`}
-        actions={
-          <div className="flex items-center gap-2">
-            <StatusBadge status={job.status} />
-            {canConfirm ? (
-              <form action={confirmContractAction}>
-                <input type="hidden" name="jobId" value={job.id} />
-                <button className="btn-primary text-xs">Confirm for scheduling</button>
-              </form>
-            ) : null}
-          </div>
-        }
+        actions={<StatusBadge status={job.status} />}
       />
-      {job.module === "sales-contract" && job.status === "confirmed" ? (
-        <div className="mb-4 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-700">
-          Contract confirmed.
-        </div>
-      ) : null}
 
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="card p-5">
@@ -100,37 +77,6 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
           ) : null}
         </section>
       </div>
-
-      {job.poRows.length > 0 ? (
-        <section className="card mt-6 overflow-x-auto">
-          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">PO EXTRACTION rows</div>
-          <table className="w-full">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="th">SL</th><th className="th">Order No</th><th className="th">Style</th>
-                <th className="th">PM-A</th><th className="th">PM-B</th><th className="th">Qty</th>
-                <th className="th">Price</th><th className="th">TOD</th><th className="th">OK</th><th className="th">Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {job.poRows.map((r) => (
-                <tr key={r.id} className="border-t border-slate-50">
-                  <td className="td">{r.sl}</td>
-                  <td className="td font-mono text-xs">{r.orderNo}</td>
-                  <td className="td">{r.productName ?? "—"}</td>
-                  <td className="td">{r.planningMarketA ?? "—"}</td>
-                  <td className="td">{r.planningMarketB ?? "—"}</td>
-                  <td className="td">{r.quantity ?? "—"}</td>
-                  <td className="td">{r.invoiceAveragePrice ?? "—"}</td>
-                  <td className="td text-xs">{r.timeOfDelivery ?? "—"}</td>
-                  <td className="td">{r.success ? "✓" : "✗"}</td>
-                  <td className="td text-xs text-rose-600">{r.message}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
 
       {job.renameItems.length > 0 ? (
         <section className="card mt-6 overflow-x-auto">
@@ -209,35 +155,6 @@ export default async function JobDetail({ params }: { params: { id: string } }) 
         );
       })}
 
-      {job.contractRows.length > 0 ? (
-        <section className="card mt-6 overflow-x-auto">
-          <div className="border-b border-slate-100 px-4 py-3 text-sm font-semibold text-slate-700">Sales Contract rows (draft)</div>
-          <table className="w-full">
-            <thead className="bg-slate-50">
-              <tr>
-                <th className="th">Order No</th><th className="th">Style</th><th className="th">Description</th>
-                <th className="th">Order Qty</th><th className="th">Unit Price</th><th className="th">Value</th>
-                <th className="th">TOD</th><th className="th">Commercial Ref</th><th className="th">Rev</th>
-              </tr>
-            </thead>
-            <tbody>
-              {job.contractRows.map((r) => (
-                <tr key={r.id} className="border-t border-slate-50">
-                  <td className="td font-mono text-xs">{r.orderNo}</td>
-                  <td className="td">{r.styleNo}</td>
-                  <td className="td text-xs">{r.description}</td>
-                  <td className="td">{r.orderQty}</td>
-                  <td className="td">{r.unitPrice}</td>
-                  <td className="td">{r.value}</td>
-                  <td className="td text-xs">{r.timeOfDelivery}</td>
-                  <td className="td font-mono text-xs">{r.commercialContRef}</td>
-                  <td className="td">{r.revision}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      ) : null}
     </div>
   );
 }

@@ -18,18 +18,31 @@ export function parseBookingFilename(filename: string): FilenameParts {
   const base = filename.replace(/\.pdf$/i, "").trim();
   if (!base) return { orderNoPrefix: "", marketCode: "", marketSubCode: "", ok: false, reason: "empty filename" };
 
-  // Match: leading digits, then whitespace or separator, then the rest.
-  const m = base.match(/^(\d{4,})[\s_-]+(.+)$/);
-  if (!m) return { orderNoPrefix: "", marketCode: "", marketSubCode: "", ok: false, reason: "no <digits> <code> pattern" };
+  // Preferred shape: "<digits><sep><market+sub>" (e.g. "569959 AUW118").
+  const full = base.match(/^(\d{4,})[\s_-]+(.+)$/);
+  if (full) {
+    const orderNoPrefix = full[1];
+    const marketSubCode = full[2].trim();
+    const mm = marketSubCode.match(/^([A-Z]{2})/);
+    const marketCode = mm ? mm[1] : "";
+    if (marketCode) return { orderNoPrefix, marketCode, marketSubCode, ok: true };
+    // Fall through — we still have the order no, just no usable market in the
+    // filename. The PDF text / Sales Contract will fill the market.
+    return { orderNoPrefix, marketCode: "", marketSubCode, ok: true, reason: "market_from_pdf_or_contract" };
+  }
 
-  const orderNoPrefix = m[1];
-  const marketSubCode = m[2].trim();
-  if (!marketSubCode) return { orderNoPrefix, marketCode: "", marketSubCode: "", ok: false, reason: "missing market sub-code" };
+  // Looser shape: digits only (e.g. "698518.pdf"). The order no is enough to
+  // match a Sales Contract PO; market comes from the PDF text or hydration.
+  const digitsOnly = base.match(/^(\d{4,})$/);
+  if (digitsOnly) {
+    return { orderNoPrefix: digitsOnly[1], marketCode: "", marketSubCode: "", ok: true, reason: "market_from_pdf_or_contract" };
+  }
 
-  // Leading two uppercase ASCII letters = market code.
-  const mm = marketSubCode.match(/^([A-Z]{2})/);
-  const marketCode = mm ? mm[1] : "";
-  if (!marketCode) return { orderNoPrefix, marketCode: "", marketSubCode, ok: false, reason: "sub-code does not start with 2 letters" };
+  // Last resort: pick the first contiguous digit run anywhere in the name.
+  const anyDigits = base.match(/(\d{5,})/);
+  if (anyDigits) {
+    return { orderNoPrefix: anyDigits[1], marketCode: "", marketSubCode: "", ok: true, reason: "digits_only_in_name" };
+  }
 
-  return { orderNoPrefix, marketCode, marketSubCode, ok: true };
+  return { orderNoPrefix: "", marketCode: "", marketSubCode: "", ok: false, reason: "no digits found in filename" };
 }

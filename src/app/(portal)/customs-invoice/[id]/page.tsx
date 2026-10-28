@@ -5,12 +5,15 @@ import { PageHeader, StatusBadge } from "@/components/ui";
 import { listTemplates, resolveTemplate } from "@/server/customs-invoice/templates";
 import { CustomsInvoiceEditor } from "@/components/CustomsInvoiceEditor";
 import { CustomsInvoicePdfUpload } from "@/components/CustomsInvoicePdfUpload";
+import { CustomsInvoiceRefill } from "@/components/CustomsInvoiceRefill";
+import { buildPrefill, preferredCountryCode } from "@/server/customs-invoice/pull-data";
+import { updateInvoiceFields } from "@/server/customs-invoice/intake";
 import type { InvoiceFields } from "@/server/customs-invoice/types";
 
 export const dynamic = "force-dynamic";
 
 export default async function CustomsInvoiceDetail({ params }: { params: { id: string } }) {
-  const inv = await prisma.customsInvoice.findUnique({
+  let inv = await prisma.customsInvoice.findUnique({
     where: { id: params.id },
     include: {
       pdfs: { orderBy: { uploadedAt: "desc" } },
@@ -19,7 +22,72 @@ export default async function CustomsInvoiceDetail({ params }: { params: { id: s
   });
   if (!inv) notFound();
 
+  // Auto-sync from the ONE shipment row this invoice tracks (user flow:
+  // "first invoice no + order no → shipment schedule row → country code →
+  // template"). Mechanical fields (marketCode / marketSubCode / countryCode)
+  // ALWAYS re-sync, since they are derived deterministically from the row and
+  // the user never types them. Headline fields (invoiceNumber / invoiceDate)
+  // are backfilled only when the invoice has them blank — user-typed values
+  // stay sticky. Guarantee: opening any invoice shows the SAME country code
+  // as the list, and the template resolves to EXACTLY that country.
+  //
+  // Resolution priority for the shipment row:
+  //   1. The row whose invoiceNo equals this invoice's stored number
+  //      (invoice numbers are globally unique per week — 1:1 link).
+  //   2. Fallback: the first shipment row for this invoice's Order No via
+  //      buildPrefill (used when the invoice has not yet been numbered —
+  //      buildPrefill now prefers rows that DO carry an invoiceNo + PDF).
   const templates = listTemplates();
+  let srcMarketCode = "";
+  let srcMarketSubCode = "";
+  let srcInvoiceNo = "";
+  let srcExpectedDelivery = "";
+  if (inv.invoiceNumber) {
+    const row = await prisma.shipmentScheduleRow.findFirst({
+      where: { invoiceNo: inv.invoiceNumber },
+      select: { marketCode: true, marketSubCode: true, invoiceNo: true, expectedDelivery: true },
+    });
+    if (row) {
+      srcMarketCode = preferredCountryCode(row);
+      srcMarketSubCode = row.marketSubCode;
+      srcInvoiceNo = row.invoiceNo;
+      srcExpectedDelivery = row.expectedDelivery;
+    }
+  }
+  if (!srcMarketCode) {
+    const prefill = await buildPrefill(inv.orderNo);
+    if (prefill) {
+      srcMarketCode = prefill.marketCode;
+      srcMarketSubCode = prefill.marketSubCode;
+      srcInvoiceNo = prefill.invoiceNo;
+      srcExpectedDelivery = prefill.expectedDelivery;
+    }
+  }
+  if (srcMarketCode) {
+    const resolved = resolveTemplate(srcMarketCode, srcMarketSubCode, templates);
+    const nextCountryCode = resolved?.countryCode ?? srcMarketCode;
+    const patch: Partial<InvoiceFields> = {};
+    if (srcMarketCode !== inv.marketCode) patch.marketCode = srcMarketCode;
+    if (srcMarketSubCode !== inv.marketSubCode) patch.marketSubCode = srcMarketSubCode;
+    if (nextCountryCode !== inv.countryCode) patch.countryCode = nextCountryCode;
+    // Backfill the headline fields on first visit — never overwrite values
+    // the user already typed.
+    if (!inv.invoiceNumber && srcInvoiceNo) patch.invoiceNumber = srcInvoiceNo;
+    if (!inv.invoiceDate && srcExpectedDelivery) patch.invoiceDate = srcExpectedDelivery;
+    if (Object.keys(patch).length > 0) {
+      await updateInvoiceFields(inv.id, patch, { actor: "system", source: "prefill" });
+      // Re-read so this render shows the corrected values, not the stale ones.
+      inv = await prisma.customsInvoice.findUnique({
+        where: { id: params.id },
+        include: {
+          pdfs: { orderBy: { uploadedAt: "desc" } },
+          edits: { orderBy: { editedAt: "desc" }, take: 50 },
+        },
+      });
+      if (!inv) notFound();
+    }
+  }
+
   const template = resolveTemplate(inv.marketCode, inv.marketSubCode || inv.countryCode, templates);
   const fields: InvoiceFields = {
     invoiceNumber: inv.invoiceNumber,
@@ -72,6 +140,7 @@ export default async function CustomsInvoiceDetail({ params }: { params: { id: s
         actions={
           <div className="flex items-center gap-2">
             <StatusBadge status={inv.status} />
+            <CustomsInvoiceRefill invoiceId={inv.id} />
             <Link href={`/api/customs-invoice/${inv.id}/download`} className="btn-primary text-xs">⬇ Download .xlsx</Link>
             <Link href="/customs-invoice" className="btn-ghost text-xs">← Back</Link>
           </div>

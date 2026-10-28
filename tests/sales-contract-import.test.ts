@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import ExcelJS from "exceljs";
-import { parseSalesContractXlsx } from "@/server/hm-sales-contract/import-xlsx";
+import { parseSalesContractXlsx } from "@/server/sales-contract/import-xlsx";
 
 /** Build a Sales Contract export-shaped xlsx in-memory for parse tests. */
 async function buildXlsx(opts: {

@@ -14,8 +14,10 @@ import {
   deleteCutoff,
   moveRowToCutoff,
   deleteRow,
+  allocateInvoiceNumbers,
 } from "@/server/shipment-schedule/intake";
 import { isEditableField, validateField, type EditableField } from "@/server/shipment-schedule/edit";
+import { findRowOwningInvoiceNo } from "@/server/shipment-schedule/intake";
 
 export interface CreateScheduleState {
   error?: string;
@@ -26,12 +28,16 @@ export async function createScheduleAction(_prev: CreateScheduleState, formData:
   if (!user) return { error: "Not authenticated." };
   if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "Forbidden." };
 
-  const weekTitle = String(formData.get("weekTitle") ?? "").trim();
   const weekNoRaw = String(formData.get("weekNo") ?? "").trim();
   const weekNo = weekNoRaw ? parseInt(weekNoRaw.replace(/[^\d]/g, ""), 10) : null;
-  if (!weekTitle) return { error: "Week title is required." };
+  if (weekNo === null || !Number.isFinite(weekNo) || weekNo < 1) {
+    return { error: "Week number is required." };
+  }
 
-  const { id } = await createSchedule({ weekTitle, weekNo: Number.isFinite(weekNo as number) ? (weekNo as number) : null, actor: user.email });
+  // Title auto-generated from the week number; user can rename it on the detail page.
+  const weekTitle = `Week ${String(weekNo).padStart(2, "0")}`;
+  const { id } = await createSchedule({ weekTitle, weekNo, actor: user.email });
+
   revalidatePath("/shipment-schedule");
   redirect(`/shipment-schedule/${id}`);
 }
@@ -92,6 +98,36 @@ export async function moveRowToCutoffAction(formData: FormData): Promise<void> {
   revalidatePath(`/shipment-schedule/${scheduleId}`);
 }
 
+export interface AllocateInvoiceState {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+}
+
+export async function allocateInvoiceNumbersAction(
+  _prev: AllocateInvoiceState,
+  formData: FormData,
+): Promise<AllocateInvoiceState> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "Forbidden." };
+  const scheduleId = String(formData.get("scheduleId") ?? "").trim();
+  const startRaw = String(formData.get("startNumber") ?? "").trim();
+  if (!scheduleId) return { error: "Missing scheduleId." };
+  if (!/^\d+$/.test(startRaw)) return { error: "Starting invoice number must be a whole number." };
+  try {
+    const r = await allocateInvoiceNumbers({ scheduleId, startNumber: Number(startRaw), actor: user.email });
+    revalidatePath(`/shipment-schedule/${scheduleId}`);
+    if (r.updated === 0) return { ok: true, message: "No rows in this week yet — nothing to number." };
+    return {
+      ok: true,
+      message: `Allocated ${r.updated} invoice number(s): ${r.firstAssigned} → ${r.lastAssigned}.`,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Allocation failed." };
+  }
+}
+
 export async function deleteRowAction(formData: FormData): Promise<void> {
   const user = await getSessionUser();
   if (!user || !userHasPermission(user, PERMISSIONS.JOB_CREATE)) return;
@@ -148,6 +184,21 @@ export async function editRowAction(_prev: EditRowState, formData: FormData): Pr
 
   if (errors.length > 0) return { errors };
   if (changes.length === 0) return { ok: true };
+
+  // Global uniqueness: one invoiceNo lives on at most one row across every
+  // schedule + cut-off. If this edit is trying to set a value that another
+  // row already owns, reject with a message pointing at the conflicting row.
+  const invoiceEdit = changes.find((c) => c.field === "invoiceNo");
+  if (invoiceEdit && invoiceEdit.newValue.trim() !== "") {
+    const owner = await findRowOwningInvoiceNo(invoiceEdit.newValue, rowId);
+    if (owner) {
+      return {
+        errors: [
+          `Invoice No. "${invoiceEdit.newValue}" is already used on Order ${owner.orderNo} in “${owner.weekTitle} · ${owner.cutoffLabel}”. Each invoice number must be unique across every week.`,
+        ],
+      };
+    }
+  }
 
   // Mark the row edited.
   patch["editState"] = "edited";

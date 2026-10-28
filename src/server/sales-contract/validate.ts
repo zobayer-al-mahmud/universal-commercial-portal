@@ -1,51 +1,97 @@
-import type { FieldIssue, NormalizedPoRow, ValidatedPoRow } from "./types";
-
-export const ORDER_NO_RE = /^\d{6,7}-\d{3,4}$/;
-export const SEASON_RE = /^[1-4]-\d{4}$/;
-export const PM_B_RE = /^\([A-Z]{2}-?[A-Z0-9]{2,3}\)$/;
-export const BLOCK_REF_RE = /^AGL\/H&M\/\d{2,3}\/\d{4}$/;
-export const COMMERCIAL_REF_RE = /^AGL\/H&M\/\d{2,3}-[A-Z]\/\d{4}$/;
+import type {
+  SalesContractCountryBreakdownExtract,
+  SalesContractPoExtract,
+  SalesContractReconciliation,
+  SalesContractSizeBreakdownExtract,
+} from "./types";
 
 /**
- * Deterministic validation of one normalised PO row against SRS §C.3 + §D.
- * Hard issues block any destination write (BR-SC-24..27); pending issues allow a
- * draft but require a business decision before a live submission.
+ * Cross-document reconciliation (user spec Â§5).
+ *
+ * All deterministic sums are computed on the extracted VALUES. A failure is
+ * recorded as a check with ok=false and a human-readable detail; the extracted
+ * source values are NEVER silently altered (user spec Â§5 last line, SRS Â§E-12).
  */
-export function validatePoRow(row: NormalizedPoRow): ValidatedPoRow {
-  const issues: FieldIssue[] = [];
-  const hard = (field: string, code: string, message: string) =>
-    issues.push({ field, code, message, severity: "hard" });
+export function reconcileSet(
+  po: SalesContractPoExtract | null,
+  size: SalesContractSizeBreakdownExtract | null,
+  country: SalesContractCountryBreakdownExtract | null,
+): SalesContractReconciliation {
+  const checks: SalesContractReconciliation["checks"] = [];
+  const warnings: string[] = [];
 
-  if (!row.orderNo) hard("orderNo", "MISSING_ORDER_NO", "OrderNo is missing");
-  else if (!ORDER_NO_RE.test(row.orderNo))
-    hard("orderNo", "INVALID_PO_NUMBER", `OrderNo '${row.orderNo}' fails ^\\d{6,7}-\\d{3,4}$`);
-
-  if (row.season && !SEASON_RE.test(row.season))
-    hard("season", "INVALID_SEASON", `Season '${row.season}' fails ^[1-4]-\\d{4}$`);
-
-  if (row.planningMarketB && !PM_B_RE.test(row.planningMarketB))
-    hard("planningMarketB", "INVALID_PM_B", `Planning Market B '${row.planningMarketB}' invalid`);
-
-  if (row.quantity == null || row.quantity < 1)
-    hard("quantity", "INVALID_QTY", "Quantity must be an integer >= 1");
-
-  if (row.invoiceAveragePrice == null || row.invoiceAveragePrice <= 0)
-    hard("invoiceAveragePrice", "INVALID_PRICE", "Invoice Average Price must be > 0");
-
-  if (!row.timeOfDelivery)
-    hard("timeOfDelivery", "INVALID_TOD", "Time of Delivery missing or unparsable");
-
-  // Currency: USD only; anything else triggers review (BR-SC-13).
-  if (row.currency && row.currency !== "USD")
-    issues.push({
-      field: "currency",
-      code: "NON_USD_CURRENCY",
-      message: `Currency '${row.currency}' is not USD`,
-      severity: "pending",
+  if (po) {
+    const marketSum = po.marketRows.reduce((a, r) => a + r.quantity, 0);
+    checks.push({
+      name: "po_market_sum_equals_po_total",
+      ok: marketSum === po.totalQty,
+      expected: po.totalQty,
+      actual: marketSum,
     });
 
-  if (!row.planningMarketA)
-    hard("planningMarketA", "MISSING_PM_A", "Planning Market A missing");
+    const articleSum = po.articles.reduce((a, r) => a + r.qtyPerArticle, 0);
+    if (po.articles.length > 0) {
+      checks.push({
+        name: "po_article_sum_equals_po_total",
+        ok: articleSum === po.totalQty,
+        expected: po.totalQty,
+        actual: articleSum,
+      });
+    }
+  }
 
-  return { row, issues, success: !issues.some((i) => i.severity === "hard") };
+  if (po && country) {
+    checks.push({
+      name: "country_grand_total_equals_po_total",
+      ok: country.grandTotal === po.totalQty,
+      expected: po.totalQty,
+      actual: country.grandTotal,
+    });
+
+    // Per-market totals.
+    for (const row of po.marketRows) {
+      const match = country.rows.find((r) => r.marketCode === row.marketCode);
+      if (!match) {
+        warnings.push(`Country breakdown has no row for market ${row.marketCode}.`);
+        continue;
+      }
+      checks.push({
+        name: `country_vs_po_market_${row.marketCode}`,
+        ok: match.rowTotal === row.quantity,
+        expected: row.quantity,
+        actual: match.rowTotal,
+        detail: `market ${row.marketCode}`,
+      });
+    }
+  }
+
+  if (po && size) {
+    for (const row of po.marketRows) {
+      const page = size.pages.find((p) => p.marketCode === row.marketCode);
+      if (!page) {
+        warnings.push(`Size breakdown has no page for market ${row.marketCode}.`);
+        continue;
+      }
+      checks.push({
+        name: `size_page_vs_po_market_${row.marketCode}`,
+        ok: page.marketQuantity === row.quantity,
+        expected: row.quantity,
+        actual: page.marketQuantity,
+        detail: `market ${row.marketCode}`,
+      });
+
+      // Scope-restricted size-sum identity (single-article pages only).
+      const sizeSum = Object.values(page.sizes).reduce((a, b) => a + b, 0);
+      checks.push({
+        name: `size_sum_vs_market_${row.marketCode}`,
+        ok: sizeSum === page.marketQuantity,
+        expected: page.marketQuantity,
+        actual: sizeSum,
+        detail: `sum of sizes on page ${row.marketCode}`,
+      });
+    }
+  }
+
+  const ok = checks.every((c) => c.ok);
+  return { ok, checks, warnings };
 }

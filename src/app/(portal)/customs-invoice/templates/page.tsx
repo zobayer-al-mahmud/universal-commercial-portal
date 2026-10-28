@@ -2,6 +2,10 @@ import Link from "next/link";
 import { PageHeader, StatusBadge } from "@/components/ui";
 import { listTemplates } from "@/server/customs-invoice/templates";
 import { learnLayout, type LearnedLayout } from "@/server/customs-invoice/learn-template";
+import {
+  CustomsInvoiceTemplateUpload,
+  TemplateDeleteButton,
+} from "@/components/CustomsInvoiceTemplateUpload";
 
 export const dynamic = "force-dynamic";
 
@@ -26,8 +30,13 @@ export default async function TemplateHealthPage() {
         For every country-coded template file, the learner finds the <code>PAYMENT INVOICE</code> input row (the one row
         with the <code>AGL/H&amp;M/.../YYYY</code> contract reference) and records which column holds each field. On
         download, the writer uses this layout to populate the invoice — the cross-sheet formulas in
-        <code> SUMMARY </code>/<code> CUSTOM INVOICE </code>/<code> MCO </code> cascade automatically.
+        <code> SUMMARY </code>/<code> CUSTOM INVOICE </code>/<code> MCO </code> cascade automatically. Fields with no
+        data for an order stay blank in the generated file for the user to fill manually.
       </p>
+
+      <div className="mb-4">
+        <CustomsInvoiceTemplateUpload />
+      </div>
 
       <div className="card overflow-x-auto">
         <table className="w-full text-xs">
@@ -35,42 +44,62 @@ export default async function TemplateHealthPage() {
             <tr>
               <th className="th">Country code</th>
               <th className="th">Template</th>
+              <th className="th">Source</th>
               <th className="th">Input row</th>
               <th className="th">Observed</th>
               <th className="th">Status</th>
+              <th className="th">Action</th>
             </tr>
           </thead>
           <tbody>
-            {learned.map(({ t, l }) => (
-              <tr key={t.path} className="border-t border-slate-50">
-                <td className="td font-mono">{t.countryCode}{t.variant ? <span className="text-slate-400"> · {t.variant}</span> : null}</td>
-                <td className="td text-slate-500">{t.filename}</td>
-                <td className="td text-right">{l ? l.inputRow : "—"}</td>
-                <td className="td">
-                  {l ? (
-                    <div className="text-[10px] text-slate-500">
-                      {renderObserved(l)}
-                    </div>
-                  ) : (
-                    <span className="text-slate-400">no PAYMENT INVOICE sheet / no contract ref</span>
-                  )}
-                </td>
-                <td className="td">
-                  {!l ? (
-                    <StatusBadge status="failed" />
-                  ) : l.warnings.length === 0 ? (
-                    <StatusBadge status="verified" />
-                  ) : (
-                    <div>
-                      <StatusBadge status="needs_review" />
-                      <ul className="mt-1 text-[10px] text-amber-700">
-                        {l.warnings.map((w, i) => <li key={i}>• {w}</li>)}
-                      </ul>
-                    </div>
-                  )}
+            {learned.length === 0 ? (
+              <tr>
+                <td colSpan={7} className="td text-center text-slate-400">
+                  No templates loaded yet. Upload at least one .xlsx above — filename decides the country code.
                 </td>
               </tr>
-            ))}
+            ) : (
+              learned.map(({ t, l }) => (
+                <tr key={t.path} className="border-t border-slate-50">
+                  <td className="td font-mono">{t.countryCode}{t.variant ? <span className="text-slate-400"> · {t.variant}</span> : null}</td>
+                  <td className="td text-slate-500">{t.filename}</td>
+                  <td className="td">
+                    <span className={`badge ${t.source === "uploaded" ? "bg-sky-100 text-sky-800" : "bg-slate-100 text-slate-600"}`}>
+                      {t.source}
+                    </span>
+                  </td>
+                  <td className="td text-right">{l ? l.inputRow : "—"}</td>
+                  <td className="td">
+                    {l ? (
+                      <div className="text-[10px] text-slate-500">
+                        {renderObserved(l)}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400">no PAYMENT INVOICE sheet / no contract ref</span>
+                    )}
+                  </td>
+                  <td className="td">
+                    {!l ? (
+                      <StatusBadge status="failed" />
+                    ) : l.warnings.length === 0 ? (
+                      <StatusBadge status="verified" />
+                    ) : (
+                      <div>
+                        <StatusBadge status="needs_review" />
+                        <ul className="mt-1 text-[10px] text-amber-700">
+                          {l.warnings.map((w, i) => <li key={i}>• {w}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </td>
+                  <td className="td">
+                    {t.source === "uploaded"
+                      ? <TemplateDeleteButton filename={t.filename} />
+                      : <span className="text-[10px] text-slate-400">bundled · read-only</span>}
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

@@ -14,6 +14,7 @@ export type EditableField =
   | "bookingRef" | "bcn" | "bookingStatus"
   | "portOfLoading" | "portOfDischarge" | "placeOfDelivery" | "transportMode"
   | "pdfPcs" | "grossWeightKg" | "cartons" | "measurementCbm"
+  | "expectedDelivery"
   | "invoiceNo";
 
 const EDITABLE_FIELDS: readonly EditableField[] = [
@@ -23,6 +24,7 @@ const EDITABLE_FIELDS: readonly EditableField[] = [
   "bookingRef", "bcn", "bookingStatus",
   "portOfLoading", "portOfDischarge", "placeOfDelivery", "transportMode",
   "pdfPcs", "grossWeightKg", "cartons", "measurementCbm",
+  "expectedDelivery",
   "invoiceNo",
 ] as const;
 

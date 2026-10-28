@@ -7,7 +7,7 @@ import JSZip from "jszip";
 import { parseTemplateFilename, listTemplates, resolveTemplate, listCountryCodes, type InvoiceTemplate } from "@/server/customs-invoice/templates";
 import { extractInvoiceFieldsFromPdf } from "@/server/customs-invoice/parse-pdf";
 import { writeInvoiceXlsx } from "@/server/customs-invoice/write-xlsx";
-import { shortOrderKey } from "@/server/customs-invoice/pull-data";
+import { shortOrderKey, preferredCountryCode } from "@/server/customs-invoice/pull-data";
 import { learnLayout, colLetter } from "@/server/customs-invoice/learn-template";
 import { patchTemplate } from "@/server/customs-invoice/zip-write";
 import type { InvoiceFields } from "@/server/customs-invoice/types";
@@ -37,6 +37,25 @@ describe("shortOrderKey", () => {
     expect(shortOrderKey("644637-8756")).toBe("644637");
     expect(shortOrderKey("644637")).toBe("644637");
     expect(shortOrderKey("")).toBe("");
+  });
+});
+
+describe("preferredCountryCode", () => {
+  it("takes the first two letters of the sub-code as the destination country", () => {
+    // "MYW069" → Malaysia (MY), NOT the H&M group code (e.g. "OE") the Sales
+    // Contract PO may carry on countryCodesJson.
+    expect(preferredCountryCode({ marketCode: "OE", marketSubCode: "MYW069" })).toBe("MY");
+    expect(preferredCountryCode({ marketCode: "", marketSubCode: "AUW118" })).toBe("AU");
+    expect(preferredCountryCode({ marketCode: "OW", marketSubCode: "PEW153" })).toBe("PE");
+  });
+
+  it("picks the post-hyphen country for hyphenated sub-codes (e.g. OW-NLW195)", () => {
+    expect(preferredCountryCode({ marketCode: "OW", marketSubCode: "OW-NLW195" })).toBe("NL");
+  });
+
+  it("falls back to the stored marketCode when the sub-code is empty or malformed", () => {
+    expect(preferredCountryCode({ marketCode: "OB", marketSubCode: "" })).toBe("OB");
+    expect(preferredCountryCode({ marketCode: "OE", marketSubCode: "12-345" })).toBe("OE");
   });
 });
 
@@ -108,7 +127,7 @@ describe("resolveTemplate", () => {
 
 describe("extractInvoiceFieldsFromPdf (unit, synthetic text)", () => {
   // We cannot build a real PDF in a unit test without pulling in a PDF writer,
-  // but the parser is pure once we have text — exercise it via a Buffer path
+  // but the parser is pure once we have text – exercise it via a Buffer path
   // using pdf-parse's internal fallback (empty) and then via inner regex calls.
   // Here we assert the regex catalogue produces the right fields given a text.
   it("empty buffer returns an empty result", async () => {
@@ -218,7 +237,7 @@ describe.skipIf(!hasTemplates)("end-to-end with real templates", () => {
       expect(r!.fieldsWritten.length).toBeGreaterThan(5);
     }
   });
-  it("preserves multi-run rich-text shared strings (no run truncation) — regression", async () => {
+  it("preserves multi-run rich-text shared strings (no run truncation) – regression", async () => {
     const { readFileSync } = await import("fs");
     const ts = listTemplates(TEMPLATE_DIR);
     const ob = ts.find((t) => t.countryCode === "OB")!;
@@ -255,19 +274,19 @@ describe("colLetter", () => {
 
 describe("extractCountryCodes", () => {
   it("prefers Country Breakdown rows, de-dupes, uppercases, keeps order", async () => {
-    const { extractCountryCodes } = await import("@/server/hm-sales-contract/intake");
+    const { extractCountryCodes } = await import("@/server/sales-contract/intake");
     const country = { rows: [{ marketCode: "oe" }, { marketCode: "OF" }, { marketCode: "oe" }, { marketCode: "LH" }] };
     const po = { marketRows: [{ marketCode: "OD" }, { marketCode: "OF" }] };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(extractCountryCodes(country as any, po as any)).toEqual(["OE", "OF", "LH", "OD"]);
   });
   it("falls back to PO market rows when no country breakdown", async () => {
-    const { extractCountryCodes } = await import("@/server/hm-sales-contract/intake");
+    const { extractCountryCodes } = await import("@/server/sales-contract/intake");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(extractCountryCodes(null, { marketRows: [{ marketCode: "nh" }] } as any)).toEqual(["NH"]);
   });
   it("returns [] when both sources are empty", async () => {
-    const { extractCountryCodes } = await import("@/server/hm-sales-contract/intake");
+    const { extractCountryCodes } = await import("@/server/sales-contract/intake");
     expect(extractCountryCodes(null, null)).toEqual([]);
   });
 });

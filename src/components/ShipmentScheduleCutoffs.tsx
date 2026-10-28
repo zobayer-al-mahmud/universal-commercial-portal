@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { addCutoffAction, updateCutoffAction, deleteCutoffAction } from "@/app/actions/shipment-schedule";
+import { BulkDownloadBar } from "@/components/BulkDownloadBar";
 
 export interface CutoffRow {
   id: string;
@@ -13,14 +14,56 @@ export interface CutoffRow {
 export function ShipmentScheduleCutoffs({ scheduleId, cutoffs, rowCounts }: { scheduleId: string; cutoffs: CutoffRow[]; rowCounts?: Record<string, number> }) {
   const [adding, setAdding] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // Only expose the whole-week download when at least one cut-off has rows,
+  // so the user doesn't download an empty workbook.
+  const totalRows = cutoffs.reduce((n, c) => n + (rowCounts?.[c.id] ?? 0), 0);
+
+  // Only cut-offs with at least one row are downloadable (empty ones would
+  // produce an empty workbook).
+  const selectableIds = useMemo(
+    () => cutoffs.filter((c) => (rowCounts?.[c.id] ?? 0) > 0).map((c) => c.id),
+    [cutoffs, rowCounts],
+  );
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+  const toggle = (id: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  const toggleAll = () =>
+    setSelected((prev) => {
+      if (allSelected) {
+        const next = new Set(prev);
+        for (const id of selectableIds) next.delete(id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const id of selectableIds) next.add(id);
+      return next;
+    });
+  const selectedIds = Array.from(selected);
 
   return (
     <div className="card p-5">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <h3 className="text-sm font-semibold text-slate-800">Cut-offs</h3>
-        {!adding ? (
-          <button className="text-xs text-sky-700 hover:underline" onClick={() => setAdding(true)}>+ Add cut-off</button>
-        ) : null}
+        <div className="flex items-center gap-3">
+          {totalRows > 0 ? (
+            <a
+              href={`/api/shipment-schedule/${scheduleId}/download`}
+              className="text-xs font-medium text-green-700 hover:underline"
+              title="Download the entire week as one .xlsx (all cut-offs in one sheet)"
+            >
+              ⬇ Download week .xlsx
+            </a>
+          ) : null}
+          {!adding ? (
+            <button className="text-xs text-sky-700 hover:underline" onClick={() => setAdding(true)}>+ Add cut-off</button>
+          ) : null}
+        </div>
       </div>
 
       {adding ? (
@@ -37,9 +80,33 @@ export function ShipmentScheduleCutoffs({ scheduleId, cutoffs, rowCounts }: { sc
         </form>
       ) : null}
 
+      {selectableIds.length > 0 ? (
+        <div className="mb-3">
+          <BulkDownloadBar
+            endpoint="/api/shipment-schedule/bulk-download"
+            bodyKey="cutoffIds"
+            ids={selectedIds}
+            totalCount={selectableIds.length}
+            allSelected={allSelected}
+            onSelectAll={toggleAll}
+            onClear={() => setSelected(new Set())}
+            fileNameBase="ShipmentCutoffs"
+          />
+        </div>
+      ) : null}
+
       <table className="w-full text-xs">
         <thead className="bg-slate-50">
           <tr>
+            <th className="th w-8">
+              <input
+                type="checkbox"
+                aria-label="Select all cut-offs"
+                checked={allSelected}
+                onChange={toggleAll}
+                disabled={selectableIds.length === 0}
+              />
+            </th>
             <th className="th">Label</th>
             <th className="th">Date</th>
             <th className="th">Rows</th>
@@ -49,7 +116,7 @@ export function ShipmentScheduleCutoffs({ scheduleId, cutoffs, rowCounts }: { sc
         <tbody>
           {cutoffs.length === 0 ? (
             <tr>
-              <td colSpan={4} className="td text-slate-400">
+              <td colSpan={5} className="td text-slate-400">
                 No cut-offs. Add one above.
               </td>
             </tr>
@@ -60,6 +127,7 @@ export function ShipmentScheduleCutoffs({ scheduleId, cutoffs, rowCounts }: { sc
                 <tr key={c.id} className="border-t border-slate-100">
                   {editId === c.id ? (
                     <>
+                      <td className="td" />
                       <td className="td" colSpan={3}>
                         <form
                           action={updateCutoffAction}
@@ -78,6 +146,18 @@ export function ShipmentScheduleCutoffs({ scheduleId, cutoffs, rowCounts }: { sc
                     </>
                   ) : (
                     <>
+                      <td className="td">
+                        {n > 0 ? (
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${c.label}`}
+                            checked={selected.has(c.id)}
+                            onChange={() => toggle(c.id)}
+                          />
+                        ) : (
+                          <span className="text-[10px] text-slate-300" title="Cut-off has no rows yet">—</span>
+                        )}
+                      </td>
                       <td className="td font-medium">{c.label}</td>
                       <td className="td font-mono text-slate-500">{c.date || "—"}</td>
                       <td className="td">{n}</td>

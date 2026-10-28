@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db";
 import { PageHeader } from "@/components/ui";
 import { ShipmentScheduleHeaderEditor } from "@/components/ShipmentScheduleHeaderEditor";
 import { ShipmentScheduleCutoffs } from "@/components/ShipmentScheduleCutoffs";
-import { ShipmentScheduleUpload } from "@/components/ShipmentScheduleUpload";
+import { ShipmentScheduleInvoiceAllocator } from "@/components/ShipmentScheduleInvoiceAllocator";
 import { ShipmentScheduleGrid } from "@/components/ShipmentScheduleGrid";
 
 export const dynamic = "force-dynamic";
@@ -81,7 +81,7 @@ export default async function ShipmentScheduleDetailPage({ params }: { params: {
       </div>
 
       <div className="mb-6">
-        <ShipmentScheduleUpload scheduleId={schedule.id} cutoffs={cutoffOptions} />
+        <ShipmentScheduleInvoiceAllocator scheduleId={schedule.id} rowCount={schedule.rows.length} />
       </div>
 
       <ShipmentScheduleGrid

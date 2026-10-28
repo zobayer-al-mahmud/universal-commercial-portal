@@ -14,7 +14,7 @@ function Submit() {
   );
 }
 
-export function OrderNoCreateButton({ orderNo }: { orderNo: string }) {
+export function OrderNoCreateButton({ orderNo, invoiceNo }: { orderNo: string; invoiceNo?: string }) {
   const router = useRouter();
   const [state, action] = useFormState<CustomsInvoiceCreateState, FormData>(createInvoiceAction, {});
 
@@ -25,6 +25,7 @@ export function OrderNoCreateButton({ orderNo }: { orderNo: string }) {
   return (
     <form action={action} className="flex items-center gap-1">
       <input type="hidden" name="orderNo" value={orderNo} />
+      <input type="hidden" name="invoiceNo" value={invoiceNo ?? ""} />
       <Submit />
       {state.error ? <span className="text-[10px] text-rose-600">{state.error}</span> : null}
     </form>

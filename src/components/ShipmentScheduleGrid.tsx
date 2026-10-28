@@ -42,7 +42,7 @@ export interface GridRow {
 /**
  * Excel-like grid grouped by cut-off, matching the sample layout:
  *   Buyer Code | Cont.No. | Date | OrderNo. | PCS | STYLE | FOB | COMPOSITION
- *     | CAT | HTS | Value | INVOICE | Market+Sub | Market | Mode
+ *     | CAT | HTS | Value | INVOICE | Country+Sub | Country | Mode
  *
  * The title row ("Week NN 1st cut off DD.MM.YYYY 2nd DD.MM.YYYY") spans all
  * columns, then one green header row, then each cut-off becomes a labelled
@@ -87,8 +87,8 @@ export function ShipmentScheduleGrid({
             <th className="th">HTS</th>
             <th className="th">Value</th>
             <th className="th">INVOICE</th>
-            <th className="th">Market+Sub</th>
-            <th className="th">Market</th>
+            <th className="th">Country+Sub</th>
+            <th className="th">Country</th>
             <th className="th">Mode</th>
             <th className="th">Action</th>
           </tr>

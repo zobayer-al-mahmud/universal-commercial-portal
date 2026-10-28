@@ -1,4 +1,4 @@
-// Ananta Universal Commercial Portal — data model
+// Ananta Universal Commercial Portal â€” data model
 // Dev provider: SQLite (self-contained, no external service).
 // Portable to PostgreSQL for staging/production (see docs/architecture/DATA_MODEL.md).
 // Note: JSON columns are stored as String (SQLite has no native JSON type);
@@ -14,7 +14,7 @@ datasource db {
 }
 
 // ---------------------------------------------------------------------------
-// Access control (SRS §10, Common Requirements)
+// Access control (SRS Â§10, Common Requirements)
 // ---------------------------------------------------------------------------
 
 model User {
@@ -59,7 +59,7 @@ model RolePermission {
 }
 
 // ---------------------------------------------------------------------------
-// Portal modules (the nine source areas) — drives navigation + status
+// Portal modules (the nine source areas) â€” drives navigation + status
 // ---------------------------------------------------------------------------
 
 model Module {
@@ -72,7 +72,7 @@ model Module {
 }
 
 // ---------------------------------------------------------------------------
-// Document intake + immutable archival (SRS §6, §9.1)
+// Document intake + immutable archival (SRS Â§6, Â§9.1)
 // ---------------------------------------------------------------------------
 
 model SourceDocument {
@@ -93,14 +93,14 @@ model SourceDocument {
 }
 
 // ---------------------------------------------------------------------------
-// Durable job ledger + state machine (SRS §5.7)
+// Durable job ledger + state machine (SRS Â§5.7)
 // ---------------------------------------------------------------------------
 
 model Job {
   id             String    @id @default(cuid())
   module         String // module key
   type           String // e.g. "order-package", "rename-batch"
-  businessKey    String? // e.g. OrderNo / batch id — used for idempotency locking
+  businessKey    String? // e.g. OrderNo / batch id â€” used for idempotency locking
   status         String    @default("received") // received|classified|extracted|reconciled|portal_in_progress|verified|queued|failed|duplicate|draft
   priority       Int       @default(5)
   attempts       Int       @default(0)
@@ -114,8 +114,6 @@ model Job {
 
   documents          SourceDocument[]
   stageEvents        JobStageEvent[]
-  poRows             PoExtractionRow[]
-  contractRows       SalesContractRow[]
   reviewTickets      ReviewTicket[]
   renameItems        RenameItem[]
   scheduleLines      ShipmentScheduleLine[]
@@ -140,135 +138,19 @@ model JobStageEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Sales Contract Creation — destination records (SRS §C)
+// Sales Contract Creation â€” destination records (SRS Â§C)
 // ---------------------------------------------------------------------------
 
-// PO EXTRACTION sheet — 22 columns, one row per Planning Market x TOD (SRS §C.2.1)
-model PoExtractionRow {
-  id                   String   @id @default(cuid())
-  jobId                String
-  job                  Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  sl                   Int
-  dateOfOrder          String?
-  orderNo              String
-  productNo            String?
-  productName          String?
-  productDescription   String?
-  season               String?
-  customsCustomerGroup String?
-  typeOfConstruction   String?
-  noOfPieces           Int?
-  invoiceAveragePrice  Float?
-  currency             String?
-  timeOfDelivery       String?
-  planningMarketA      String?
-  planningMarketB      String?
-  quantity             Int?
-  termsOfDelivery      String?
-  transportBy          String?
-  source               String?
-  message              String   @default("")
-  success              Boolean  @default(false)
-  createdAt            DateTime @default(now())
-
-  @@index([jobId])
-  @@index([orderNo])
-}
-
-// Per-contract tab row — append-only (SRS §C.2.2, BR-SC-21)
-model SalesContractRow {
-  id                  String   @id @default(cuid())
-  jobId               String
-  job                 Job      @relation(fields: [jobId], references: [id])
-  blockContractRef    String // AGL/H&M/<NN>/<YYYY>
-  commercialContRef   String // AGL/H&M/<NN>-A/<YYYY>
-  revision            Int
-  orderNo             String
-  styleNo             String
-  description         String
-  orderQty            Int
-  totalQtyWithPackSet Int
-  unitPrice           Float
-  value               Float
-  timeOfDelivery      String
-  packSet             Int      @default(1)
-  remarks             String   @default("")
-  supersedesRowId     String? // for appended adjustment rows (BR-SC-21)
-  confirmed           Boolean  @default(false) // approved contract (cross-module gate)
-  scheduledJobId      String? // shipment-schedule job this row fed (handoff 1)
-  createdAt           DateTime @default(now())
-
-  @@index([jobId])
-  @@index([orderNo])
-  @@index([blockContractRef])
-}
+// PO EXTRACTION sheet â€” 22 columns, one row per Planning Market x TOD (SRS Â§C.2.1)
+// NOTE (2026-10-26 refactor): the generic Sales Contract models that lived
+// here previously â€” PoExtractionRow, SalesContractRow, SalesContractBatch,
+// SalesContractBatchItem â€” have been removed. The Sales Contract Creation
+// module is now the three-PDF-set workflow previously called "H&M Sales
+// Contract", with Prisma models SalesContract / SalesContractPo /
+// SalesContractPdf / SalesContractRowEdit (defined further down).
 
 // ---------------------------------------------------------------------------
-// Sales Contract Creation — bulk PDF batch (module 1, §3 of the Oct-2026 addendum)
-// A batch holds many uploaded H&M PO / supporting PDFs; each becomes one
-// SalesContractBatchItem carried through extract → cross-match → classify.
-// Originals are preserved; destination writes stay gated behind approval.
-// ---------------------------------------------------------------------------
-
-model SalesContractBatch {
-  id           String   @id @default(cuid())
-  createdBy    String   @default("system")
-  blockRef     String   @default("") // active block contract ref if supplied
-  totalItems   Int      @default(0)
-  draftedItems Int      @default(0)
-  reviewItems  Int      @default(0)
-  blockedItems Int      @default(0)
-  failedItems  Int      @default(0)
-  status       String   @default("uploaded") // uploaded | processing | completed | partial | failed
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  items SalesContractBatchItem[]
-
-  @@index([status])
-}
-
-model SalesContractBatchItem {
-  id           String             @id @default(cuid())
-  batchId      String
-  batch        SalesContractBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
-  serial       Int
-  originalName String
-  sha256       String
-  sizeBytes    Int
-  storagePath  String // immutable original upload (outside repo)
-
-  // extraction (never invented: missing values stay empty + a review reason)
-  jobId          String? // per-item Job holding PoExtractionRows + review tickets
-  orderNumbers   String  @default("") // comma-separated OrderNos read from the PDF
-  poRowCount     Int     @default(0)
-  textChars      Int     @default(0)
-  extractionJson String  @default("{}")
-
-  // cross-match + classification (§3.2)
-  decision          String  @default("") // EXISTING_CONTRACT | NEW_CONTRACT | DUPLICATE | AMENDMENT | NEEDS_REVIEW
-  targetContractRef String  @default("") // matched existing OR proposed new ref
-  buyerCode         String  @default("")
-  proposed          Boolean @default(false) // target is a proposal awaiting approval
-  blockWrite        Boolean @default(false) // AC-03: destination write blocked
-
-  // lifecycle (extraction / cross-match / approval / write states kept distinct)
-  state       String    @default("UPLOADED") // UPLOADED|EXTRACTING|EXTRACTED|CROSS_MATCHING|DRAFTED|NEEDS_REVIEW|BLOCKED|DUPLICATE|FAILED
-  reasons     String    @default("") // human-readable newline-joined notes
-  error       String    @default("")
-  warning     String    @default("")
-  attempts    Int       @default(0)
-  processedAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-
-  @@index([batchId])
-  @@index([sha256])
-  @@index([state])
-}
-
-// ---------------------------------------------------------------------------
-// PDF File Rename — per-file rename plan (module 4)
+// PDF File Rename â€” per-file rename plan (module 4)
 // Input PDFs are renamed from an opaque scan name to a business key (invoice no).
 // Originals are preserved; the plan is a preview until an authorised apply step.
 // ---------------------------------------------------------------------------
@@ -293,7 +175,7 @@ model RenameItem {
 }
 
 // ---------------------------------------------------------------------------
-// Week Wise Shipment Schedule — per-market invoice line (module 2)
+// Week Wise Shipment Schedule â€” per-market invoice line (module 2)
 // Mirrors the Week workbook "Summary" grain: one line per order x market, with a
 // sequential invoice number and a cut-off assignment.
 // ---------------------------------------------------------------------------
@@ -322,7 +204,7 @@ model ShipmentScheduleLine {
   message       String    @default("")
   success       Boolean   @default(true)
   invoicedJobId String? // customs-invoice job this line fed (handoff 2)
-  // In-portal editing (§4.2): authorised edits are applied here and recorded
+  // In-portal editing (Â§4.2): authorised edits are applied here and recorded
   // field-by-field in ShipmentScheduleLineEdit. The source PDF is never altered.
   editState     String    @default("original") // original | edited | submitted | approved
   editedBy      String    @default("")
@@ -335,7 +217,7 @@ model ShipmentScheduleLine {
   @@index([orderNo])
 }
 
-// Field-level, append-only edit history for in-portal schedule editing (§4.2).
+// Field-level, append-only edit history for in-portal schedule editing (Â§4.2).
 // Records original value, edited value, editor, timestamp and change reason.
 model ShipmentScheduleLineEdit {
   id        String               @id @default(cuid())
@@ -352,12 +234,12 @@ model ShipmentScheduleLineEdit {
 }
 
 // ---------------------------------------------------------------------------
-// Shipment Schedule v2 — rebuilt 2026-10-20 (module 2 fresh workflow)
+// Shipment Schedule v2 â€” rebuilt 2026-10-20 (module 2 fresh workflow)
 // One schedule per week. Each schedule carries user-defined cut-offs (default
 // "1st cut off" + "2nd cut off", but users can add more). PDFs (booking
 // confirmations) are uploaded against a chosen cut-off; each PDF becomes one
 // ShipmentScheduleRow whose Sales-Contract-sourced columns are hydrated by
-// matching the OrderNo against HmSalesContractPo.
+// matching the OrderNo against SalesContractPo.
 // ---------------------------------------------------------------------------
 
 model ShipmentSchedule {
@@ -396,7 +278,7 @@ model ShipmentScheduleRow {
   cutoffId   String
   cutoff     ShipmentScheduleCutoff @relation(fields: [cutoffId], references: [id], onDelete: Cascade)
 
-  // --- From Sales Contract (matched by orderNo against HmSalesContractPo) ---
+  // --- From Sales Contract (matched by orderNo against SalesContractPo) ---
   buyerCode    String @default("")
   contractNo   String @default("")
   contractDate String @default("")
@@ -424,8 +306,11 @@ model ShipmentScheduleRow {
   grossWeightKg   Float?
   cartons         Int?
   measurementCbm  Float?
+  // "Expected Delivery" date from the booking PDF (ISO/raw text as it appears,
+  // e.g. "2026-10-05"). Flows into Customs Invoice as the Invoice date prefill.
+  expectedDelivery String @default("")
 
-  invoiceNo String @default("") // allocated per row; manually set or auto-numbered
+  invoiceNo String @default("") // allocated per row; manually set or auto-numbered. Globally unique when non-empty (enforced in intake/edit services; across every schedule + cut-off).
 
   // Source PDF file reference (file stored under STORAGE_ROOT/shipment-schedule/<scheduleId>/)
   pdfFileName String @default("")
@@ -466,8 +351,8 @@ model ShipmentScheduleRowEdit {
 }
 
 // ---------------------------------------------------------------------------
-// Customs Invoice Generation — one invoice per unique Order No (module 3).
-// Country code (from H&M market code — OB, NH, OE, OF-IT, …) resolves the
+// Customs Invoice Generation â€” one invoice per unique Order No (module 3).
+// Country code (from H&M market code â€” OB, NH, OE, OF-IT, â€¦) resolves the
 // per-country invoice template that supplies the final .xlsx layout. Every
 // field below is editable in the UI; a PDF uploaded to the invoice can
 // auto-populate matching fields. Edits are append-only via CustomsInvoiceEdit.
@@ -475,8 +360,14 @@ model ShipmentScheduleRowEdit {
 
 model CustomsInvoice {
   id           String @id @default(cuid())
-  // Identity — one invoice per unique Order No.
-  orderNo      String @unique
+  // Identity — one invoice per (Order No., Invoice No.) pair. An Order ships
+  // to multiple destination countries, so the same Order No. legitimately
+  // appears on several shipment-schedule rows (one per invoice number). Each
+  // such row gets its OWN customs invoice with its OWN country code and
+  // template (user rule 2026-10-28). invoiceNumber is empty when the invoice
+  // was created before an invoice no. was allocated — in that case there can
+  // only be one unnumbered invoice per Order No., which is the usual case.
+  orderNo      String
   // Resolved country code (template key, e.g. OB / NH / OE / OF-IT).
   countryCode  String @default("")
   // Template filename (resolved from countryCode). Empty if not yet resolved.
@@ -493,6 +384,12 @@ model CustomsInvoice {
   marketSubCode             String @default("") // full code (e.g. "NHW123" or "OE-PLW067")
   expNo                     String @default("")
   expDate                   String @default("")
+  // Historical schema defaults ("CHITTAGONG"/"Bangladesh"/"FCA Chittagong"/
+  // "USD"/"ANANTA GARMENTS LIMITED…") are preserved for migration safety only.
+  // At the write path, src/server/customs-invoice/intake.ts explicitly stores
+  // "" for every one of these so UCP never auto-fills a field the Order No.
+  // did not supply — the operator fills them in manually, and the template's
+  // own cells carry the per-country branding/labels regardless.
   portOfLoading             String @default("CHITTAGONG")
   portOfDischarge           String @default("")
   placeOfDelivery           String @default("")
@@ -538,6 +435,11 @@ model CustomsInvoice {
   pdfs  CustomsInvoicePdf[]
   edits CustomsInvoiceEdit[]
 
+  // Each (Order No., Invoice No.) is a distinct customs invoice. The empty
+  // string is a valid Invoice No. slot — exactly one unnumbered invoice per
+  // Order No. is allowed, numbered invoices are many.
+  @@unique([orderNo, invoiceNumber])
+  @@index([invoiceNumber])
   @@index([countryCode])
   @@index([marketCode])
   @@index([status])
@@ -561,7 +463,7 @@ model CustomsInvoicePdf {
   @@index([invoiceId])
 }
 
-// Append-only edit history — one row per field change.
+// Append-only edit history â€” one row per field change.
 model CustomsInvoiceEdit {
   id        String         @id @default(cuid())
   invoiceId String
@@ -577,7 +479,7 @@ model CustomsInvoiceEdit {
 }
 
 // ---------------------------------------------------------------------------
-// Booking Correction — original vs corrected booking diff (module 5)
+// Booking Correction â€” original vs corrected booking diff (module 5)
 // Matched by OrderNo + market; field-level changes classified allowed/locked.
 // Damco portal verification is gated (mock/dryrun; live blocked).
 // ---------------------------------------------------------------------------
@@ -607,7 +509,7 @@ model BookingCorrection {
 }
 
 // ---------------------------------------------------------------------------
-// Booking Correction — batch PDF → extract → Damco search → match → verify
+// Booking Correction â€” batch PDF â†’ extract â†’ Damco search â†’ match â†’ verify
 // (module 5, DAMCO workflow). A batch holds many uploaded packing-list PDFs;
 // each becomes one BookingDocument carried through the state machine. Original
 // uploads are preserved; generated/corrected PDFs are stored separately.
@@ -672,11 +574,11 @@ model BookingDocument {
   bookingQuantity    String @default("")
   candidatesJson     String @default("[]") // candidate bookings from search
 
-  // matching (§9)
+  // matching (Â§9)
   matchOutcome String @default("") // MATCHED | MISMATCH | NEEDS_REVIEW | SEARCH_FAILED
   matchJson    String @default("{}") // per-field comparison + diffs
 
-  // status validation (§11)
+  // status validation (Â§11)
   headingStatus String @default("") // CONFIRMED | REQUESTED | ...
   fieldStatus   String @default("")
   finalStatus   String @default("") // CONFIRMED | REQUESTED | STATUS_MISMATCH | NEEDS_REVIEW
@@ -693,7 +595,7 @@ model BookingDocument {
   portalPdfPath    String?
   portalPdfSha256  String  @default("")
 
-  // lifecycle (§13 state machine)
+  // lifecycle (Â§13 state machine)
   state       String    @default("UPLOADED")
   error       String    @default("")
   warning     String    @default("")
@@ -724,47 +626,57 @@ model BookingDocEvent {
 }
 
 // ---------------------------------------------------------------------------
-// H&M Sales Contract — three-PDF-set per PO, A–U template export (module 1 Oct-2026).
+// H&M Sales Contract â€” three-PDF-set per PO, Aâ€“U template export (module 1 Oct-2026).
 // One Sales Contract groups many POs; each PO carries three uploaded PDFs
 // (PurchaseOrder, SizePerColourBreakdown, TotalCountryBreakdown) which are
 // three-way matched and cross-reconciled. Edits are kept distinct from the
-// extracted source values (append-only HmSalesContractRowEdit).
+// extracted source values (append-only SalesContractRowEdit).
 // ---------------------------------------------------------------------------
 
-model HmSalesContract {
+model SalesContract {
   id               String              @id @default(cuid())
   createdAt        DateTime            @default(now())
   updatedAt        DateTime            @updatedAt
   createdBy        String              @default("system")
   status           String              @default("draft") // draft | ready | exported
   // Sales Contract-level header (editable in UI; never auto-filled from a PDF
-  // field the user did not approve as the source for that column — see BR-HM-01..05).
-  marchentContNo   String              @default("") // column A
-  contractDate     String              @default("") // column B  (stored as raw string; the sheet accepts text)
-  buyerCode        String              @default("") // column C
-  commercialContNo String              @default("") // column D
-  commercialDate   String              @default("") // column E
-  merchandiserName String              @default("") // column Q
-  packSet          String              @default("") // column S  (template convention shows "1"; left blank by default per spec rule 3-S / BR-HM-04)
+  // field the user did not approve as the source for that column â€” see BR-HM-01..05).
+  marchentContNo   String              @default("") // column A (free-text banner; may differ from the ref auto-built from contractNo+folder+poYear)
+  contractDate     String              @default("") // column B â€” Sales-Contract-level date (propagates to every row of this contract)
+  buyerCode        String              @default("") // column C (legacy; new rows resolve C from SalesContractBuyerCode by (contractNo, folderLetter))
+  commercialContNo String              @default("") // column D â€” numeric Sales Contract number (e.g. "97")
+  commercialDate   String              @default("") // column E (legacy fallback; new rows resolve E per folder from SalesContractFolderMapping.commercialDate)
+  merchandiserName String              @default("") // column Q (legacy fallback; new rows build Q from folder config + season/year)
+  packSet          String              @default("") // column S (manual; never auto-sourced)
   remarksDefault   String              @default("") // column P default
   // Export-banner fields (shown at the top of the generated Excel; filled
-  // manually in the UI — never auto-sourced from a PDF).
+  // manually in the UI â€” never auto-sourced from a PDF).
   reviseNo         String              @default("") // "Revise: N" banner value
-  pos              HmSalesContractPo[]
+  // New fields (2026-10-26 spec):
+  contractNo       String              @default("")  // e.g. "97" — used in the AGL/H&M/{N}-{F}/{PO_YEAR} ref
+  isCurrent        Boolean             @default(false) // marks the currently-active contract for new uploads
+  // Per-folder merchandiser entry date for THIS contract (Column B source).
+  // JSON object like { "A": "23 Oct, 2026", "B": "24 Oct, 2026" }. Stamped
+  // on the first upload of each folder's PO into this contract; feeds
+  // Summary Excel Column B — one date per (contract × folder) pair.
+  folderDatesJson  String              @default("{}")
+  pos              SalesContractPo[]
 
   @@index([status])
+  @@index([contractNo])
+  @@index([isCurrent])
 }
 
-model HmSalesContractPo {
+model SalesContractPo {
   id          String          @id @default(cuid())
   contractId  String
-  contract    HmSalesContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  contract    SalesContract @relation(fields: [contractId], references: [id], onDelete: Cascade)
   // Identity (not always known at upload: filled after extraction).
   orderNo     String          @default("")
   // State machine for the three-PDF set.
   state       String          @default("UPLOADED") // UPLOADED | EXTRACTING | READY | BLOCKED | FAILED
   // Decision + traceability.
-  blockWrite  Boolean         @default(false) // true when match fails — no rows generated
+  blockWrite  Boolean         @default(false) // true when match fails â€” no rows generated
   reasons     String          @default("") // newline-joined human-readable notes
   matchJson   String          @default("{}") // HmSetMatch
   reconJson   String          @default("{}") // HmReconciliation
@@ -782,21 +694,29 @@ model HmSalesContractPo {
   warning     String          @default("")
   attempts    Int             @default(0)
   processedAt DateTime?
+  // New fields (2026-10-26 spec):
+  folderLetter String         @default("")  // source folder letter the PDFs came from (A, B, C, ...)
+  poYear       String         @default("")  // PO year extracted from Date of Order ("2026")
+  season       String         @default("")  // season part of Season: field ("4" from "4-2026")
+  // User-edits made in the per-contract Sheet View (styleNo, description,
+  // orderQty, unitPrice, timeOfDelivery, commercialRef, packSet). JSON object
+  // merged over the extracted values when the sheet is rendered/written.
+  sheetEditsJson String       @default("{}")
   createdAt   DateTime        @default(now())
   updatedAt   DateTime        @updatedAt
 
-  pdfs  HmSalesContractPdf[]
-  edits HmSalesContractRowEdit[]
+  pdfs  SalesContractPdf[]
+  edits SalesContractRowEdit[]
 
   @@unique([contractId, orderNo])
   @@index([contractId])
   @@index([state])
 }
 
-model HmSalesContractPdf {
+model SalesContractPdf {
   id           String            @id @default(cuid())
   poId         String
-  po           HmSalesContractPo @relation(fields: [poId], references: [id], onDelete: Cascade)
+  po           SalesContractPo @relation(fields: [poId], references: [id], onDelete: Cascade)
   kind         String // "PurchaseOrder" | "SizePerColourBreakdown" | "TotalCountryBreakdown"
   originalName String
   sha256       String
@@ -808,14 +728,46 @@ model HmSalesContractPdf {
   @@index([sha256])
 }
 
+// -----------------------------------------------------------------------
+// H&M configuration (2026-10-26 spec):
+// Folder-letter â†’ merchandiser group + per-folder Column-E date.
+// (contractNo + folderLetter) â†’ buyer code.
+// -----------------------------------------------------------------------
+
+model SalesContractFolderMapping {
+  folderLetter    String   @id              // "A" | "B" | "C" | ...
+  sequence        Int      @default(0)       // sort order in Summary (A=0, B=1, ...)
+  merchandisersJson String @default("[]")    // JSON array of names, in display order
+  commercialDate  String   @default("")      // column E date for every row from this folder (any string the sheet accepts)
+  sourceFolderPath String  @default("")      // absolute local path (e.g. D:\\order\\A) scanned by the "Scan folder" action
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([sequence])
+}
+
+model SalesContractBuyerCode {
+  id            String   @id @default(cuid())
+  contractNo    String                       // "97"
+  folderLetter  String                       // "A"
+  buyerCode     String                       // "AGL 349 A"
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([contractNo, folderLetter])
+  @@index([contractNo])
+}
+
 // Append-only override: a user edit to a specific generated row's cell(s).
 // Blank-because-source-does-not-contain stays distinct from a user-cleared
-// cell — the overridesJson records every explicit edit, including setting a
+// cell â€” the overridesJson records every explicit edit, including setting a
 // cell to "" (treated as "user cleared", not as "source does not contain").
-model HmSalesContractRowEdit {
+model SalesContractRowEdit {
   id            String            @id @default(cuid())
   poId          String
-  po            HmSalesContractPo @relation(fields: [poId], references: [id], onDelete: Cascade)
+  po            SalesContractPo @relation(fields: [poId], references: [id], onDelete: Cascade)
   marketCode    String // the row's market code (OE, OF, OD, LH, ...)
   // JSON blob of partial HmFlatCells overrides for A..U cells on this row.
   overridesJson String
@@ -826,7 +778,7 @@ model HmSalesContractRowEdit {
 }
 
 // ---------------------------------------------------------------------------
-// Human review queue (SRS §6.7, SC-FR-015)
+// Human review queue (SRS Â§6.7, SC-FR-015)
 // ---------------------------------------------------------------------------
 
 model ReviewTicket {
@@ -850,7 +802,7 @@ model ReviewTicket {
 }
 
 // ---------------------------------------------------------------------------
-// Append-only audit trail (SRS §E-11, SC-NFR-07)
+// Append-only audit trail (SRS Â§E-11, SC-NFR-07)
 // ---------------------------------------------------------------------------
 
 model AuditEvent {
@@ -867,7 +819,7 @@ model AuditEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Reference / mapping data (SRS §5.5, §C.3 enums) — configurable, audited
+// Reference / mapping data (SRS Â§5.5, Â§C.3 enums) â€” configurable, audited
 // ---------------------------------------------------------------------------
 
 model ReferenceData {
@@ -884,7 +836,7 @@ model ReferenceData {
 }
 
 // ---------------------------------------------------------------------------
-// Integration adapter registry + health (SRS §9, §5.8)
+// Integration adapter registry + health (SRS Â§9, Â§5.8)
 // ---------------------------------------------------------------------------
 
 model IntegrationAdapter {
@@ -898,7 +850,7 @@ model IntegrationAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// PDF Combiner — master Excel rows → one merged PDF per row from server folders
+// PDF Combiner â€” master Excel rows â†’ one merged PDF per row from server folders
 // ---------------------------------------------------------------------------
 
 model PdfCombineRun {
@@ -956,7 +908,7 @@ model PdfCombineMaster {
 }
 
 // ---------------------------------------------------------------------------
-// Container Module — CTG Port (cpatos.gov.bd) container-search automation
+// Container Module â€” CTG Port (cpatos.gov.bd) container-search automation
 // ---------------------------------------------------------------------------
 
 model ContainerSearch {
@@ -981,7 +933,7 @@ model ContainerSearch {
   containerSize   String?
   containerHeight String?
   resultJson      String                 @default("{}")
-  // Captured result PDF (the portal page printed to PDF — no native PDF exists):
+  // Captured result PDF (the portal page printed to PDF â€” no native PDF exists):
   pdfPath         String?
   pdfSha256       String?
   pdfPages        Int                    @default(0)

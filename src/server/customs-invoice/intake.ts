@@ -2,8 +2,6 @@ import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { buildPrefill, shortOrderKey } from "./pull-data";
 import {
-  DEFAULT_BUYER,
-  DEFAULT_EXPORTER,
   INVOICE_FLOAT_FIELDS,
   INVOICE_INT_FIELDS,
   INVOICE_STRING_FIELDS,
@@ -16,28 +14,48 @@ export interface CreateInvoiceResult {
   duplicate: boolean;
 }
 
-/** Create (or return existing) a CustomsInvoice for an Order No, prefilled from
- *  Sales Contract + Shipment Schedule. */
+/** Create (or return existing) a CustomsInvoice for an (Order No., Invoice No.)
+ *  pair, prefilled from the shipment-schedule row for that Invoice No. Each
+ *  destination country gets its own invoice (user rule 2026-10-28). */
 export async function createInvoiceForOrder(
   rawOrderNo: string,
-  opts: { actor?: string } = {},
+  opts: { actor?: string; invoiceNo?: string } = {},
 ): Promise<CreateInvoiceResult> {
   const actor = opts.actor ?? "system";
   const orderNo = shortOrderKey(rawOrderNo);
   if (!orderNo) throw new Error("Order No is required.");
+  const invoiceNo = (opts.invoiceNo ?? "").trim();
 
-  const existing = await prisma.customsInvoice.findUnique({ where: { orderNo } });
+  // Each (orderNo, invoiceNo) pair gets its own row. invoiceNo="" is the
+  // unnumbered slot — only one per Order allowed.
+  const existing = await prisma.customsInvoice.findUnique({
+    where: { orderNo_invoiceNumber: { orderNo, invoiceNumber: invoiceNo } },
+  });
   if (existing) return { invoiceId: existing.id, orderNo, duplicate: true };
 
-  const prefill = await buildPrefill(orderNo);
+  const prefill = await buildPrefill(orderNo, { invoiceNo });
   if (!prefill) throw new Error(`Order No ${orderNo} not found in Sales Contract or Shipment Schedule.`);
 
+  // Only fields the Order No. genuinely sources (Sales Contract + Shipment
+  // Schedule) are populated. Every other field stays blank — the user fills
+  // them in manually. The template's own cells still show the static layout
+  // (logo, company header, country-specific labels, bank/consignee lines),
+  // so blank DB fields don't blank anything on the generated .xlsx — they
+  // only mean "UCP has no auto-value to overwrite the template with".
   const inv = await prisma.customsInvoice.create({
     data: {
       orderNo,
       countryCode: prefill.countryCode,
       marketCode: prefill.marketCode,
       marketSubCode: prefill.marketSubCode,
+      // Invoice No. and Invoice date are sourced from the shipment schedule
+      // row for this Order No (Invoice No. is unique per week; Expected
+      // Delivery on the booking PDF becomes the invoice date). An explicit
+      // `opts.invoiceNo` takes precedence over the prefill (it's how the
+      // list-page "Create invoice" button hands over the specific Invoice No.
+      // the row carries).
+      invoiceNumber: invoiceNo || prefill.invoiceNo,
+      invoiceDate: prefill.expectedDelivery,
       contractNo: prefill.contractNo,
       contractDate: prefill.contractDate,
       hmOrderNo: prefill.hmOrderNo,
@@ -46,16 +64,22 @@ export async function createInvoiceForOrder(
       descriptionOfGoods: prefill.descriptionOfGoods,
       unitPrice: prefill.unitPrice ?? null,
       quantityPcs: prefill.quantityPcs ?? null,
-      portOfLoading: prefill.portOfLoading || "CHITTAGONG",
+      portOfLoading: prefill.portOfLoading,
       portOfDischarge: prefill.portOfDischarge,
       placeOfDelivery: prefill.placeOfDelivery,
       transportMode: prefill.transportMode,
       grossWeightKg: prefill.grossWeightKg ?? null,
       totalCartons: prefill.totalCartons ?? null,
       measurementCbm: prefill.measurementCbm ?? null,
-      exporterName: DEFAULT_EXPORTER,
-      buyerName: DEFAULT_BUYER,
-      consigneeName: DEFAULT_BUYER,
+      // Explicitly override any schema-level fallbacks ("Bangladesh" /
+      // "FCA Chittagong" / "USD" / "ANANTA GARMENTS LIMITED…" / "CHITTAGONG")
+      // so UCP never puts an un-sourced value anywhere.
+      countryOfOrigin: "",
+      termsOfDelivery: "",
+      currency: "",
+      exporterName: "",
+      buyerName: "",
+      consigneeName: "",
       createdBy: actor,
     },
   });

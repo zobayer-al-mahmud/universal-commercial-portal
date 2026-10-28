@@ -20,14 +20,27 @@ import type { InvoiceFields } from "./types";
  * conditional formatting — is left exactly as it was in the template.
  */
 
-/** Resolve a sheet-name to its XML path by reading workbook.xml + rels. */
+/**
+ * Resolve a sheet-name to its XML path by reading workbook.xml + rels.
+ *
+ * Matches by exact name first (case-insensitive), then by endsWith / contains
+ * — some per-country templates prefix the sheet (e.g. "TR-PAYMENT INVOICE").
+ */
 async function resolveSheetXmlPath(zip: JSZip, sheetName: string): Promise<string | null> {
   const workbook = await zip.file("xl/workbook.xml")?.async("string");
   const rels = await zip.file("xl/_rels/workbook.xml.rels")?.async("string");
   if (!workbook || !rels) return null;
-  const sheet = [...workbook.matchAll(/<sheet\s+([^>]+?)\/?>/g)]
-    .map((m) => m[1])
-    .find((attrs) => new RegExp(`name="${sheetName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`).test(attrs));
+  const sheets = [...workbook.matchAll(/<sheet\s+([^>]+?)\/?>/g)].map((m) => m[1]);
+  const needle = sheetName.toUpperCase();
+  const pickName = (pred: (upper: string) => boolean): string | undefined =>
+    sheets.find((attrs) => {
+      const name = attrs.match(/name="([^"]+)"/)?.[1] ?? "";
+      return pred(name.toUpperCase());
+    });
+  const sheet =
+    pickName((n) => n === needle) ||
+    pickName((n) => n.endsWith(needle)) ||
+    pickName((n) => n.includes(needle));
   if (!sheet) return null;
   const rId = sheet.match(/r:id="([^"]+)"/)?.[1];
   if (!rId) return null;
@@ -89,36 +102,105 @@ function encodeXmlEntities(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/** Find the input row — the row whose B cell holds a BARE AGL/H&M contract ref. */
+/**
+ * Find the input row — the row that holds the per-order variable values.
+ *
+ * Three detection paths, in order:
+ *   1. Legacy: the LAST row whose cell references a BARE "AGL/H&M/<n>/<yyyy>"
+ *      shared string. Works on the historical templates that still carried
+ *      their original contract ref on the input row.
+ *   2. Stripped-template fallback: the row immediately below the header row.
+ *      The header row is uniquely identifiable by the "INV. NO." label (plus
+ *      companions like "GROSS W" / "EXP DT"), which is always present on the
+ *      row above the input row and never anywhere else in the sheet.
+ *   3. Formula-reference anchor: every invoice template pulls values off the
+ *      input row via single-cell formulas like `=G74`, `=M74`, `=F74*M74`,
+ *      `=K74 & " "` etc. The input row is simply the row most other cells
+ *      point at. Covers templates (SW, NH, OE-NL variants, …) whose input
+ *      row never carried a bare contract ref AND lacks the "INV. NO." label
+ *      — Paths 1 and 2 return null for those, so without this path the whole
+ *      patch bails and the writer falls back to the plain fresh workbook
+ *      (no logo, no header, no cross-sheet formulas).
+ */
 function findInputRow(sheetXml: string, ss: SharedStrings): number | null {
-  // Collect every shared-string index whose entry is JUST a contract ref
-  // (header blobs like "CONTRACT. NO.AGL/H&M/34/2010 DT:..." don't qualify).
   const bareRefIndices: number[] = [];
+  const headerIndices: number[] = [];
   ss.entries().forEach((s, i) => {
-    if (/^AGL\/H&M\/\d+\/\d{4}$/i.test(s.trim())) bareRefIndices.push(i);
+    const t = s.trim();
+    if (/^AGL\/H&M\/\d+\/\d{4}$/i.test(t)) bareRefIndices.push(i);
+    // Uppercase label unique to the template's hidden data-row header.
+    if (/^INV\.?\s*NO\.?$/i.test(t)) headerIndices.push(i);
   });
-  if (bareRefIndices.length === 0) return null;
 
   // Match EITHER self-closing (<row …/>) OR content rows (<row …>…</row>).
-  // Without this, a self-closing row above a real row captures the real
-  // row's body and the row number gets mis-reported.
   const rowRe = /<row[^>]*\br="(\d+)"[^>]*?(?:\/>|>([\s\S]*?)<\/row>)/g;
-  const candidates: number[] = [];
-  for (const m of sheetXml.matchAll(rowRe)) {
-    const body = m[2] ?? "";
-    if (!body) continue;
-    const rowNum = parseInt(m[1], 10);
-    for (const idx of bareRefIndices) {
-      if (new RegExp(`<c\\b[^>]*t="s"[^>]*><v>${idx}<\\/v>`).test(body)) {
-        candidates.push(rowNum);
-        break;
+
+  // Path 1: contract-ref anchor.
+  if (bareRefIndices.length > 0) {
+    const refRows: number[] = [];
+    for (const m of sheetXml.matchAll(rowRe)) {
+      const body = m[2] ?? "";
+      if (!body) continue;
+      const rowNum = parseInt(m[1], 10);
+      for (const idx of bareRefIndices) {
+        if (new RegExp(`<c\\b[^>]*t="s"[^>]*><v>${idx}<\\/v>`).test(body)) {
+          refRows.push(rowNum);
+          break;
+        }
       }
     }
+    if (refRows.length > 0) return Math.max(...refRows);
   }
-  if (candidates.length === 0) return null;
-  // Input row is the LAST (highest row number) that still references a bare
-  // ref — header cells near the top reference the same string via formulas.
-  return Math.max(...candidates);
+
+  // Path 2: header-row + 1.
+  if (headerIndices.length > 0) {
+    const headerRows: number[] = [];
+    for (const m of sheetXml.matchAll(rowRe)) {
+      const body = m[2] ?? "";
+      if (!body) continue;
+      const rowNum = parseInt(m[1], 10);
+      for (const idx of headerIndices) {
+        if (new RegExp(`<c\\b[^>]*t="s"[^>]*><v>${idx}<\\/v>`).test(body)) {
+          headerRows.push(rowNum);
+          break;
+        }
+      }
+    }
+    if (headerRows.length > 0) return Math.max(...headerRows) + 1;
+  }
+
+  // Path 3: formula-reference count. Count how many *other* rows reference
+  // each candidate row via a single-cell formula on columns A..Q (the
+  // input-row columns). The input row is the one most other cells target.
+  // Only accept the pick when it clearly stands out (≥ 3 references, and at
+  // least 2× the runner-up) — otherwise return null so the writer falls back
+  // cleanly rather than guessing.
+  const refCounts = new Map<number, number>();
+  const COL_RE = /\b[A-Q](\d+)\b/g;
+  for (const fm of sheetXml.matchAll(/<f[^>]*>([\s\S]*?)<\/f>/g)) {
+    const expr = fm[1];
+    // Only count row numbers that appear bound to a column letter (so we
+    // don't catch bare row numbers that happen to appear in other XML text).
+    const seenHere = new Set<number>();
+    for (const cm of expr.matchAll(COL_RE)) {
+      const row = parseInt(cm[1], 10);
+      if (!Number.isFinite(row)) continue;
+      // One formula counts at most once per target row — avoids `F74*M74`
+      // double-counting row 74 (it is still clearly the input row either way,
+      // but keeping the count honest makes the "stands out" check robust).
+      if (seenHere.has(row)) continue;
+      seenHere.add(row);
+      refCounts.set(row, (refCounts.get(row) ?? 0) + 1);
+    }
+  }
+  if (refCounts.size > 0) {
+    const sorted = [...refCounts.entries()].sort((a, b) => b[1] - a[1]);
+    const [topRow, topCount] = sorted[0];
+    const runnerUp = sorted[1]?.[1] ?? 0;
+    if (topCount >= 3 && topCount >= runnerUp * 2) return topRow;
+  }
+
+  return null;
 }
 
 /**

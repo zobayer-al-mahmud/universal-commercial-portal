@@ -1,5 +1,7 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { readFileSync } from "fs";
+import { join } from "path";
 import {
   PERMISSIONS,
   PERMISSION_DESCRIPTIONS,
@@ -10,12 +12,11 @@ import {
 const prisma = new PrismaClient();
 
 // Placeholder modules (H&M Portal, Bangladesh Bank Portal, Damco Portal, Common
-// Requirements) are intentionally not seeded — they have no working functionality
+// Requirements) are intentionally not seeded â€” they have no working functionality
 // and are hidden from the UI. The Damco integration adapter used by Booking
 // Correction is seeded separately below.
 const MODULES = [
-  { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Intake H&M order packages and reconcile purchase orders into Sales Contract records." },
-  { key: "hm-sales-contract", name: "H&M Sales Contract", sortOrder: 2, status: "active", description: "Upload the three H&M PDFs per PO, match and review the data, and download a ready-to-use workbook per contract." },
+  { key: "sales-contract", name: "Sales Contract Creation", sortOrder: 1, status: "active", description: "Upload the three H&M PDFs per PO; match + reconcile the set; auto-fill contract reference, buyer code, dates and merchandiser names from configuration; download a consolidated Summary Excel across every contract." },
   { key: "shipment-schedule", name: "Week-wise Shipment Schedule", sortOrder: 3, status: "active", description: "Build a week-wise shipment schedule from booking-confirmation PDFs, auto-filled from the matching Sales Contract." },
   { key: "customs-invoice", name: "Customs Invoice Generation", sortOrder: 4, status: "active", description: "Generate per-order customs invoices with country templates, editable fields and Excel export." },
   { key: "pdf-rename", name: "PDF File Rename", sortOrder: 5, status: "active", description: "Read each PDF's invoice number (text or OCR) and rename files to the invoice number, one folder at a time." },
@@ -31,7 +32,7 @@ const ADAPTERS = [
   { key: "damco-portal", name: "Damco Shipper Portal", message: "Used by Booking Correction. Live processing is disabled until enabled by an administrator." },
 ];
 
-// Observed sample reference values (NOT confirmed closed lists — see Q-SC-03/06).
+// Observed sample reference values (NOT confirmed closed lists â€” see Q-SC-03/06).
 const PLANNING_MARKETS = ["OW", "OL-MX", "CL", "UY", "US", "CA", "TR", "BR", "ZA", "AU", "JP", "KR", "GB", "IN", "SE", "DE", "BE", "ES", "IT", "NL", "PL"];
 const BUYER_CODES = ["AGL 330 A", "AGL 349 A", "AGL 355 A", "AGL 355 B", "AGL 365 C", "AGL 365 D", "AGL 365 E", "AGL 365 F"];
 const PRODUCT_DESCRIPTIONS = ["Trousers", "Shirt", "Jacket", "Short", "Dress", "Skirt", "Dungarees"];
@@ -60,7 +61,7 @@ async function main() {
     }
   }
 
-  // Admin bootstrap (SRS §10) — from env, changeable after first login.
+  // Admin bootstrap (SRS Â§10) â€” from env, changeable after first login.
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim();
   const adminPass = process.env.BOOTSTRAP_ADMIN_PASSWORD?.trim();
   if (adminEmail && adminPass) {
@@ -76,10 +77,10 @@ async function main() {
           roleId: adminRole.id,
         },
       });
-      console.log(`✔ Admin bootstrapped: ${adminEmail}`);
+      console.log(`âœ” Admin bootstrapped: ${adminEmail}`);
     }
   } else {
-    console.log("… Skipped admin bootstrap (BOOTSTRAP_ADMIN_EMAIL/PASSWORD not set).");
+    console.log("â€¦ Skipped admin bootstrap (BOOTSTRAP_ADMIN_EMAIL/PASSWORD not set).");
   }
 
   // Modules
@@ -114,6 +115,31 @@ async function main() {
   await ref("incoterm", ["FCA"]);
   await ref("transport", ["Sea", "Air", "Sea-Air"]);
 
+  // CFS cut-off day per market code (source:
+  // `D:\UCP\automation docs\New folder\2. Week Wise Shipment Schedule
+  // Creation\CFS Cut Off-Updated From Week_38-2026.pdf`). Monday = 1st cut
+  // off, Friday = 2nd cut off. Admins may edit via the ReferenceData UI; the
+  // schema key is (type="cfs-cutoff-day", code=<2-letter market code>).
+  type CfsCutoffSeed = {
+    source: string;
+    marketCodeToCutoffDay: Record<string, "monday" | "friday">;
+  };
+  const cfsSeed = JSON.parse(
+    readFileSync(join(__dirname, "seed-data", "cfs-cutoff-days.json"), "utf8"),
+  ) as CfsCutoffSeed;
+  for (const [code, day] of Object.entries(cfsSeed.marketCodeToCutoffDay)) {
+    await prisma.referenceData.upsert({
+      where: { type_code: { type: "cfs-cutoff-day", code } },
+      update: { value: day, metaJson: JSON.stringify({ source: cfsSeed.source }) },
+      create: {
+        type: "cfs-cutoff-day",
+        code,
+        value: day,
+        metaJson: JSON.stringify({ source: cfsSeed.source }),
+      },
+    });
+  }
+
   // Per-market cargo-delivery consignees (observed-sample; Q-CI-01 master list TBD).
   const marketConsignees: [string, string][] = [
     ["NH", "H&M Retail Sdn Bhd, c/o CEVA Freight Holdings Sdn Bhd, Shah Alam, Malaysia"],
@@ -129,7 +155,44 @@ async function main() {
     });
   }
 
-  console.log("✔ Seed complete.");
+  // H&M folder-to-merchandiser mappings (configurable; seeded as a starting
+  // point so dev can use the UI immediately â€” the user replaces names/dates
+  // once the real values are confirmed).
+  const HM_FOLDERS: { folderLetter: string; sequence: number; merchandisers: string[] }[] = [
+    { folderLetter: "A", sequence: 0, merchandisers: [] },
+    { folderLetter: "B", sequence: 1, merchandisers: [] },
+    { folderLetter: "C", sequence: 2, merchandisers: [] },
+  ];
+  for (const f of HM_FOLDERS) {
+    await prisma.salesContractFolderMapping.upsert({
+      where: { folderLetter: f.folderLetter },
+      update: {},
+      create: {
+        folderLetter: f.folderLetter,
+        sequence: f.sequence,
+        merchandisersJson: JSON.stringify(f.merchandisers),
+        commercialDate: "",
+      },
+    });
+  }
+
+  // H&M buyer-code mappings (seeded with the two observed-sample pairs â€” the
+  // user adds the rest in the UI). Keeping these in a dedicated table lets the
+  // writer resolve C per (contractNo, folderLetter) without going through
+  // ReferenceData's flat `buyer-code` list.
+  const HM_BUYER_CODES: { contractNo: string; folderLetter: string; buyerCode: string }[] = [
+    { contractNo: "97", folderLetter: "A", buyerCode: "AGL 349 A" },
+    { contractNo: "98", folderLetter: "A", buyerCode: "AGL 355 A" },
+  ];
+  for (const bc of HM_BUYER_CODES) {
+    await prisma.salesContractBuyerCode.upsert({
+      where: { contractNo_folderLetter: { contractNo: bc.contractNo, folderLetter: bc.folderLetter } },
+      update: {},
+      create: bc,
+    });
+  }
+
+  console.log("âœ” Seed complete.");
 }
 
 main()

@@ -41,9 +41,19 @@ describe("parseBookingFilename", () => {
     expect(r.ok).toBe(false);
   });
 
-  it("rejects filenames whose sub-code does not start with two letters", () => {
+  it("accepts digits-only filenames so a bare '698518.pdf' still matches by order no", () => {
+    const r = parseBookingFilename("698518.pdf");
+    expect(r.ok).toBe(true);
+    expect(r.orderNoPrefix).toBe("698518");
+    expect(r.marketCode).toBe("");
+    expect(r.marketSubCode).toBe("");
+  });
+
+  it("keeps the order no when the sub-code does not start with letters (market comes from PDF/SC)", () => {
     const r = parseBookingFilename("123456 00abc.pdf");
-    expect(r.ok).toBe(false);
+    expect(r.ok).toBe(true);
+    expect(r.orderNoPrefix).toBe("123456");
+    expect(r.marketCode).toBe("");
   });
 });
 
@@ -76,7 +86,35 @@ describe("parseBookingPdfText (real sample PDFs)", () => {
     const f = parseBookingPdfText("");
     expect(f.bcn).toBe("");
     expect(f.bookingRef).toBe("");
+    expect(f.expectedDelivery).toBe("");
     expect(f.warnings).toContain("empty_or_tiny_pdf_text");
+  });
+
+  it("extracts Expected Delivery (ISO) from the label", () => {
+    const text =
+      "ANANTA GARMENTS LIMITED\nSTOCKHOLM\nSWEDEN\n0000000000000000000" +
+      "Status\nCONFIRMED\nBooking Confirmation Reference\nCTG4407121\n" +
+      "Expected Delivery\n2026-10-05\nExport Licence No.Port of Loading\n" +
+      "Chittagong\nPort of Discharge\nHamburg\nService\nCFS/CY\n";
+    const f = parseBookingPdfText(text);
+    expect(f.expectedDelivery).toBe("2026-10-05");
+  });
+
+  it("extracts Expected Delivery (dd.mm.yyyy) from the label", () => {
+    const text =
+      "ANANTA GARMENTS LIMITED\nSTOCKHOLM\nSWEDEN\n0000000000000000000\n" +
+      "Expected Delivery\n05.10.2026\nExport Licence No.Port of Loading\n" +
+      "Chittagong\n";
+    const f = parseBookingPdfText(text);
+    expect(f.expectedDelivery).toBe("05.10.2026");
+  });
+
+  it("leaves Expected Delivery blank when the label is followed by another label", () => {
+    const text =
+      "ANANTA GARMENTS LIMITED\nSTOCKHOLM\nSWEDEN\n0000000000000000000\n" +
+      "Expected Delivery\nExport Licence No.Port of Loading\nChittagong\n";
+    const f = parseBookingPdfText(text);
+    expect(f.expectedDelivery).toBe("");
   });
 });
 
