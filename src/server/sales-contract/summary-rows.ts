@@ -138,7 +138,9 @@ export function mapToSummaryRows(
   };
   const extras = config.extraPrices ?? [];
   const articleTimesMarket = extras.filter((p) => /^article:[^:]+:market:[^:]+$/.test(p.key));
-  const combos: Combo[] = [];
+  // Pre-dedup bucket: article × market expansion goes here, then we merge
+  // same-(tod, country, price) rows together in `combos` below.
+  const combos0: Combo[] = [];
 
   if (articleTimesMarket.length > 0) {
     // Expand one row per (market × article) using the country breakdown qtys.
@@ -146,12 +148,12 @@ export function mapToSummaryRows(
       const entries = articleTimesMarket.filter((p) => p.key.endsWith(`:market:${m.marketCode}`));
       if (entries.length === 0) {
         // No article split for this market → fall back to the market-only combo.
-        combos.push({ tod: m.tod ?? "", marketCode: m.marketCode, marketCodeB: m.marketCodeB, qty: m.quantity, price: fallbackPrice, priceKey: "fallback:avg" });
+        combos0.push({ tod: m.tod ?? "", marketCode: m.marketCode, marketCodeB: m.marketCodeB, qty: m.quantity, price: fallbackPrice, priceKey: "fallback:avg" });
         continue;
       }
       for (const e of entries) {
         const articleNo = e.key.match(/^article:([^:]+):market:/)?.[1];
-        combos.push({ tod: m.tod ?? "", marketCode: m.marketCode, marketCodeB: m.marketCodeB, qty: e.qty, price: e.price, priceKey: e.key, articleNo });
+        combos0.push({ tod: m.tod ?? "", marketCode: m.marketCode, marketCodeB: m.marketCodeB, qty: e.qty, price: e.price, priceKey: e.key, articleNo });
       }
     }
   } else {
@@ -159,8 +161,36 @@ export function mapToSummaryRows(
       const extraForMarket = extras.find((p) => p.key === `market:${m.marketCode}`);
       const price = extraForMarket?.price ?? fallbackPrice;
       const priceKey = extraForMarket ? `extra:market:${m.marketCode}` : "fallback:avg";
-      combos.push({ tod: m.tod ?? "", marketCode: m.marketCode, marketCodeB: m.marketCodeB, qty: m.quantity, price, priceKey });
+      combos0.push({ tod: m.tod ?? "", marketCode: m.marketCode, marketCodeB: m.marketCodeB, qty: m.quantity, price, priceKey });
     }
+  }
+
+  // Collapse article-level duplicates: when the per-article split produces
+  // several rows for the SAME (tod, marketCode, marketCodeB, price), merge
+  // them into a single row by summing qty. The user forbids repeating the
+  // same country × price combination across articles — one country ships at
+  // one (effective) price per PO (user rule 2026-10-28), so the Summary now
+  // lists exactly one row per distinct (TOD, country, price). The article
+  // identity is dropped at merge time (`[art N]` suffix never shows up).
+  const combos: Combo[] = [];
+  {
+    const key = (c: Combo) =>
+      `${c.tod}|${c.marketCode}|${c.marketCodeB}|${c.price ?? ""}`;
+    const grouped = new Map<string, Combo>();
+    for (const c of combos0) {
+      const k = key(c);
+      const existing = grouped.get(k);
+      if (existing) {
+        existing.qty = (Number.isFinite(existing.qty) ? existing.qty : 0) +
+          (Number.isFinite(c.qty) ? c.qty : 0);
+        // Lose the article identity when merging — the merged row is no
+        // longer about one specific article, it's the full country combo.
+        existing.articleNo = undefined;
+      } else {
+        grouped.set(k, { ...c });
+      }
+    }
+    for (const v of grouped.values()) combos.push(v);
   }
 
   // Deterministic sort: TOD ascending (lexicographic – PO already carries real
@@ -201,7 +231,10 @@ export function mapToSummaryRows(
       hts: "",
       contractValue: contractValueForRow,
       tod: c.tod,
-      country: `${c.marketCode}${c.marketCodeB ? ` (${c.marketCodeB})` : ""}${c.articleNo ? ` [art ${c.articleNo}]` : ""}`,
+      // Country column: "<marketCode> (<marketCodeB>)" only. The article
+      // identity is deliberately dropped — one row per distinct (TOD,
+      // country, price) is the user's rule, articles collapse into that row.
+      country: `${c.marketCode}${c.marketCodeB ? ` (${c.marketCodeB})` : ""}`,
       remarks: "",
       merchandiserName: config.merchandiserName,
       packSetQty: packSetQtyForRow,

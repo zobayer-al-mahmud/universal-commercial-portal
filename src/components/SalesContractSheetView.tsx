@@ -50,6 +50,16 @@ export function SalesContractSheetView({ contractId }: { contractId: string }) {
       setError("");
       try {
         const res = await fetch(`/api/sales-contract/${contractId}/sheet?mode=json`, { cache: "no-store" });
+        // A Next.js error page (HTML) can come back when the dev server's
+        // route tree is stale after a hot-reload hiccup, or on 404/500/auth
+        // redirects. Peek at the content-type so a stray `<!DOCTYPE …>` body
+        // doesn't surface as a cryptic "Unexpected token '<'" to the user.
+        const ct = res.headers.get("content-type") ?? "";
+        if (!ct.toLowerCase().includes("application/json")) {
+          throw new Error(
+            `Server returned a non-JSON response (HTTP ${res.status}). Reload the page; if the error stays, restart the dev server.`,
+          );
+        }
         const body = await res.json();
         if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
         if (!cancelled) { setData(body as SheetPayload); setEdits({}); }
@@ -128,6 +138,12 @@ export function SalesContractSheetView({ contractId }: { contractId: string }) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ edits }),
       });
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.toLowerCase().includes("application/json")) {
+        throw new Error(
+          `Server returned a non-JSON response (HTTP ${res.status}). Reload the page; if the error stays, restart the dev server.`,
+        );
+      }
       const body = await res.json();
       if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
       setSavedMsg(`✓ Saved ${body.updated ?? 0} row${(body.updated ?? 0) === 1 ? "" : "s"}.`);

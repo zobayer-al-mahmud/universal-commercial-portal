@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useMemo, useState } from "react";
 import { BulkDownloadBar } from "@/components/BulkDownloadBar";
 import { setCurrentContractAction } from "@/app/actions/sales-contract-config";
+import { useRouter } from "next/navigation";
 
 /** Row shape pre-flattened by the server page — keeps this component free of
  *  any Prisma types. */
@@ -20,6 +21,7 @@ export interface SalesContractListRow {
 }
 
 export function SalesContractListTable({ rows }: { rows: SalesContractListRow[] }) {
+  const router = useRouter();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   // Only contracts with uploaded POs can be exported; empty contracts would
@@ -48,9 +50,24 @@ export function SalesContractListTable({ rows }: { rows: SalesContractListRow[] 
     });
   const selectedIds = Array.from(selected);
 
+  // "View summary" opens the summary page with the current selection — empty
+  // selection covers EVERY contract (handy "quick view everything" shortcut).
+  // "Download summary" triggers the per-selection .xlsx download.
+  const summaryQuery = selectedIds.length > 0 ? `?ids=${encodeURIComponent(selectedIds.join(","))}` : "";
+  const openView = () => router.push(`/sales-contract/summary${summaryQuery}`);
+  const downloadSummary = () => {
+    const url = `/api/sales-contract/summary${summaryQuery}`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.rel = "noopener";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
   return (
     <>
-      <div className="mb-3">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <BulkDownloadBar
           endpoint="/api/sales-contract/bulk-download"
           bodyKey="ids"
@@ -61,6 +78,25 @@ export function SalesContractListTable({ rows }: { rows: SalesContractListRow[] 
           onClear={() => setSelected(new Set())}
           fileNameBase="SalesContracts"
         />
+        <span className="text-[11px] text-slate-400">·</span>
+        <button
+          type="button"
+          onClick={openView}
+          className="btn-ghost text-xs"
+          title={selectedIds.length > 0
+            ? `View consolidated summary of the ${selectedIds.length} selected contract${selectedIds.length === 1 ? "" : "s"}`
+            : "View consolidated summary of EVERY contract"}
+        >
+          📊 View summary{selectedIds.length > 0 ? ` (${selectedIds.length})` : ""}
+        </button>
+        <button
+          type="button"
+          onClick={downloadSummary}
+          className="btn-primary text-xs"
+          title="Download the consolidated Summary .xlsx for the current selection (empty = every contract)"
+        >
+          ⬇ Download summary .xlsx
+        </button>
       </div>
 
       <div className="card overflow-x-auto">

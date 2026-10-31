@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { generateHmSummary } from "@/server/sales-contract/summary";
+import { collectSummaryRows, generateHmSummary } from "@/server/sales-contract/summary";
 import { audit } from "@/lib/audit";
 
 export const dynamic = "force-dynamic";
@@ -23,9 +23,38 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const { searchParams } = new URL(req.url);
   const templatePath = searchParams.get("template") || undefined;
   const contractId = searchParams.get("contractId") || undefined;
+  // Multi-select: `?ids=a,b,c` — comma-separated Sales Contract ids. When
+  // provided, the summary only covers those contracts (user rule 2026-10-29).
+  const idsParam = searchParams.get("ids") || "";
+  const contractIds = idsParam
+    ? idsParam.split(",").map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  const mode = (searchParams.get("mode") || "xlsx").toLowerCase();
+
+  // JSON preview mode — returns the mapped rows so the UI's "View summary"
+  // page can render them without a round-trip through xlsx. Dedup by order no
+  // is on by default (one PO once, even if scanned into several contracts).
+  if (mode === "json") {
+    try {
+      const { rows, skippedPos, contractCount } = await collectSummaryRows({
+        contractId,
+        contractIds,
+      });
+      return NextResponse.json({
+        ok: true,
+        rows,
+        skippedPos,
+        contractCount,
+        totalRows: rows.length,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Summary preview failed";
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+  }
 
   try {
-    const result = await generateHmSummary({ templatePath, contractId });
+    const result = await generateHmSummary({ templatePath, contractId, contractIds });
     const buffer = await readFile(result.outputPath);
     await audit({
       entityType: "contract", entityId: contractId ?? "all",

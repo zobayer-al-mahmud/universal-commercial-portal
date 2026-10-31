@@ -200,20 +200,58 @@ describe("mapToSummaryRows with article × market expansion", () => {
     };
     const extras = buildExtraPricesFromPo(po, country);
     const rows = mapToSummaryRows(po, cfg({ extraPrices: extras }), "po1");
-    expect(rows.length).toBe(7); // 7 non-zero combinations
-    // Prices stay distinct.
-    const art051 = rows.filter((r) => r.country.includes("[art 051]"));
-    const art052 = rows.filter((r) => r.country.includes("[art 052]"));
-    expect(art051.every((r) => r.fob === 5.20)).toBe(true);
-    expect(art052.every((r) => r.fob === 5.80)).toBe(true);
+    // One row per DISTINCT (tod, country, price). Articles 051 and 052 ship
+    // at different prices, so each (market, price) stays a separate row:
+    // OE×5.20, OE×5.80, OF×5.20, OF×5.80, OD×5.20 (052 qty = 0 drops), LH×5.20, LH×5.80
+    // = 7 combinations. User rule 2026-10-28: no `[art N]` suffix in the
+    // country column; article identity is dropped at merge time.
+    expect(rows.length).toBe(7);
+    const low = rows.filter((r) => r.fob === 5.20);
+    const high = rows.filter((r) => r.fob === 5.80);
+    expect(low.length + high.length).toBe(7);
+    // Country column is `<marketCode> (<marketCodeB>)` only — no article suffix.
+    for (const r of rows) expect(r.country).not.toMatch(/\[art /);
+    expect(rows.find((r) => r.marketCode === "OE" && r.fob === 5.20)!.country).toBe("OE (OLCEU)");
     // CONTRACT VALUE per row = that row's price × that row's qty.
-    const oeArt051 = rows.find((r) => r.marketCode === "OE" && r.country.includes("[art 051]"))!;
-    expect(oeArt051.contractValue).toBeCloseTo(5.20 * 1800, 2);
-    // Order Qty + Pack/Set Qty only on first row (any order).
-    const firsts = rows.filter((r) => r.isFirstForPo);
-    expect(firsts).toHaveLength(1);
-    expect(firsts[0].orderQty).toBe(4078);
-    for (const r of rows.filter((r) => !r.isFirstForPo)) expect(r.orderQty).toBeNull();
+    const oeLow = rows.find((r) => r.marketCode === "OE" && r.fob === 5.20)!;
+    expect(oeLow.contractValue).toBeCloseTo(5.20 * 1800, 2);
+  });
+
+  it("merges same-(TOD, country, price) rows when the article split would produce duplicates", () => {
+    // Two articles with DISTINCT prices, so the article×market expansion
+    // kicks in; the (051 × OE) and (052 × OE) combos should still appear as
+    // ONE row each (never two with [art …] suffixes). The country column
+    // never carries an article suffix (user rule 2026-10-28).
+    const po = fakePo({
+      articles: [
+        { articleNo: "051", hmColourCode: "75-901", ptArticleNumber: "03", colourName: "A", optionNoWithVersion: "x (V1)", cost: 5.20, costCurrency: "USD", qtyPerArticle: 1800 },
+        { articleNo: "052", hmColourCode: "75-902", ptArticleNumber: "04", colourName: "B", optionNoWithVersion: "y (V1)", cost: 5.80, costCurrency: "USD", qtyPerArticle: 1744 },
+      ],
+      marketRows: [
+        { tod: "29 Jun, 2026", marketCode: "OE", marketCodeB: "OLCEU", quantity: 3544, quantityRaw: "3 544", pct: 100 },
+      ],
+      totalQty: 3544,
+    });
+    const country: SalesContractCountryBreakdownExtract = {
+      kind: "TotalCountryBreakdown",
+      header: po.header,
+      articles: ["051", "052"],
+      rows: [
+        { marketCode: "OE", marketCodeB: "OLCEU", articleQuantities: { "051": 1800, "052": 1744 }, rowTotal: 3544 },
+      ],
+      grandTotal: 3544,
+      articleTotals: { "051": 1800, "052": 1744 },
+      sizeTotals: [],
+    };
+    const extras = buildExtraPricesFromPo(po, country);
+    const rows = mapToSummaryRows(po, cfg({ extraPrices: extras }), "po1");
+    // Two distinct prices → two rows (one per price), both for OE. No
+    // "[art …]" suffix in the country column.
+    expect(rows).toHaveLength(2);
+    for (const r of rows) expect(r.country).toBe("OE (OLCEU)");
+    for (const r of rows) expect(r.country).not.toMatch(/\[art /);
+    const prices = rows.map((r) => r.fob).sort();
+    expect(prices).toEqual([5.20, 5.80]);
   });
 });
 

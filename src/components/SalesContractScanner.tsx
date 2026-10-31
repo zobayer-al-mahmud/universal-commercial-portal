@@ -60,6 +60,16 @@ export function SalesContractScanner(props: Props) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "preview", contractId: props.contractId, folderLetter, parentPath }),
         });
+        // Guard against HTML error pages (Next.js dev-server 404/500 or an
+        // auth redirect) — surface a clean "non-JSON response" message
+        // instead of the cryptic "Unexpected token '<'" the raw .json() call
+        // throws on `<!DOCTYPE …>`.
+        const ct1 = r1.headers.get("content-type") ?? "";
+        if (!ct1.toLowerCase().includes("application/json")) {
+          throw new Error(
+            `Server returned a non-JSON response (HTTP ${r1.status}). Reload the page; if the error stays, restart the dev server.`,
+          );
+        }
         const b1 = await r1.json();
         if (!r1.ok) throw new Error(b1.error || `HTTP ${r1.status}`);
         type O = { orderNo: string | null; status: "complete" | "missing" | "duplicate" | "error"; reason: string };
@@ -73,6 +83,12 @@ export function SalesContractScanner(props: Props) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ action: "commit", contractId: props.contractId, folderLetter, parentPath, orderNos: toImport }),
           });
+          const ct2 = r2.headers.get("content-type") ?? "";
+          if (!ct2.toLowerCase().includes("application/json")) {
+            throw new Error(
+              `Server returned a non-JSON response (HTTP ${r2.status}). Reload the page; if the error stays, restart the dev server.`,
+            );
+          }
           const b2 = await r2.json();
           if (!r2.ok) throw new Error(b2.error || `HTTP ${r2.status}`);
           imported = (b2.result?.imported ?? []).length;
