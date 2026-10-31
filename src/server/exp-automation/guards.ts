@@ -24,6 +24,9 @@ export const FORBIDDEN_SELECTORS = [
   "#SUBMIT",
   "[id*='ACKNOWLEDGE' i]",
   "[id*='DUPLICATE_EXPORT' i]",
+  // Duplicate EXP Reporting: the "Click for Acknowledgement" checkbox (P3_DUP_FLAG_0)
+  // is the final acknowledge action — disabled so it can never be ticked by the bot.
+  "[id*='DUP_FLAG' i]",
   "[value='Update' i]",
   "[value='Submit' i]",
   "[value='Acknowledge' i]",

@@ -238,16 +238,18 @@ export default async function ModulePage({ params }: { params: { key: string } }
       total: j.total,
       matched: j.matched,
       changed: j.changed,
+      partial: j.partial,
       downloaded: j.downloaded,
       failed: j.failed,
       status: j.status,
+      hasFile: Boolean(j.storedPath),
       createdAt: j.createdAt.toISOString().slice(0, 16).replace("T", " "),
     }));
     return (
       <div>
         <PageHeader
           title="EXP Automation"
-          subtitle="Bangladesh Bank EXP portal — fill & verify Issued EXP Corrections and Duplicate EXP Reporting (never submits), and bulk-download EXP PDFs from Excel."
+          subtitle="Bangladesh Bank EXP portal — fill Issued EXP Correction and Duplicate EXP Reporting forms from Excel (never submits), and bulk-download EXP PDFs from Excel."
           actions={<StatusBadge status={module.status} />}
         />
         <ExpAutomationManager

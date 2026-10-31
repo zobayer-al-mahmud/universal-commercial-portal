@@ -4,6 +4,8 @@ import type { Config } from "tailwindcss";
 // a woven blue fabric swatch (#3C6DA5) with a grey wordmark on white.
 const config: Config = {
   content: ["./src/**/*.{ts,tsx}"],
+  // Class-based dark mode so a UI toggle (not just the OS setting) can switch it.
+  darkMode: "class",
   theme: {
     extend: {
       colors: {

@@ -20,12 +20,15 @@ export async function GET(_req: Request, { params }: { params: { jobId: string }
     include: { events: { orderBy: { createdAt: "asc" }, take: 30 } },
   });
 
-  const running = job.status === "queued" || job.status === "processing";
+  // "stopping" stays running so the UI keeps polling until the job is parked.
+  const running = job.status === "queued" || job.status === "processing" || job.status === "stopping";
   return NextResponse.json({
     jobId: job.id,
     folder: job.folder,
     status: job.status,
     running,
+    stopping: job.status === "stopping",
+    stopped: job.status === "stopped",
     currentActivity: job.currentActivity,
     minConfidence: job.minConfidence,
     ocrEnabled: job.ocrEnabled,

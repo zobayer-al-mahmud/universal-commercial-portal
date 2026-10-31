@@ -1,4 +1,4 @@
-import type { FieldControl, FieldMap } from "./types";
+import type { FieldControl } from "./types";
 
 /**
  * Pure comparison between the Excel value and what the portal form currently
@@ -34,6 +34,36 @@ export function normDate(v: string): string {
   return s.toLowerCase();
 }
 
+const MONTHS_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Render an Excel date in the SAME format the portal field currently shows, so we
+ * write a value the APEX control accepts. `sample` is the record's existing value
+ * read from the live control; when it is blank or its pattern is unrecognised the
+ * Excel string is returned unchanged (we never guess a format).
+ */
+export function formatDateLike(excel: string, sample: string): string {
+  const iso = normDate(excel); // YYYY-MM-DD
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return excel.trim();
+  const [, yyyy, mm, dd] = m;
+  const s = (sample || "").trim();
+  if (!s) return excel.trim();
+  if (/^\d{1,2}[./]\d{1,2}[./]\d{4}$/.test(s)) {
+    const sep = s.includes(".") ? "." : "/";
+    return `${dd}${sep}${mm}${sep}${yyyy}`;
+  }
+  if (/^\d{1,2}-[A-Za-z]{3}-\d{4}$/.test(s)) {
+    return `${dd}-${MONTHS_ABBR[Number(mm) - 1]}-${yyyy}`;
+  }
+  if (/^[A-Za-z]{3}-\d{1,2}-\d{4}$/.test(s)) {
+    return `${MONTHS_ABBR[Number(mm) - 1]}-${dd}-${yyyy}`;
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return `${yyyy}-${mm}-${dd}`;
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(s)) return `${dd}-${mm}-${yyyy}`;
+  return excel.trim();
+}
+
 /** Numeric equivalence tolerant of thousands separators and trailing zeros. */
 export function normNumber(v: string): string {
   const s = (v || "").replace(/,/g, "").trim();
@@ -67,38 +97,13 @@ export function valuesEquivalent(control: FieldControl, excel: string, portal: s
   }
 }
 
+/**
+ * One field's fill result: the Excel value written and what the control showed on
+ * read-back. Used to report which fields were populated (NOT a match comparison).
+ */
 export interface FieldDiff {
   key: string;
   portalLabel: string;
   excel: string;
   portal: string;
-}
-
-/**
- * Compare the Excel row values against the values read from the portal form.
- * Returns the fields that differ (to be filled). `alwaysFill` fields are always
- * returned so the form is fully prepared (e.g. the mandatory Update Remarks),
- * unless the Excel value is blank. Blank Excel values are skipped when the map
- * says `skipIfBlank` (the default behaviour for optional fields).
- */
-export function diffFields(
-  fields: FieldMap[],
-  excelValues: Record<string, string>,
-  portalValues: Record<string, string>,
-): FieldDiff[] {
-  const diffs: FieldDiff[] = [];
-  for (const f of fields) {
-    const excel = (excelValues[f.key] ?? "").trim();
-    const portal = (portalValues[f.key] ?? "").trim();
-    if (!excel && f.skipIfBlank) continue; // nothing to write
-    if (f.alwaysFill) {
-      // Prepare the field regardless, but only if it would actually change.
-      if (!valuesEquivalent(f.control, excel, portal)) diffs.push({ key: f.key, portalLabel: f.portalLabel, excel, portal });
-      continue;
-    }
-    if (!valuesEquivalent(f.control, excel, portal)) {
-      diffs.push({ key: f.key, portalLabel: f.portalLabel, excel, portal });
-    }
-  }
-  return diffs;
 }

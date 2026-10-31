@@ -1,5 +1,5 @@
 import type { Locator, Page } from "playwright";
-import type { FieldControl } from "./types";
+import type { FieldControl, FieldMap } from "./types";
 
 /**
  * Label-anchored access to Oracle APEX form controls. APEX item ids (`Pnn_FOO`)
@@ -66,10 +66,145 @@ function cssEscape(id: string): string {
   return id.replace(/([^a-zA-Z0-9_-])/g, "\\$1");
 }
 
-/** Read the current value a control holds (select → selected option text). */
-export async function readControlValue(page: Page, label: string, control: FieldControl): Promise<string | null> {
-  const c = await controlForLabel(page, label);
-  if (!c) return null;
+/**
+ * Locate an EDIT-form control by its stable Oracle APEX item id — the reliable
+ * way to hit the right field even when the visible label is blank or is shared
+ * with the search panel. Tolerates date-picker ids whose visible input carries a
+ * "|input" suffix (we store the base id, e.g. "P68_INVOICE_DATE").
+ */
+export async function controlById(page: Page, itemId: string): Promise<Locator | null> {
+  // The real form control. APEX date pickers put the id on a WRAPPER and the
+  // actual input at "<id>|input", so try the "|input" variant first, then the
+  // bare id / name — but only accept an input/select/textarea, never a wrapper.
+  const selectors = [`[id="${itemId}|input"]`, `[id="${itemId}"]`, `[name="${itemId}"]`];
+  for (const sel of selectors) {
+    const loc = page.locator(sel);
+    const n = await loc.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const one = loc.nth(i);
+      const tag = await one.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
+      if (tag === "input" || tag === "select" || tag === "textarea") return one;
+    }
+  }
+  // Fall back to a form control nested inside a wrapper that carries the id.
+  const nested = page.locator(`[id="${itemId}"] input, [id="${itemId}"] select, [id="${itemId}"] textarea`).first();
+  if (await nested.count().catch(() => 0)) return nested;
+  return null;
+}
+
+/**
+ * Pick the EDIT-form control for a label while AVOIDING the search panel. The
+ * search panel and the edit form share labels (ADSCODE / EXP Serial / Invoice No
+ * …), so a plain label `.first()` can land on the search field. This scores every
+ * candidate control, penalises ones that look like search fields, rewards ones in
+ * an "Edit/Update" region or that already hold a value, tags the winner with a
+ * data attribute and returns a Locator for it. Read-only aside from the marker.
+ */
+export async function pickEditControl(page: Page, labels: string[]): Promise<Locator | null> {
+  const token = `ucp_${Math.random().toString(36).slice(2, 10)}`;
+  const found = await page.evaluate(
+    ({ labels, token }) => {
+      const norm = (s: string | null | undefined) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const wants = labels.map(norm).filter(Boolean);
+      const txt = (el: Element | null | undefined) => (el?.textContent || "").replace(/\s+/g, " ").trim();
+
+      const labelText = (el: HTMLElement): string => {
+        const id = el.id;
+        if (id) {
+          const l = document.querySelector(`label[for="${CSS.escape(id)}"]`);
+          if (l) return txt(l);
+          const base = id.replace(/(_input|\|input)$/i, "");
+          if (base !== id) {
+            const l2 = document.querySelector(`label[for="${CSS.escape(base)}"]`);
+            if (l2) return txt(l2);
+          }
+        }
+        const row = el.closest("tr, .t-Form-fieldContainer, .apex-item-wrapper, td");
+        const lab = row?.querySelector("label");
+        if (lab) return txt(lab);
+        const prev = el.previousElementSibling;
+        if (prev && /label|th|td/i.test(prev.tagName)) return txt(prev);
+        return "";
+      };
+      const regionText = (el: HTMLElement): string => {
+        const r = el.closest(".t-Region, .uRegion, fieldset, .a-Region, .apex-region");
+        const h = r?.querySelector(".t-Region-title, .uRegionHeading, legend, h1, h2, h3, .a-Region-title");
+        return h ? txt(h) : "";
+      };
+      const visible = (el: HTMLElement) => {
+        const cs = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return cs.display !== "none" && cs.visibility !== "hidden" && (r.width > 0 || r.height > 0);
+      };
+      const curValue = (el: HTMLElement): string => {
+        const tag = el.tagName.toLowerCase();
+        if (tag === "select") {
+          const s = el as HTMLSelectElement;
+          const o = s.selectedOptions[0];
+          const v = o ? (o.textContent || o.value || "").trim() : "";
+          return /^--.*--$/.test(v) || /^select\b/i.test(v) ? "" : v;
+        }
+        return (el as HTMLInputElement).value || "";
+      };
+
+      let best: HTMLElement | null = null;
+      let bestScore = -Infinity;
+      document.querySelectorAll("input, select, textarea").forEach((node) => {
+        const el = node as HTMLElement;
+        const tag = el.tagName.toLowerCase();
+        const type = (el as HTMLInputElement).type || "";
+        if (tag === "input" && /^(hidden|button|submit|reset|image|checkbox|radio)$/i.test(type)) return;
+        if (!visible(el)) return;
+        const lab = norm(labelText(el));
+        if (!lab) return;
+        const matched = wants.some((w) => lab === w || lab.startsWith(w) || w.startsWith(lab));
+        if (!matched) return;
+
+        const id = el.id || "";
+        const region = norm(regionText(el));
+        let score = 0;
+        // Penalise obvious search fields.
+        if (/search/.test(region)) score -= 50;
+        if (/\d$/.test(id.replace(/^p\d+_/i, ""))) score -= 20; // Pnn_X2 search-variant id
+        // Reward the edit/update region + a field that already shows the record's value.
+        if (/edit|update|correction|duplicate/.test(region)) score += 30;
+        if (curValue(el).trim()) score += 25;
+        if (lab === (wants[0] || "")) score += 5; // exact label beats prefix
+        if (score > bestScore) { bestScore = score; best = el; }
+      });
+
+      if (!best) return false;
+      // Never select a field that still sits in a search region after scoring.
+      (best as HTMLElement).setAttribute("data-ucp-pick", token);
+      return true;
+    },
+    { labels, token },
+  ).catch(() => false);
+
+  if (!found) return null;
+  const loc = page.locator(`[data-ucp-pick="${token}"]`).first();
+  return (await loc.count().catch(() => 0)) ? loc : null;
+}
+
+/**
+ * Resolve a mapped field's control: by stable APEX id first; if that id is not on
+ * the live DOM (ids drift between sessions), fall back to an EDIT-region-aware
+ * label match that avoids the search panel — never the plain `.first()` label
+ * lookup, which can hit the identically-labelled search field.
+ */
+export async function controlForField(page: Page, field: FieldMap): Promise<Locator | null> {
+  if (field.portalId) {
+    const byId = await controlById(page, field.portalId);
+    if (byId) return byId;
+  }
+  const labels = [field.portalLabel, ...(field.excelHeaders ?? [])];
+  const edit = await pickEditControl(page, labels);
+  if (edit) return edit;
+  return controlForLabel(page, field.portalLabel);
+}
+
+/** Read the value a located control holds (select → selected option text). */
+async function readLocator(c: Locator): Promise<string | null> {
   try {
     const tag = (await c.evaluate((el) => el.tagName.toLowerCase())).trim();
     if (tag === "select") {
@@ -79,8 +214,7 @@ export async function readControlValue(page: Page, label: string, control: Field
         return opt ? (opt.textContent || opt.value || "") : "";
       });
       const t = (txt || "").trim();
-      // Treat an unselected placeholder as empty.
-      if (/^--.*--$/.test(t) || /^select\b/i.test(t)) return "";
+      if (/^--.*--$/.test(t) || /^select\b/i.test(t)) return ""; // unselected placeholder
       return t;
     }
     const v = (await c.inputValue().catch(() => "")) ?? "";
@@ -90,14 +224,8 @@ export async function readControlValue(page: Page, label: string, control: Field
   }
 }
 
-/**
- * Set a control's value. Returns true when the control was found and written.
- * For selects we try by option label then by value. For dates/text we clear and
- * type the value. Nothing is submitted.
- */
-export async function fillControl(page: Page, label: string, control: FieldControl, value: string): Promise<boolean> {
-  const c = await controlForLabel(page, label);
-  if (!c) return false;
+/** Write a value to a located control (select by label/value/prefix; else typed). Never submits. */
+async function fillLocator(c: Locator, value: string): Promise<boolean> {
   try {
     const tag = (await c.evaluate((el) => el.tagName.toLowerCase())).trim();
     if (tag === "select") {
@@ -109,8 +237,7 @@ export async function fillControl(page: Page, label: string, control: FieldContr
           await c.selectOption({ value }, { timeout: 3000 });
           return true;
         } catch {
-          // Last resort: match an option whose text starts with the value (code prefix).
-          const matched = await c.evaluate((el, v) => {
+          return await c.evaluate((el, v) => {
             const s = el as HTMLSelectElement;
             const want = v.toLowerCase().trim();
             for (const o of Array.from(s.options)) {
@@ -123,19 +250,53 @@ export async function fillControl(page: Page, label: string, control: FieldContr
             }
             return false;
           }, value);
-          return matched;
         }
       }
     }
-    // text / date / number inputs + textarea
-    await c.fill("");
-    await c.fill(value);
-    // APEX often binds change handlers; nudge them.
-    await c.evaluate((el) => el.dispatchEvent(new Event("change", { bubbles: true }))).catch(() => undefined);
-    return true;
+    // Text / textarea / date-picker inputs. APEX date pickers (id "Pnn_X|input")
+    // are READONLY — you normally pick from the calendar — so Playwright's fill()
+    // throws "element is not editable". Fall back to setting the value directly and
+    // firing the events APEX listens for (input/change/blur), after clearing the
+    // readonly flag. Never clicks or submits.
+    try {
+      await c.fill("");
+      await c.fill(value);
+    } catch {
+      await c.evaluate((el, v) => {
+        const i = el as HTMLInputElement | HTMLTextAreaElement;
+        i.removeAttribute("readonly");
+        i.value = v;
+      }, value);
+    }
+    await c.evaluate((el) => {
+      for (const ev of ["input", "change", "blur"]) el.dispatchEvent(new Event(ev, { bubbles: true }));
+    }, undefined).catch(() => undefined);
+    // Confirm the value actually landed (readonly inputs can silently reject fill()).
+    const got = (await c.inputValue().catch(() => "")) ?? "";
+    return got.trim() !== "";
   } catch {
     return false;
   }
+}
+
+/* ---- label-based access (search panel + record-loaded heuristics) ---- */
+export async function readControlValue(page: Page, label: string, _control: FieldControl): Promise<string | null> {
+  const c = await controlForLabel(page, label);
+  return c ? readLocator(c) : null;
+}
+export async function fillControl(page: Page, label: string, _control: FieldControl, value: string): Promise<boolean> {
+  const c = await controlForLabel(page, label);
+  return c ? fillLocator(c, value) : false;
+}
+
+/* ---- field-based access (EDIT form, by stable APEX id) ---- */
+export async function readFieldValue(page: Page, field: FieldMap): Promise<string | null> {
+  const c = await controlForField(page, field);
+  return c ? readLocator(c) : null;
+}
+export async function fillField(page: Page, field: FieldMap, value: string): Promise<boolean> {
+  const c = await controlForField(page, field);
+  return c ? fillLocator(c, value) : false;
 }
 
 /** Fill a search-panel field by label; tolerant of the field being optional. */

@@ -3,7 +3,7 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
 
-const TERMINAL = new Set(["completed", "not_found", "mismatch", "failed", "needs_auth"]);
+const TERMINAL = new Set(["completed", "not_found", "mismatch", "failed", "needs_auth", "stopped"]);
 
 /** Aggregate live status for a bulk container batch (polled by the UI). */
 export async function GET(_req: Request, { params }: { params: { batchId: string } }) {
@@ -16,9 +16,10 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
 
   const rows = await prisma.containerSearch.findMany({ where: { batchId: batch.id }, orderBy: { createdAt: "asc" } });
 
-  let verified = 0, failed = 0, done = 0, running = 0, queued = 0;
+  let verified = 0, failed = 0, done = 0, running = 0, queued = 0, stopped = 0;
   for (const r of rows) {
-    if (r.status === "completed" && r.pdfPath) verified++;
+    if (r.status === "stopped") stopped++;
+    else if (r.status === "completed" && r.pdfPath) verified++;
     else if (TERMINAL.has(r.status)) failed++;
     if (TERMINAL.has(r.status)) done++;
     else if (r.status === "running") running++;
@@ -29,7 +30,8 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     batchId: batch.id,
     total: batch.total,
     running: running > 0 || queued > 0,
-    counts: { total: rows.length, done, verified, failed, running, queued },
+    stopped: stopped > 0 && running === 0 && queued === 0,
+    counts: { total: rows.length, done, verified, failed, running, queued, stopped },
     containers: rows.map((r) => ({
       id: r.id,
       containerNo: r.portalContainerNo || r.containerNo,

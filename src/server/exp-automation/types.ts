@@ -25,8 +25,17 @@ export interface FieldMap {
   key: string;
   /** Header text in the operator's workbook (matched case/space-insensitively; aliases allowed). */
   excelHeaders: string[];
-  /** Human label of the portal form field (for logs + the robust label-anchored locator). */
+  /** Human label of the portal form field (for logs + the preview). */
   portalLabel: string;
+  /**
+   * Stable Oracle APEX item id of the EDIT-form control (verified against the
+   * live portal 2026-10-28), e.g. "P68_COMMODITY_CODE". Read/fill locate by this
+   * id first — unlike labels it is unique and present even when the visible label
+   * is blank, and it is the edit field (Pnn_X), never the search field (Pnn_X2).
+   * Omitted only when no portal field could be confirmed for the column; such a
+   * field is never written to a guessed control and is logged for manual review.
+   */
+  portalId?: string;
   control: FieldControl;
   /**
    * When true the field is always written to prepare the form (not part of the
@@ -35,6 +44,12 @@ export interface FieldMap {
   alwaysFill?: boolean;
   /** When true a blank Excel value means "leave the portal field untouched". */
   skipIfBlank?: boolean;
+  /**
+   * The Excel column exists but its portal target could not be confirmed (or is
+   * semantically different). The driver does NOT write it; it logs the value so
+   * the operator can enter it by hand before submitting. Never silently dropped.
+   */
+  needsConfirmation?: string;
 }
 
 /* ------------------------------------------------------------------ *
@@ -42,28 +57,31 @@ export interface FieldMap {
  *    Search key: ADSCODE + EXP Serial + EXP Year.
  * ------------------------------------------------------------------ */
 export const CORRECTION_FIELDS: FieldMap[] = [
-  { key: "commodityCode", excelHeaders: ["Commodity Code"], portalLabel: "Commodity Code", control: "text", skipIfBlank: true },
-  { key: "countryCode", excelHeaders: ["Country Code", "Country"], portalLabel: "Country Code", control: "select", skipIfBlank: true },
-  { key: "destinationPort", excelHeaders: ["Destination Port"], portalLabel: "Destination Port", control: "text", skipIfBlank: true },
-  { key: "unit", excelHeaders: ["Unit"], portalLabel: "Unit", control: "select", skipIfBlank: true },
-  { key: "quantity", excelHeaders: ["Quantity"], portalLabel: "Quantity", control: "number", skipIfBlank: true },
-  { key: "currencyCode", excelHeaders: ["Currency Code", "Currency"], portalLabel: "Currency Code", control: "select", skipIfBlank: true },
-  { key: "incoterm", excelHeaders: ["Incoterm Used", "Incoterm"], portalLabel: "Incoterm Used", control: "select", skipIfBlank: true },
-  { key: "invoiceNo", excelHeaders: ["Invoice No", "Invoice No."], portalLabel: "Invoice No", control: "text", skipIfBlank: true },
-  { key: "invoiceDate", excelHeaders: ["Invoice Date"], portalLabel: "Invoice Date", control: "date", skipIfBlank: true },
-  { key: "invoiceAmount", excelHeaders: ["Invoice Amount (Issue)", "Invoice Amount"], portalLabel: "Invoice Amount (Issue)", control: "number", skipIfBlank: true },
-  { key: "cmtAmount", excelHeaders: ["CMT Amount (Issue)", "CMT Amount"], portalLabel: "CMT Amount (Issue)", control: "number", skipIfBlank: true },
-  { key: "freightAmount", excelHeaders: ["Frieght Amount", "Freight Amount"], portalLabel: "Freight Amount", control: "number", skipIfBlank: true },
-  { key: "insuranceAmount", excelHeaders: ["Insurance Amount"], portalLabel: "Insurance Amount", control: "number", skipIfBlank: true },
-  { key: "otherCharges", excelHeaders: ["Other Charges"], portalLabel: "Other Charges", control: "number", skipIfBlank: true },
+  { key: "commodityCode", excelHeaders: ["Commodity Code"], portalLabel: "Commodity Code", portalId: "P68_COMMODITY_CODE", control: "text", skipIfBlank: true },
+  { key: "countryCode", excelHeaders: ["Country Code", "Country"], portalLabel: "Country Code", portalId: "P68_COUNTRY_CODE", control: "select", skipIfBlank: true },
+  { key: "destinationPort", excelHeaders: ["Destination Port"], portalLabel: "Destination Port", portalId: "P68_DEST_PORT", control: "text", skipIfBlank: true },
+  { key: "unit", excelHeaders: ["Unit"], portalLabel: "Unit", portalId: "P68_UNIT_CODE", control: "select", skipIfBlank: true },
+  { key: "quantity", excelHeaders: ["Quantity"], portalLabel: "Quantity", portalId: "P68_QUANTITY", control: "number", skipIfBlank: true },
+  { key: "currencyCode", excelHeaders: ["Currency Code", "Currency"], portalLabel: "Currency Code", portalId: "P68_CURRENCY_CODE", control: "select", skipIfBlank: true },
+  { key: "incoterm", excelHeaders: ["Incoterm Used", "Incoterm"], portalLabel: "Incoterm Used", portalId: "P68_INCOTERM", control: "select", skipIfBlank: true },
+  { key: "invoiceNo", excelHeaders: ["Invoice No", "Invoice No."], portalLabel: "Invoice No", portalId: "P68_INVOICE_NO", control: "text", skipIfBlank: true },
+  { key: "invoiceDate", excelHeaders: ["Invoice Date"], portalLabel: "Invoice Date", portalId: "P68_INVOICE_DATE", control: "date", skipIfBlank: true },
+  { key: "invoiceAmount", excelHeaders: ["Invoice Amount (Issue)", "Invoice Amount"], portalLabel: "Invoice Amount (Issue)", portalId: "P68_AMOUNT_INV", control: "number", skipIfBlank: true },
+  { key: "cmtAmount", excelHeaders: ["CMT Amount (Issue)", "CMT Amount"], portalLabel: "CMT Amount (Issue)", portalId: "P68_CMT", control: "number", skipIfBlank: true },
+  { key: "freightAmount", excelHeaders: ["Frieght Amount", "Freight Amount"], portalLabel: "Frieght Amount", portalId: "P68_FRIEGHT", control: "number", skipIfBlank: true },
+  { key: "insuranceAmount", excelHeaders: ["Insurance Amount"], portalLabel: "Insurance Amount", portalId: "P68_INSURANCE", control: "number", skipIfBlank: true },
+  { key: "otherCharges", excelHeaders: ["Other Charges"], portalLabel: "Other Charges", portalId: "P68_OTHER_CHARGES", control: "number", skipIfBlank: true },
+  // "LC/Contract No." IS a real text field on the Edit/Update EXP form (confirmed
+  // from the live portal screenshot). Its APEX id is not pinned, so it is filled
+  // by label (edit-region-aware) rather than a guessed id.
   { key: "lcContractNo", excelHeaders: ["LC/Contract No.", "LC/Contract No"], portalLabel: "LC/Contract No.", control: "text", skipIfBlank: true },
-  { key: "carrierVessel", excelHeaders: ["Name of Carrier/Vessel", "Carrier/Vessel"], portalLabel: "Name of Carrier/Vessel", control: "text", skipIfBlank: true },
-  { key: "transportDocNo", excelHeaders: ["Transport Doc No", "Transport Doc No."], portalLabel: "Transport Doc No", control: "text", skipIfBlank: true },
-  { key: "transportDocDate", excelHeaders: ["Transport Doc Date"], portalLabel: "Transport Doc Date", control: "date", skipIfBlank: true },
-  { key: "shipPort", excelHeaders: ["Ship Port"], portalLabel: "Ship Port", control: "select", skipIfBlank: true },
-  { key: "signatory", excelHeaders: ["Signatory of Exporter"], portalLabel: "Signatory of Exporter", control: "select", skipIfBlank: true },
-  { key: "sector", excelHeaders: ["Sector"], portalLabel: "Sector", control: "select", skipIfBlank: true },
-  { key: "updateRemarks", excelHeaders: ["*Update Remarks", "Update Remarks"], portalLabel: "Update Remarks", control: "text", alwaysFill: true },
+  { key: "carrierVessel", excelHeaders: ["Name of Carrier/Vessel", "Carrier/Vessel"], portalLabel: "Name of Carrier/Vessel", portalId: "P68_CARREIR", control: "text", skipIfBlank: true },
+  { key: "transportDocNo", excelHeaders: ["Transport Doc No", "Transport Doc No."], portalLabel: "Transport Doc No", portalId: "P68_BILL_LADING", control: "text", skipIfBlank: true },
+  { key: "transportDocDate", excelHeaders: ["Transport Doc Date"], portalLabel: "Transport Doc Date", portalId: "P68_DATE_LADING", control: "date", skipIfBlank: true },
+  { key: "shipPort", excelHeaders: ["Ship Port"], portalLabel: "Ship Port", portalId: "P68_SHIP_PORT", control: "select", skipIfBlank: true },
+  { key: "signatory", excelHeaders: ["Signatory of Exporter"], portalLabel: "Signatory of Exporter", portalId: "P68_ASSIGNED_SIGNATORY", control: "select", skipIfBlank: true },
+  { key: "sector", excelHeaders: ["Sector"], portalLabel: "Sector", portalId: "P68_SECTOR", control: "select", skipIfBlank: true },
+  { key: "updateRemarks", excelHeaders: ["*Update Remarks", "Update Remarks"], portalLabel: "Update Remarks", portalId: "P68_REMARKS", control: "text", alwaysFill: true },
 ];
 
 /* ------------------------------------------------------------------ *
@@ -71,20 +89,25 @@ export const CORRECTION_FIELDS: FieldMap[] = [
  *    Search key: ADSCODE + EXP Serial + EXP Year.
  * ------------------------------------------------------------------ */
 export const DUPLICATE_FIELDS: FieldMap[] = [
-  { key: "freightAmount", excelHeaders: ["Frieght Amount", "Freight Amount"], portalLabel: "Freight Amount", control: "number", skipIfBlank: true },
-  { key: "cmtConfirmed", excelHeaders: ["CMT Amount Confirmed by Customs"], portalLabel: "CMT Amount Confirmed by Customs", control: "number", skipIfBlank: true },
-  { key: "insuranceAmount", excelHeaders: ["Insurance Amount"], portalLabel: "Insurance Amount", control: "number", skipIfBlank: true },
-  { key: "otherCharges", excelHeaders: ["Other Charges"], portalLabel: "Other Charges", control: "number", skipIfBlank: true },
-  { key: "customOffice", excelHeaders: ["Custom Office", "*Custom Office"], portalLabel: "Custom Office", control: "select", skipIfBlank: true },
-  { key: "billOfExportNo", excelHeaders: ["Bill of Export Number (Number Only)", "Bill of Export Number"], portalLabel: "Bill of Export Number (Number Only)", control: "text", skipIfBlank: true },
-  { key: "billOfExportDate", excelHeaders: ["Bill of Export Date"], portalLabel: "Bill of Export Date", control: "date", skipIfBlank: true },
-  { key: "shipmentDate", excelHeaders: ["Shipment Date"], portalLabel: "Shipment Date", control: "date", skipIfBlank: true },
-  { key: "ackDuplicateDate", excelHeaders: ["Acknowledge/Duplicate Date"], portalLabel: "Acknowledge/Duplicate Date", control: "date", skipIfBlank: true },
-  { key: "transportDocType", excelHeaders: ["Transport Doc Type", "*Transport Doc Type"], portalLabel: "Transport Doc Type", control: "select", skipIfBlank: true },
-  { key: "transportDocNo", excelHeaders: ["Transport Doc No", "*Transport Doc No"], portalLabel: "Transport Doc No", control: "text", skipIfBlank: true },
-  { key: "transportDocDate", excelHeaders: ["Transport Document Date", "Transport Doc Date"], portalLabel: "Transport Document Date", control: "date", skipIfBlank: true },
-  { key: "invoiceNo", excelHeaders: ["Invoice No", "*Invoice No"], portalLabel: "Invoice No", control: "text", skipIfBlank: true },
-  { key: "invoiceDate", excelHeaders: ["Invoice Date", "*Invoice Date"], portalLabel: "Invoice Date", control: "date", skipIfBlank: true },
+  { key: "freightAmount", excelHeaders: ["Frieght Amount", "Freight Amount"], portalLabel: "Frieght Amount", portalId: "P3_FRIEGHT", control: "number", skipIfBlank: true },
+  // The Export Acknowledgement form shows "CMT Amount Confirmed by Customs" as a
+  // READ-ONLY label with no input (confirmed from the live screenshot); the only
+  // editable customs-confirmed field is the separate "Invoice Amount Confirmed By
+  // Customs", for which the workbook has no column. So this Excel value cannot be
+  // written — it is logged for manual entry rather than forced into another field.
+  { key: "cmtConfirmed", excelHeaders: ["CMT Amount Confirmed by Customs"], portalLabel: "CMT Amount Confirmed by Customs", control: "number", skipIfBlank: true, needsConfirmation: "'CMT Amount Confirmed by Customs' is read-only on the Export Acknowledgement form (no input). Enter it manually if the portal later exposes it." },
+  { key: "insuranceAmount", excelHeaders: ["Insurance Amount"], portalLabel: "Insurance Amount", portalId: "P3_INSURANCE", control: "number", skipIfBlank: true },
+  { key: "otherCharges", excelHeaders: ["Other Charges"], portalLabel: "Other Charges", portalId: "P3_OTHER_CHARGES", control: "number", skipIfBlank: true },
+  { key: "customOffice", excelHeaders: ["Custom Office", "*Custom Office"], portalLabel: "Custom Office", portalId: "P3_CUSOTM_CODE", control: "select", skipIfBlank: true },
+  { key: "billOfExportNo", excelHeaders: ["Bill of Export Number (Number Only)", "Bill of Export Number"], portalLabel: "Bill of Export Number (Number Only)", portalId: "P3_EXPORT_BILL_NUMBER", control: "text", skipIfBlank: true },
+  { key: "billOfExportDate", excelHeaders: ["Bill of Export Date"], portalLabel: "Bill of Export Date", portalId: "P3_EXPORT_BILL_DATE", control: "date", skipIfBlank: true },
+  { key: "shipmentDate", excelHeaders: ["Shipment Date"], portalLabel: "Shipment Date", portalId: "P3_SHIP_DATE", control: "date", skipIfBlank: true },
+  { key: "ackDuplicateDate", excelHeaders: ["Acknowledge/Duplicate Date"], portalLabel: "Acknowledge/Duplicate Date", portalId: "P3_DUP_DATE", control: "date", skipIfBlank: true },
+  { key: "transportDocType", excelHeaders: ["Transport Doc Type", "*Transport Doc Type"], portalLabel: "Transport Doc Type", portalId: "P3_TYPE_CODE", control: "select", skipIfBlank: true },
+  { key: "transportDocNo", excelHeaders: ["Transport Doc No", "*Transport Doc No"], portalLabel: "Transport Doc No", portalId: "P3_BILL_LADING", control: "text", skipIfBlank: true },
+  { key: "transportDocDate", excelHeaders: ["Transport Document Date", "Transport Doc Date"], portalLabel: "Transport Document Date", portalId: "P3_LADING_DATE", control: "date", skipIfBlank: true },
+  { key: "invoiceNo", excelHeaders: ["Invoice No", "*Invoice No"], portalLabel: "Invoice No", portalId: "P3_INVOICE_NO", control: "text", skipIfBlank: true },
+  { key: "invoiceDate", excelHeaders: ["Invoice Date", "*Invoice Date"], portalLabel: "Invoice Date", portalId: "P3_INVOICE_DATE", control: "date", skipIfBlank: true },
 ];
 
 /** Fields the field maps don't drive but the row still carries as identifiers. */

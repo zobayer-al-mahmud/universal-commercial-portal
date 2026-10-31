@@ -33,6 +33,8 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     "PORTAL_AUTH_REQUIRED",
   ]);
   const allTerminal = docs.length > 0 && docs.every((d) => TERMINAL.has(d.state));
+  const stopping = batch.status === "stopping";
+  const stopped = batch.status === "stopped";
 
   return NextResponse.json({
     batchId: batch.id,
@@ -42,7 +44,10 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     liveMessage: batch.liveMessage,
     liveDocId: batch.liveDocId,
     steps: BOOKING_STEPS,
-    running: !allTerminal,
+    // "stopping" stays running so the UI keeps polling until the batch is parked.
+    running: !allTerminal && !stopped,
+    stopping,
+    stopped,
     totals: {
       total: batch.totalDocs,
       completed: batch.completedDocs,

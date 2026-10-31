@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { processExpRows, retryExpRow } from "@/server/exp-automation/batch";
+import { processExpRows, retryExpRow, updateExpRow } from "@/server/exp-automation/batch";
 
 /**
  * Server actions for the EXP Automation module. Upload (multipart) is handled by
@@ -38,5 +38,25 @@ export async function retryExpRowAction(rowId: string): Promise<{ ok?: boolean; 
     return r.ok ? { ok: true } : { error: r.message };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Retry failed." };
+  }
+}
+
+export interface ExpRowPatch {
+  adscode?: string;
+  expSerial?: string;
+  expYear?: string;
+  expNo?: string;
+  saveAs?: string;
+  values?: Record<string, string>;
+}
+
+export async function updateExpRowAction(rowId: string, patch: ExpRowPatch): Promise<{ ok?: boolean; error?: string }> {
+  const auth = await requireExpUser();
+  if ("error" in auth) return { error: auth.error };
+  try {
+    const r = await updateExpRow({ rowId, actor: auth.user.email, patch });
+    return r.ok ? { ok: true } : { error: r.message };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Update failed." };
   }
 }

@@ -1147,11 +1147,16 @@ model ExpJob {
   sourceName String   @default("") // uploaded workbook filename
   sourceSha256 String  @default("")
   sheetName  String   @default("")
+  // Persisted original upload (immutable): the raw .xlsx is saved under
+  // STORAGE_ROOT/exp/uploads/<id>.xlsx so a batch can be reopened/reprocessed later.
+  storedPath String?  // absolute path to the saved original workbook
+  fileBytes  Int      @default(0) // size of the stored original, for display
   total      Int      @default(0) // rows created
   // Running counters (updated as rows finish):
   processed  Int      @default(0)
   matched    Int      @default(0) // correction/duplicate: portal already matched Excel (unchanged)
-  changed    Int      @default(0) // correction/duplicate: mismatched fields filled (not submitted)
+  changed    Int      @default(0) // correction: fields filled; duplicate: rows updated + verified
+  partial    Int      @default(0) // duplicate: some fields updated but not all verified
   downloaded Int      @default(0) // download: PDFs captured
   skipped    Int      @default(0)
   failed     Int      @default(0)
@@ -1183,7 +1188,7 @@ model ExpJobRow {
   // Full parsed Excel row (header -> value), so the driver has every field:
   dataJson  String @default("{}")
 
-  status    String @default("pending") // pending | queued | running | matched | filled | downloaded | skipped | not_found | mismatch | failed | needs_auth
+  status    String @default("pending") // pending | queued | running | matched | filled | updated_verified | partially_updated | downloaded | skipped | not_found | mismatch | failed | needs_auth
   step      String @default("")
   // correction/duplicate verification detail:
   portalValuesJson   String @default("{}") // values read back from the portal form

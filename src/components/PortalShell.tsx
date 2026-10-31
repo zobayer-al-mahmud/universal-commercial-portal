@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { logoutAction } from "@/app/actions/auth";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 type NavItem = { href: string; label: string; icon: ReactNode };
 
@@ -161,13 +162,21 @@ export function PortalShell({
         {/* Mobile top bar */}
         <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
           <Brand />
-          <button
-            className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
-            onClick={() => setMobileOpen(true)}
-            aria-label="Open menu"
-          >
-            <Icon path={<path d="M4 6h16M4 12h16M4 18h16" />} />
-          </button>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Open menu"
+            >
+              <Icon path={<path d="M4 6h16M4 12h16M4 18h16" />} />
+            </button>
+          </div>
+        </header>
+
+        {/* Desktop top bar — the global theme toggle lives here, on every module. */}
+        <header className="sticky top-0 z-20 hidden items-center justify-end border-b border-slate-200 bg-white/80 px-6 py-2.5 backdrop-blur lg:flex">
+          <ThemeToggle />
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>

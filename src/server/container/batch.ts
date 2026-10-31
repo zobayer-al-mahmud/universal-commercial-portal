@@ -4,6 +4,13 @@ import { env } from "@/lib/env";
 import { audit } from "@/lib/audit";
 import { normalizeContainerNo } from "./parse";
 import { executeSearch } from "./run";
+import { detachContainerBrowser } from "./browser";
+import { runKey, startRun, requestCancel, isRunning, onCancel, cancelInfo, type RunHandle } from "@/server/automation/cancellation";
+
+const CONTAINER_STOP_REASON = "Stopped by the operator.";
+function containerKey(batchId: string): string {
+  return runKey("container", batchId);
+}
 
 /**
  * Bulk container search — accepts many container numbers (typed or imported from
@@ -140,28 +147,74 @@ export async function beginContainerBatch(input: {
   await audit({ entityType: "container", entityId: batch.id, action: "container.batch.started", actor: input.actor, data: { total: valid.length, invalid: invalid.length, duplicates: duplicates.length } });
 
   // Background sequential processing; the UI polls the batch status endpoint.
-  void processContainerBatch(batch.id, input.actor, Boolean(input.force)).catch(() => undefined);
+  // Register the run up front so a Stop can reach the loop the moment it starts.
+  const run = startRun(containerKey(batch.id));
+  onCancel(containerKey(batch.id), () => { void detachContainerBrowser().catch(() => undefined); });
+  void processContainerBatch(batch.id, input.actor, Boolean(input.force), run).catch(() => undefined);
 
   return { batchId: batch.id, created: valid.length, invalid, duplicates, liveEnabled: env.CONTAINER_LIVE_ENABLED };
 }
 
 /** Drive every queued row of a batch, one at a time (portal allows one window). */
-export async function processContainerBatch(batchId: string, actor: string, force: boolean): Promise<void> {
+export async function processContainerBatch(batchId: string, actor: string, force: boolean, run?: RunHandle): Promise<void> {
+  const handle = run ?? startRun(containerKey(batchId));
+  if (!run) onCancel(containerKey(batchId), () => { void detachContainerBrowser().catch(() => undefined); });
   const rows = await prisma.containerSearch.findMany({ where: { batchId }, orderBy: { createdAt: "asc" } });
   const t0 = Date.now();
   let processed = 0;
-  for (const row of rows) {
-    if (row.status !== "queued") continue; // already processed / retried
-    const rowT0 = Date.now();
-    await runBatchRow(row.id, row.containerNo, actor, force).catch(async (e) => {
-      await prisma.containerSearch
-        .update({ where: { id: row.id }, data: { status: "failed", error: e instanceof Error ? e.message : "Container search crashed." } })
-        .catch(() => undefined);
-    });
-    processed++;
-    console.info(`[perf] container row ${row.containerNo} done in ${Date.now() - rowT0}ms`);
+  try {
+    for (const row of rows) {
+      if (handle.signal.aborted) break; // Stop requested → start no more containers.
+      if (row.status !== "queued") continue; // already processed / retried
+      const rowT0 = Date.now();
+      await runBatchRow(row.id, row.containerNo, actor, force).catch(async (e) => {
+        const stopped = handle.signal.aborted;
+        await prisma.containerSearch
+          .update({ where: { id: row.id }, data: stopped
+            ? { status: "stopped", step: "Stopped", error: CONTAINER_STOP_REASON }
+            : { status: "failed", error: e instanceof Error ? e.message : "Container search crashed." } })
+          .catch(() => undefined);
+      });
+      processed++;
+      console.info(`[perf] container row ${row.containerNo} done in ${Date.now() - rowT0}ms`);
+    }
+  } finally {
+    handle.end();
+    if (handle.signal.aborted) await finalizeContainerStop(batchId, actor);
   }
   console.info(`[perf] container batch ${batchId}: ${processed} processed in ${Date.now() - t0}ms`);
+}
+
+/**
+ * Reconcile DB state after a Stop: the interrupted container is marked Stopped,
+ * every container not yet started is also parked as Stopped (so the batch no
+ * longer reports as running), and completed containers + their PDFs are kept.
+ * Stopped rows remain retryable (manual resume). Idempotent.
+ */
+async function finalizeContainerStop(batchId: string, actor: string): Promise<void> {
+  const open = await prisma.containerSearch.findMany({ where: { batchId, status: { in: ["queued", "running"] } }, select: { id: true } });
+  if (open.length) {
+    await prisma.containerSearch.updateMany({ where: { id: { in: open.map((r) => r.id) } }, data: { status: "stopped", step: "Stopped", error: CONTAINER_STOP_REASON } }).catch(() => undefined);
+    for (const r of open) await prisma.containerSearchEvent.create({ data: { searchId: r.id, step: "Stopped", status: "failed", message: CONTAINER_STOP_REASON, actor } }).catch(() => undefined);
+  }
+}
+
+/**
+ * Request that a running container batch stop: flip the shared cancel flag (which
+ * closes the visible browser so an in-flight search throws at once), record the
+ * reason, and — if no loop is attached in this process — reconcile the DB now.
+ * Completed searches and their PDFs are never touched.
+ */
+export async function requestStopContainerBatch(batchId: string, actor: string): Promise<{ ok: boolean; message: string }> {
+  const batch = await prisma.containerBatch.findUnique({ where: { id: batchId } });
+  if (!batch) return { ok: false, message: "Batch not found." };
+  const key = containerKey(batchId);
+  const live = isRunning(key);
+  requestCancel(key, CONTAINER_STOP_REASON);
+  const info = cancelInfo(key);
+  await audit({ entityType: "container", entityId: batchId, action: "container.batch.stopped", actor, data: { reason: info?.reason ?? CONTAINER_STOP_REASON, at: (info?.at ?? new Date()).toISOString(), liveLoop: live } });
+  if (!live) await finalizeContainerStop(batchId, actor);
+  return { ok: true, message: "Stop requested." };
 }
 
 /**

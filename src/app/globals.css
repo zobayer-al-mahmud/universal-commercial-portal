@@ -143,3 +143,83 @@ body {
     @apply inline-block h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-ananta;
   }
 }
+
+/* =====================================================================
+ * GLOBAL DARK MODE (centralized)
+ * Activated by `.dark` on <html> (set by the header toggle + a no-flash
+ * script in the root layout). Light mode is untouched — everything here is
+ * scoped under `.dark`. A small remap of the common surface/text/border
+ * utilities lets existing modules theme without editing each file; the
+ * unlayered rules + !important reliably win over Tailwind's utility classes.
+ * ===================================================================== */
+.dark {
+  color-scheme: dark;
+  --surface: #1e293b;        /* slate-800 — cards/panels */
+  --surface-muted: #0f172a;  /* slate-900 — app background */
+  --border: #334155;         /* slate-700 */
+}
+.dark body {
+  background: var(--surface-muted);
+  color: #e2e8f0;
+}
+.dark *::-webkit-scrollbar-thumb {
+  background: #475569;
+  background-clip: content-box;
+}
+
+/* Custom brand tokens (surface/ink) used by the app shell + many modules */
+.dark .bg-surface { background-color: #1e293b !important; }
+.dark .bg-surface-muted { background-color: #0f172a !important; }
+.dark .bg-surface-sunken { background-color: #0f172a !important; }
+.dark .text-ink { color: #e2e8f0 !important; }
+.dark .text-ink-muted { color: #94a3b8 !important; }
+.dark .text-ink-faint { color: #64748b !important; }
+.dark .border-surface-sunken { border-color: #334155 !important; }
+
+/* Surfaces */
+.dark .bg-white { background-color: #1e293b !important; }
+.dark .bg-white\/90 { background-color: rgba(30, 41, 59, 0.9) !important; }
+.dark .bg-white\/80 { background-color: rgba(30, 41, 59, 0.8) !important; }
+.dark .bg-slate-50 { background-color: #0f172a !important; }
+.dark .bg-slate-50\/60,
+.dark .bg-slate-50\/70 { background-color: rgba(15, 23, 42, 0.5) !important; }
+.dark .bg-slate-100 { background-color: #334155 !important; }
+
+/* Text */
+.dark .text-slate-900 { color: #f1f5f9 !important; }
+.dark .text-slate-800 { color: #e2e8f0 !important; }
+.dark .text-slate-700 { color: #cbd5e1 !important; }
+.dark .text-slate-600 { color: #cbd5e1 !important; }
+.dark .text-slate-500 { color: #94a3b8 !important; }
+.dark .text-slate-400 { color: #94a3b8 !important; }
+.dark .text-slate-300 { color: #cbd5e1 !important; }
+
+/* Borders */
+.dark .border-slate-100,
+.dark .border-slate-50 { border-color: #1e293b !important; }
+.dark .border-slate-200,
+.dark .border-slate-200\/80,
+.dark .border-slate-300 { border-color: #334155 !important; }
+
+/* Hover surfaces */
+.dark .hover\:bg-slate-50:hover,
+.dark .hover\:bg-slate-100:hover { background-color: #334155 !important; }
+
+/* Brand accents need lightening for contrast on dark */
+.dark .text-ananta-700,
+.dark .text-ananta-600 { color: #86a9d4 !important; }
+.dark .bg-ananta-50 { background-color: #1d3450 !important; }
+.dark .bg-ananta-100 { background-color: #27476c !important; }
+
+/* Shared component classes */
+.dark .card { border-color: #334155; background-color: #1e293b; box-shadow: none; }
+.dark .panel-head { border-color: #334155; }
+.dark .btn-ghost { border-color: #475569; background-color: #1e293b; color: #e2e8f0; }
+.dark .btn-ghost:hover { border-color: #64748b; background-color: #334155; }
+.dark .btn-subtle { background-color: #334155; color: #e2e8f0; }
+.dark .input,
+.dark .select,
+.dark .textarea { border-color: #475569; background-color: #1e293b; color: #f1f5f9; }
+.dark .input::placeholder,
+.dark .textarea::placeholder { color: #64748b; }
+.dark .chip { border-color: #334155; background-color: #1e293b; color: #cbd5e1; }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { startContainerBatchAction, retryContainerAction } from "@/app/actions/container";
+import { StopProcessButton } from "@/components/StopProcessButton";
 
 export interface RecentSearch {
   id: string;
@@ -29,7 +30,8 @@ interface BatchStatus {
   batchId: string;
   total: number;
   running: boolean;
-  counts: { total: number; done: number; verified: number; failed: number; running: number; queued: number };
+  stopped?: boolean;
+  counts: { total: number; done: number; verified: number; failed: number; running: number; queued: number; stopped?: number };
   containers: BatchContainer[];
 }
 
@@ -201,7 +203,8 @@ export function ContainerSearchManager({
               {counts && counts.verified > 0 ? (
                 <a href={`/api/container/batch/${batchId}/zip`} className="btn-primary btn-xs">⬇ Download All ({counts.verified}) ZIP</a>
               ) : null}
-              {batch.running ? <span className="inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> running</span> : <span className="text-slate-400">done</span>}
+              <StopProcessButton scope="container" id={batchId} running={batch.running} pending={counts ? counts.queued + counts.running : undefined} onStopped={() => startPolling(batchId)} />
+              {batch.running ? <span className="inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> running</span> : batch.stopped ? <span className="text-rose-600">stopped</span> : <span className="text-slate-400">done</span>}
             </div>
           </div>
 

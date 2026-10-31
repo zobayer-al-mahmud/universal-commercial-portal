@@ -17,8 +17,14 @@ import {
   type BookingCandidate,
 } from "@/server/integrations/damco-portal";
 import { runLivePortalForDoc } from "./live-run";
+import { detachDamcoBrowser } from "@/server/integrations/damco-browser";
+import { runKey, startRun, requestCancel, isRunning, onCancel, cancelInfo, type RunHandle } from "@/server/automation/cancellation";
 
 const MODULE = "booking-correction";
+const BOOKING_STOP_REASON = "Stopped by the operator.";
+function bookingKey(batchId: string): string {
+  return runKey("booking", batchId);
+}
 
 export interface UploadFile {
   name: string;
@@ -591,6 +597,41 @@ export async function recomputeBatch(batchId: string): Promise<void> {
   await prisma.bookingBatch.update({ where: { id: batchId }, data: { completedDocs: completed, reviewDocs: review, failedDocs: failed, status } });
 }
 
+/**
+ * Drain a queue of document ids with bounded concurrency, honouring a Stop:
+ * workers start no new document once the run is cancelled, and the run finalizes
+ * (batch parked as stopped) instead of being reported as finished. Shared by
+ * Process Selected and Process All.
+ */
+async function drainDocuments(batchId: string, queue: string[], opts: { actor: string; force?: boolean }): Promise<boolean> {
+  const run = startRun(bookingKey(batchId));
+  // A Stop closes the visible Damco browser so an in-flight portal step throws
+  // at once instead of running to its navigation timeout.
+  onCancel(bookingKey(batchId), () => { void detachDamcoBrowser().catch(() => undefined); });
+  const limit = env.INTEGRATION_MODE === "live" ? 1 : Math.max(1, env.BOOKING_CONCURRENCY);
+  let cursor = 0;
+  async function worker() {
+    while (cursor < queue.length) {
+      if (run.signal.aborted) break; // Stop requested → start no more documents.
+      const id = queue[cursor++];
+      await processDocument(id, { actor: opts.actor, force: opts.force });
+    }
+  }
+  try {
+    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+  } finally {
+    run.end();
+  }
+  const aborted = run.signal.aborted;
+  await recomputeBatch(batchId);
+  if (aborted) {
+    await finalizeBookingStop(batchId, opts.actor);
+  } else if (env.INTEGRATION_MODE === "live") {
+    await prisma.bookingBatch.update({ where: { id: batchId }, data: { liveStatus: "finished", liveStep: "", liveMessage: "Run finished.", liveUpdatedAt: new Date() } }).catch(() => undefined);
+  }
+  return aborted;
+}
+
 /** Run a specific subset of documents (Process Selected) with bounded concurrency. */
 export async function processSelected(batchId: string, docIds: string[], opts: { actor?: string; force?: boolean } = {}): Promise<void> {
   const actor = opts.actor ?? "system";
@@ -598,21 +639,8 @@ export async function processSelected(batchId: string, docIds: string[], opts: {
   await prisma.bookingBatch.update({ where: { id: batchId }, data: { status: "processing" } });
   const docs = await prisma.bookingDocument.findMany({ where: { batchId, id: { in: docIds } }, orderBy: { serial: "asc" } });
   const queue = docs.filter((d) => opts.force || !SUCCESS_STATES.includes(d.state as BookingState)).map((d) => d.id);
-
-  const limit = env.INTEGRATION_MODE === "live" ? 1 : Math.max(1, env.BOOKING_CONCURRENCY);
-  let cursor = 0;
-  async function worker() {
-    while (cursor < queue.length) {
-      const id = queue[cursor++];
-      await processDocument(id, { actor, force: opts.force });
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
-  await recomputeBatch(batchId);
-  if (env.INTEGRATION_MODE === "live") {
-    await prisma.bookingBatch.update({ where: { id: batchId }, data: { liveStatus: "finished", liveStep: "", liveMessage: "Run finished.", liveUpdatedAt: new Date() } });
-  }
-  await audit({ entityType: "job", entityId: batchId, action: "booking.batch.processed", actor, data: { docs: queue.length, selected: docIds.length, mode: env.INTEGRATION_MODE } });
+  const aborted = await drainDocuments(batchId, queue, { actor, force: opts.force });
+  await audit({ entityType: "job", entityId: batchId, action: aborted ? "booking.batch.stopped" : "booking.batch.processed", actor, data: { docs: queue.length, selected: docIds.length, mode: env.INTEGRATION_MODE } });
 }
 
 /** Run every not-yet-successful document in a batch with bounded concurrency. */
@@ -621,20 +649,54 @@ export async function processBatch(batchId: string, opts: { actor?: string; forc
   await prisma.bookingBatch.update({ where: { id: batchId }, data: { status: "processing" } });
   const docs = await prisma.bookingDocument.findMany({ where: { batchId }, orderBy: { serial: "asc" } });
   const queue = docs.filter((d) => opts.force || !SUCCESS_STATES.includes(d.state as BookingState)).map((d) => d.id);
+  const aborted = await drainDocuments(batchId, queue, { actor, force: opts.force });
+  await audit({ entityType: "job", entityId: batchId, action: aborted ? "booking.batch.stopped" : "booking.batch.processed", actor, data: { docs: queue.length, mode: env.INTEGRATION_MODE } });
+}
 
-  // Live mode drives one visible browser — never parallelise its clicks.
-  const limit = env.INTEGRATION_MODE === "live" ? 1 : Math.max(1, env.BOOKING_CONCURRENCY);
-  let cursor = 0;
-  async function worker() {
-    while (cursor < queue.length) {
-      const id = queue[cursor++];
-      await processDocument(id, { actor, force: opts.force });
+/**
+ * Reconcile DB state after a Stop. Completed documents + their PDFs are kept.
+ * The document that was in flight when the browser was closed (the live run's
+ * `liveDocId`, if still non-terminal) is recorded as Stopped — never Completed —
+ * and remains retryable; documents not yet started stay in their pre-run state
+ * (resumable by Process All / Process Selected). The batch is parked as stopped.
+ * Idempotent.
+ */
+async function finalizeBookingStop(batchId: string, actor: string): Promise<void> {
+  const batch = await prisma.bookingBatch.findUnique({ where: { id: batchId } });
+  const inFlightId = batch?.liveDocId || "";
+  if (inFlightId) {
+    const doc = await prisma.bookingDocument.findUnique({ where: { id: inFlightId } });
+    if (doc && !SUCCESS_STATES.includes(doc.state as BookingState)) {
+      await prisma.bookingDocument.update({ where: { id: inFlightId }, data: { state: "FAILED", liveStep: "", error: BOOKING_STOP_REASON, warning: BOOKING_STOP_REASON, processedAt: new Date() } }).catch(() => undefined);
+      await prisma.bookingDocEvent.create({ data: { docId: inFlightId, stage: "stopped", status: "failed", message: BOOKING_STOP_REASON, dataJson: "{}" } }).catch(() => undefined);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
   await recomputeBatch(batchId);
-  if (env.INTEGRATION_MODE === "live") {
-    await prisma.bookingBatch.update({ where: { id: batchId }, data: { liveStatus: "finished", liveStep: "", liveMessage: "Run finished.", liveUpdatedAt: new Date() } });
+  // Only park as stopped when work actually remains; a batch that finished at the
+  // instant Stop landed keeps its real completed/partial verdict from recompute.
+  const remaining = await prisma.bookingDocument.count({ where: { batchId, state: { notIn: ["COMPLETED", "MISMATCH", "STATUS_MISMATCH", "SEARCH_FAILED", "DOWNLOAD_FAILED", "FAILED", "NEEDS_REVIEW", "PORTAL_AUTH_REQUIRED"] } } });
+  if (remaining > 0) {
+    await prisma.bookingBatch.update({ where: { id: batchId }, data: { status: "stopped", liveStatus: "stopped", liveStep: "", liveDocId: null, liveMessage: BOOKING_STOP_REASON, liveUpdatedAt: new Date() } }).catch(() => undefined);
+  } else {
+    await prisma.bookingBatch.update({ where: { id: batchId }, data: { liveStatus: "finished", liveStep: "", liveDocId: null, liveMessage: BOOKING_STOP_REASON, liveUpdatedAt: new Date() } }).catch(() => undefined);
   }
-  await audit({ entityType: "job", entityId: batchId, action: "booking.batch.processed", actor, data: { docs: queue.length, mode: env.INTEGRATION_MODE } });
+}
+
+/**
+ * Request that a running booking batch stop. Flips the shared cancel flag (which
+ * closes the Damco browser so an in-flight portal step throws at once), records
+ * the reason, and — if no loop is attached in this process — reconciles the DB
+ * directly. Completed documents and their PDFs are never touched.
+ */
+export async function requestStopBookingBatch(batchId: string, actor: string): Promise<{ ok: boolean; message: string }> {
+  const batch = await prisma.bookingBatch.findUnique({ where: { id: batchId } });
+  if (!batch) return { ok: false, message: "Batch not found." };
+  const key = bookingKey(batchId);
+  const live = isRunning(key);
+  requestCancel(key, BOOKING_STOP_REASON);
+  await prisma.bookingBatch.update({ where: { id: batchId }, data: { status: "stopping", liveMessage: "Stopping…", liveUpdatedAt: new Date() } }).catch(() => undefined);
+  const info = cancelInfo(key);
+  await audit({ entityType: "job", entityId: batchId, action: "booking.batch.stop-requested", actor, data: { reason: info?.reason ?? BOOKING_STOP_REASON, at: (info?.at ?? new Date()).toISOString(), liveLoop: live } });
+  if (!live) await finalizeBookingStop(batchId, actor);
+  return { ok: true, message: "Stop requested." };
 }

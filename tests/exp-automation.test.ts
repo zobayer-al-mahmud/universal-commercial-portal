@@ -8,8 +8,8 @@ import {
   formatDate,
   normHeader,
 } from "@/server/exp-automation/excel";
-import { normDate, normNumber, normText, valuesEquivalent, diffFields } from "@/server/exp-automation/compare";
-import { CORRECTION_FIELDS, DUPLICATE_FIELDS } from "@/server/exp-automation/types";
+import { normDate, normNumber, normText, valuesEquivalent, formatDateLike } from "@/server/exp-automation/compare";
+import { buildEditedWorkbook } from "@/server/exp-automation/exp-export";
 
 /* --------------------------- cell + number helpers --------------------------- */
 
@@ -68,32 +68,16 @@ describe("comparison normalisers", () => {
   it("normText collapses whitespace + case", () => {
     expect(normText("  Chittagong  Port ")).toBe("chittagong port");
   });
-});
-
-/* ------------------------------- diffFields ---------------------------------- */
-
-describe("diffFields", () => {
-  it("leaves matching fields untouched and returns only real mismatches", () => {
-    const excel = { quantity: "187", invoiceNo: "55363", invoiceAmount: "1697.96" };
-    const portal = { quantity: "187", invoiceNo: "55363", invoiceAmount: "1697.9600" };
-    const diffs = diffFields(CORRECTION_FIELDS, excel, portal);
-    // all three equal after normalisation → no diffs (no alwaysFill value supplied)
-    expect(diffs.map((d) => d.key)).toEqual([]);
-  });
-  it("returns a mismatched field to fill", () => {
-    const excel = { quantity: "200" };
-    const portal = { quantity: "187" };
-    const diffs = diffFields(CORRECTION_FIELDS, excel, portal);
-    expect(diffs).toHaveLength(1);
-    expect(diffs[0]).toMatchObject({ key: "quantity", excel: "200", portal: "187" });
-  });
-  it("skips blank Excel values (skipIfBlank) but always prepares Update Remarks when present", () => {
-    const excel = { updateRemarks: "." };
-    const portal = { updateRemarks: "" };
-    const diffs = diffFields(CORRECTION_FIELDS, excel, portal);
-    expect(diffs.map((d) => d.key)).toContain("updateRemarks");
-    // No other (blank) fields should appear.
-    expect(diffs).toHaveLength(1);
+  it("formatDateLike renders the Excel date in the portal field's own format", () => {
+    // Excel DD.MM.YYYY → match whatever the portal control currently shows.
+    expect(formatDateLike("10.09.2026", "04-Sep-2026")).toBe("10-Sep-2026");
+    expect(formatDateLike("10.09.2026", "01/01/2026")).toBe("10/09/2026");
+    expect(formatDateLike("10.09.2026", "01.01.2026")).toBe("10.09.2026");
+    expect(formatDateLike("10.09.2026", "2026-01-01")).toBe("2026-09-10");
+    expect(formatDateLike("04-Sep-2026", "31/12/2025")).toBe("04/09/2026");
+    // No sample (blank portal field) or unparseable Excel → return the input trimmed.
+    expect(formatDateLike("10.09.2026", "")).toBe("10.09.2026");
+    expect(formatDateLike("Invalid Date", "04-Sep-2026")).toBe("Invalid Date");
   });
 });
 
@@ -168,6 +152,27 @@ describe("parseExpWorkbook — download", () => {
     expect(res.rows[0].notes.join(" ")).toMatch(/derived/i);
     // Row 2: no Save_As → falls back to the serial; 18-digit parsed.
     expect(res.rows[1]).toMatchObject({ adscode: "00001886", expSerial: "000001", expYear: "2024", saveAs: "000001" });
+  });
+});
+
+/* ---------------- edited-workbook export round-trip --------------------------- */
+
+describe("buildEditedWorkbook", () => {
+  it("rebuilds a duplicate workbook from current rows that re-parses to the same values", async () => {
+    const rows = [{ rowNo: 1, adscode: "00001558", expSerial: "020083", expYear: "2026", expNo: "00001558-020083-2026", saveAs: "", values: { transportDocNo: "CTG3280047", invoiceNo: "63570", customOffice: "306-Customs House, lCD, Chattogram" } }];
+    const buf = await buildEditedWorkbook("duplicate", rows);
+    const res = await parseExpWorkbook(buf, "duplicate");
+    expect(res.rows).toHaveLength(1);
+    expect(res.rows[0]).toMatchObject({ adscode: "00001558", expSerial: "020083", expYear: "2026" });
+    expect(res.rows[0].values.transportDocNo).toBe("CTG3280047");
+    expect(res.rows[0].values.invoiceNo).toBe("63570");
+    expect(res.rows[0].values.customOffice).toBe("306-Customs House, lCD, Chattogram");
+  });
+  it("rebuilds a download workbook preserving EXP No + Save_As", async () => {
+    const rows = [{ rowNo: 1, adscode: "00001558", expSerial: "020029", expYear: "2026", expNo: "00001558-020029-2026", saveAs: "my-exp", values: {} }];
+    const buf = await buildEditedWorkbook("download", rows);
+    const res = await parseExpWorkbook(buf, "download");
+    expect(res.rows[0]).toMatchObject({ expNo: "00001558-020029-2026", saveAs: "my-exp" });
   });
 });
 

@@ -6,9 +6,8 @@ export const CORRECTION_STEPS = [
   "Signing in",
   "Opening Issued EXP Correction",
   "Searching record",
-  "Comparing with Excel",
-  "Filling mismatched fields",
-  "Verified (ready for your review)",
+  "Filling form from Excel",
+  "Form filled (ready for your review)",
 ] as const;
 
 export const DUPLICATE_STEPS = [
@@ -16,9 +15,8 @@ export const DUPLICATE_STEPS = [
   "Signing in",
   "Opening Duplicate EXP Reporting",
   "Searching record",
-  "Comparing with Excel",
-  "Filling mismatched fields",
-  "Verified (ready for your review)",
+  "Filling form from Excel",
+  "Form filled (ready for your review)",
 ] as const;
 
 export const DOWNLOAD_STEPS = [

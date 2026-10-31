@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import type { StepPhase } from "@/server/booking-correction/progress";
 import { retryBookingDocAction, confirmBookingPdfAction } from "@/app/actions/booking-batch";
 import { ExtractionReview } from "@/components/ExtractionReview";
+import { StopProcessButton } from "@/components/StopProcessButton";
 
 interface Comparison {
   field: string;
@@ -49,6 +50,8 @@ interface StatusPayload {
   liveStatus: string | null;
   liveMessage: string | null;
   running: boolean;
+  stopping?: boolean;
+  stopped?: boolean;
   totals: { total: number; completed: number; review: number; failed: number };
   docs: DocStatus[];
 }
@@ -322,7 +325,8 @@ export function BookingLiveProgress({
                 {retrying ? "Retrying…" : `↻ Retry all failed (${failedDocs.length})`}
               </button>
             ) : null}
-            {data.running ? <span className="inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> live</span> : <span className="text-slate-400">done</span>}
+            {canRetry ? <StopProcessButton scope="booking" id={batchId} running={data.running} onStopped={restart} /> : null}
+            {data.running ? <span className="inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> live</span> : data.stopped ? <span className="text-rose-600">stopped</span> : <span className="text-slate-400">done</span>}
           </div>
         </div>
         <div className="mb-2 h-2.5 w-full overflow-hidden rounded-full bg-slate-100">

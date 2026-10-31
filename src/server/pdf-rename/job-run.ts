@@ -19,8 +19,13 @@ import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { audit } from "@/lib/audit";
 import { analyzePdf, resolveFolder } from "./folder-rename";
+import { runKey, startRun, requestCancel, isRunning, cancelInfo } from "@/server/automation/cancellation";
 
 const NON_TERMINAL = ["queued", "processing", "paused"];
+const RENAME_STOP_REASON = "Stopped by the operator.";
+function renameKey(jobId: string): string {
+  return runKey("pdf-rename", jobId);
+}
 
 async function fileExists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; } catch { return false; }
@@ -218,16 +223,66 @@ export async function runJob(jobId: string, opts: { actor?: string; force?: bool
 
   const limit = Math.max(1, Math.min(job.concurrency, env.PDF_RENAME_CONCURRENCY));
   let cursor = 0;
+  // Register the run so a Stop can reach this loop. There is no browser here, so
+  // a Stop takes effect between files: the file in flight finishes, then no
+  // further files are started. (OCR of one file cannot be safely torn open.)
+  const run = startRun(renameKey(jobId));
   async function worker() {
     while (cursor < queue.length) {
+      if (run.signal.aborted) break; // Stop requested → start no more files.
       const id = queue[cursor++];
       await processItem(id, { actor, force: opts.force });
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+  try {
+    await Promise.all(Array.from({ length: Math.min(limit, queue.length) }, worker));
+  } finally {
+    run.end();
+  }
+  if (run.signal.aborted) {
+    await finalizePdfRenameStop(jobId, actor);
+  } else {
+    await recomputeJob(jobId);
+    await prisma.renameJob.update({ where: { id: jobId }, data: { currentActivity: "Finished" } });
+  }
+  await audit({ entityType: "document", entityId: job.folder, action: run.signal.aborted ? "rename.job.stopped" : "rename.job.run", actor, data: { jobId, items: queue.length } });
+}
+
+/**
+ * Reconcile DB state after a Stop. Renamed files + review copies already written
+ * are kept; files not yet started stay PENDING (resumable via Resume/retry). The
+ * job is parked in a durable "stopped" state so it cannot silently restart.
+ * Idempotent.
+ */
+async function finalizePdfRenameStop(jobId: string, actor: string): Promise<void> {
+  // A file left mid-flight (PROCESSING with no result yet) returns to PENDING so
+  // it is resumed cleanly rather than counted as done.
+  await prisma.renameJobItem.updateMany({ where: { jobId, state: "PROCESSING" }, data: { state: "PENDING" } }).catch(() => undefined);
   await recomputeJob(jobId);
-  await prisma.renameJob.update({ where: { id: jobId }, data: { currentActivity: "Finished" } });
-  await audit({ entityType: "document", entityId: job.folder, action: "rename.job.run", actor, data: { jobId, items: queue.length } });
+  const info = cancelInfo(renameKey(jobId));
+  // Only park as stopped when files remain to resume; a job that finished at the
+  // instant Stop landed keeps its real completed/partial verdict from recompute.
+  const remaining = await prisma.renameJobItem.count({ where: { jobId, state: "PENDING" } });
+  if (remaining > 0) await prisma.renameJob.update({ where: { id: jobId }, data: { status: "stopped", currentActivity: "Stopped", finishedAt: new Date() } }).catch(() => undefined);
+  await prisma.renameJob.findUnique({ where: { id: jobId } }).then((j) => j && audit({ entityType: "document", entityId: j.folder, action: "rename.job.stop-finalized", actor, data: { jobId, reason: info?.reason ?? RENAME_STOP_REASON } })).catch(() => undefined);
+}
+
+/**
+ * Request that a running PDF-rename job stop. The in-flight file finishes, then
+ * no further files start; already-renamed files are kept and the rest stay
+ * resumable. If no loop is attached in this process, the DB is reconciled now.
+ */
+export async function requestStopPdfRenameJob(jobId: string, actor: string): Promise<{ ok: boolean; message: string }> {
+  const job = await prisma.renameJob.findUnique({ where: { id: jobId } });
+  if (!job) return { ok: false, message: "Job not found." };
+  const key = renameKey(jobId);
+  const live = isRunning(key);
+  requestCancel(key, RENAME_STOP_REASON);
+  await prisma.renameJob.update({ where: { id: jobId }, data: { status: "stopping", currentActivity: "Stopping…" } }).catch(() => undefined);
+  const info = cancelInfo(key);
+  await audit({ entityType: "document", entityId: job.folder, action: "rename.job.stop-requested", actor, data: { jobId, reason: info?.reason ?? RENAME_STOP_REASON, at: (info?.at ?? new Date()).toISOString(), liveLoop: live } });
+  if (!live) await finalizePdfRenameStop(jobId, actor);
+  return { ok: true, message: "Stop requested." };
 }
 
 /** Retry one item (re-analyze + re-apply). */
