@@ -26,6 +26,9 @@ next-env.d.ts
 # database (SQLite dev file) and generated prisma client
 /prisma/dev.db
 /prisma/dev.db-journal
+# Any dev-DB backup/snapshot files — these can contain live tenant data.
+/prisma/dev.db.*
+/prisma/dev.db-*
 /src/generated
 
 # runtime data: intake, archive, processed job artifacts (may contain business data)

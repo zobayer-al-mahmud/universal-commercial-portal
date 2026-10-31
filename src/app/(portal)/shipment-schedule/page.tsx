@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { PageHeader } from "@/components/ui";
 import { CreateShipmentScheduleForm } from "@/components/CreateShipmentScheduleForm";
+import { BookingFolderScan } from "@/components/BookingFolderScan";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,10 @@ export default async function ShipmentScheduleListPage() {
         title="Week Wise Shipment Schedule"
         subtitle="Create a weekly schedule, define cut-offs, upload booking-confirmation PDFs per cut-off. Sales-Contract fields are pulled in automatically by OrderNo."
       />
+
+      <div className="mb-6">
+        <BookingFolderScan />
+      </div>
 
       <div className="mb-6">
         <CreateShipmentScheduleForm />

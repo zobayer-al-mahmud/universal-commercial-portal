@@ -1,25 +1,56 @@
 import Link from "next/link";
 import { PageHeader, StatusBadge } from "@/components/ui";
-import { listOrderNosWithPrefill } from "@/server/customs-invoice/pull-data";
+import { listInvoiceReadyRows } from "@/server/customs-invoice/invoice-ready";
 import { listTemplates, resolveTemplate } from "@/server/customs-invoice/templates";
-import { OrderNoCreateButton } from "@/components/CustomsInvoiceCreate";
+import { CustomsInvoiceBulkUpload } from "@/components/CustomsInvoiceBulkUpload";
+import {
+  CustomsInvoiceReadyTable,
+  type InvoiceReadyListRow,
+} from "@/components/CustomsInvoiceReadyTable";
 
 export const dynamic = "force-dynamic";
 
 export default async function CustomsInvoiceListPage() {
   const [rows, templates] = await Promise.all([
-    listOrderNosWithPrefill(),
+    listInvoiceReadyRows(),
     Promise.resolve(listTemplates()),
   ]);
 
   const withInvoice = rows.filter((r) => r.hasInvoice).length;
-  const withoutInvoice = rows.length - withInvoice;
+
+  // Resolve the per-row template on the server by (country, country+sub).
+  const listRows: InvoiceReadyListRow[] = rows.map((r) => {
+    const t = resolveTemplate(r.countryCode, r.countrySubCode, templates);
+    return {
+      invoiceNo: r.invoiceNo,
+      rowId: r.rowId,
+      orderNo: r.orderNo,
+      countryCode: r.countryCode,
+      countrySubCode: r.countrySubCode,
+      contractNo: r.contractNo,
+      buyerCode: r.buyerCode,
+      styleNo: r.styleNo,
+      quantityPcs: r.quantityPcs,
+      unitPrice: r.unitPrice,
+      bcn: r.bcn,
+      bookingRef: r.bookingRef,
+      bookingStatus: r.bookingStatus,
+      grossWeightKg: r.grossWeightKg,
+      totalCartons: r.totalCartons,
+      weekNo: r.weekNo,
+      hasInvoice: r.hasInvoice,
+      invoiceId: r.invoiceId,
+      templateCode: t?.countryCode ?? null,
+      templateVariant: t?.variant ?? null,
+      templateFilename: t?.filename ?? null,
+    };
+  });
 
   return (
     <div>
       <PageHeader
         title="Customs Invoice Generation"
-        subtitle="One invoice per unique Order No, prefilled from Sales Contract + Shipment Schedule. Country code picks the template."
+        subtitle="One invoice per Invoice No. Rows appear here once their booking PDF is uploaded AND an invoice number is allocated. All invoice fields pull from the Shipment Schedule row; anything the PDFs don't carry is left blank for manual entry."
         actions={
           <div className="flex items-center gap-2">
             <Link href="/customs-invoice/templates" className="btn-ghost text-xs">🔎 Template health</Link>
@@ -30,7 +61,7 @@ export default async function CustomsInvoiceListPage() {
 
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <div className="card p-4">
-          <div className="text-xs uppercase tracking-wide text-slate-500">Order Nos found</div>
+          <div className="text-xs uppercase tracking-wide text-slate-500">Invoice-ready rows</div>
           <div className="mt-1 text-2xl font-semibold">{rows.length}</div>
         </div>
         <div className="card p-4">
@@ -51,76 +82,11 @@ export default async function CustomsInvoiceListPage() {
         </div>
       ) : null}
 
-      <div className="card overflow-x-auto">
-        <table className="w-full text-xs">
-          <thead className="bg-slate-50">
-            <tr>
-              <th className="th">#</th>
-              <th className="th">Order No.</th>
-              <th className="th">Country code</th>
-              <th className="th">Resolved template</th>
-              <th className="th">Contract</th>
-              <th className="th">Style</th>
-              <th className="th">Qty</th>
-              <th className="th">FOB</th>
-              <th className="th">Source</th>
-              <th className="th">Invoice</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="td text-center text-slate-400">
-                  No Order Nos found yet. Upload a Sales Contract 3-PDF set or a Shipment Schedule booking confirmation.
-                </td>
-              </tr>
-            ) : (
-              rows.map((r, i) => {
-                const template = resolveTemplate(r.marketCode, r.marketSubCode, templates);
-                return (
-                  <tr key={r.orderNo} className="border-t border-slate-50">
-                    <td className="td text-slate-400">{i + 1}</td>
-                    <td className="td font-mono">{r.orderNo}</td>
-                    <td className="td">
-                      {r.marketCode || <span className="text-slate-400">—</span>}
-                      {r.marketSubCode && /^[A-Z0-9\-]{1,20}$/i.test(r.marketSubCode)
-                        ? <span className="text-slate-400"> · {r.marketSubCode}</span>
-                        : null}
-                    </td>
-                    <td className="td">
-                      {template ? (
-                        <>
-                          <span className="font-mono text-slate-700">{template.countryCode}{template.variant ? ` (${template.variant})` : ""}</span>
-                          <div className="text-[10px] text-slate-400">{template.filename}</div>
-                        </>
-                      ) : (
-                        <span className="badge bg-amber-100 text-amber-800">no template</span>
-                      )}
-                    </td>
-                    <td className="td font-mono">{r.contractNo || "—"}</td>
-                    <td className="td">{r.styleNo || "—"}</td>
-                    <td className="td text-right">{r.quantityPcs ?? "—"}</td>
-                    <td className="td text-right">{r.unitPrice != null ? r.unitPrice.toFixed(2) : "—"}</td>
-                    <td className="td">
-                      <div className="flex gap-1">
-                        {r.foundInSalesContract ? <span className="badge bg-sky-100 text-sky-800">SC</span> : null}
-                        {r.foundInShipmentSchedule ? <span className="badge bg-green-100 text-green-800">SS</span> : null}
-                      </div>
-                    </td>
-                    <td className="td">
-                      {r.hasInvoice && r.invoiceId ? (
-                        <Link href={`/customs-invoice/${r.invoiceId}`} className="btn-ghost text-[10px]">Open →</Link>
-                      ) : (
-                        <OrderNoCreateButton orderNo={r.orderNo} />
-                      )}
-                    </td>
-                  </tr>
-                );
-              })
-            )}
-          </tbody>
-        </table>
+      <div className="mb-4">
+        <CustomsInvoiceBulkUpload />
       </div>
+
+      <CustomsInvoiceReadyTable rows={listRows} />
     </div>
   );
 }

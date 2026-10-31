@@ -30,6 +30,13 @@ export interface InvoicePrefill {
   grossWeightKg?: number;
   totalCartons?: number;
   measurementCbm?: number;
+  // Invoice No. allocated on the shipment-schedule row for this Order No.
+  // Unique across every week (shipment-schedule enforces it). Blank until the
+  // user assigns a number on the schedule row.
+  invoiceNo: string;
+  // "Expected Delivery" date read off the booking PDF. Used as the invoice
+  // date prefill for the Customs Invoice header.
+  expectedDelivery: string;
 
   // Convenience: whether EITHER a sales-contract row OR a shipment row backs this order.
   foundInSalesContract: boolean;

@@ -6,13 +6,13 @@ import { visibleModules } from "@/server/modules/catalog";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const [jobs, openReviews, drafts, queued, verified, contractRows, modules, recent] = await Promise.all([
+  const [jobs, openReviews, drafts, queued, verified, salesContractPos, modules, recent] = await Promise.all([
     prisma.job.count(),
     prisma.reviewTicket.count({ where: { status: "open" } }),
     prisma.job.count({ where: { status: "draft" } }),
     prisma.job.count({ where: { status: "queued" } }),
     prisma.job.count({ where: { status: { in: ["verified", "submitted"] } } }),
-    prisma.salesContractRow.count(),
+    prisma.salesContractPo.count(),
     prisma.module.findMany({ orderBy: { sortOrder: "asc" } }),
     prisma.job.findMany({ orderBy: { createdAt: "desc" }, take: 8 }),
   ]);
@@ -29,7 +29,7 @@ export default async function DashboardPage() {
         <Stat label="Drafts" value={drafts} href="/jobs?status=draft" tone={drafts ? "text-amber-600" : "text-slate-800"} />
         <Stat label="Queued" value={queued} href="/jobs?status=queued" tone={queued ? "text-rose-600" : "text-slate-800"} />
         <Stat label="Verified" value={verified} tone={verified ? "text-emerald-600" : "text-slate-800"} />
-        <Stat label="Contract Rows" value={contractRows} />
+        <Stat label="Sales Contract POs" value={salesContractPos} />
       </div>
 
       <div className="mt-8">

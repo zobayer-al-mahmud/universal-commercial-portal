@@ -35,6 +35,7 @@ export function parseBookingPdfText(text: string): BookingPdfFields {
     cartons: null,
     grossWeightKg: null,
     measurementCbm: null,
+    expectedDelivery: "",
     rawTextLen: text.length,
     warnings,
   };
@@ -90,6 +91,24 @@ export function parseBookingPdfText(text: string): BookingPdfFields {
     }
   }
 
+  // Expected Delivery — a labelled date (e.g. "2026-10-05") on the line right
+  // after a line that is exactly "Expected Delivery". Accepts ISO (yyyy-mm-dd)
+  // and the common dd/mm/yyyy / dd-mm-yyyy variants. Guarded against grabbing
+  // a trailing label like "Export Licence No.".
+  for (let i = 0; i < lines.length; i++) {
+    if (!/^Expected Delivery$/i.test(lines[i])) continue;
+    const v = next(i).trim();
+    if (!v) break;
+    if (/^(Export|Carrier|Freight|Estimated|FOB|Place|Port|Service|Status)/i.test(v)) break;
+    // Keep whatever date-shaped token the portal printed, verbatim.
+    const m =
+      v.match(/\b(\d{4}-\d{2}-\d{2})\b/) ??
+      v.match(/\b(\d{2}[\/\-.]\d{2}[\/\-.]\d{4})\b/) ??
+      v.match(/\b(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\b/);
+    result.expectedDelivery = m ? m[1] : v;
+    break;
+  }
+
   // PO number — appears on its own line like "569959/3-2026".
   const poMatch = text.match(/\b(\d{5,7}\/\d+-\d{4})\b/);
   if (poMatch) result.pdfOrderNo = poMatch[1];
@@ -101,16 +120,32 @@ export function parseBookingPdfText(text: string): BookingPdfFields {
   const skuMatch = text.match(/\b([A-Z]{2}\/\d{4,6})(?=\D|$)/);
   if (skuMatch) result.skuItem = skuMatch[1];
 
-  // Categories = the market-sub code (e.g. AUW118).
-  // Appears right after the "Categories" label block in the data table.
-  // We take the first <2-letter market><letter><3-digit sub> pattern.
-  const catMatch = text.match(/\b([A-Z]{2}[A-Z]\d{3})\b/);
+  // Market+Sub code (e.g. "AUW118" / "PAW317"). Appears in the "Marks and
+  // numbers" / "FR WHS ID / Carton Marking" cells of the booking table. The
+  // (?!\d) guard prevents matches inside the booking reference number
+  // ("CTG4480826" → "CTG448" would otherwise match).
+  const catMatch = text.match(/\b([A-Z]{2}[A-Z]\d{3})(?!\d)/);
   if (catMatch) result.categories = catMatch[1];
+
+  // Cartons: the booking row carries "<N> CARTONS" (sometimes concatenated as
+  // "CARTONS<N>" by pdf-parse). Pull it from the raw text once, independent of
+  // the TOTAL row — some layouts stuff cartons on the data row rather than the
+  // total, and the concatenated TOTAL float ("1108.990" = 1 carton + 108.990 kg)
+  // is unsafe to parse as cartons alone.
+  const cartonsMatch =
+    text.match(/\b(\d{1,4})\s*CARTONS?\b/i) ??
+    text.match(/\bCARTONS?\s*(\d{1,4})\b/i);
+  if (cartonsMatch) {
+    const n = parseInt(cartonsMatch[1], 10);
+    if (Number.isFinite(n) && n > 0 && n < 10000) result.cartons = n;
+  }
 
   // Totals row — look for "TOTAL :" and the surrounding numbers.
   // Example lines (concatenated by pdf-parse):
   //   "/" then "326.660" then "0.113" then "CARTONPCS" then "TOTAL :" then "71"
-  // Simpler: find "TOTAL :" and the last PCS/CARTON numbers in that block.
+  //   or, for the 698518 sample:
+  //   "1108.990" (= "1" cartons + "108.990" kg concatenated) then "0.457"
+  //   then "CARTONPCS" then "TOTAL :" then "270"
   const totalIdx = lines.findIndex((l) => /^TOTAL\s*:/i.test(l));
   if (totalIdx >= 0) {
     // The total PCS = the integer immediately after "TOTAL :".
@@ -125,6 +160,26 @@ export function parseBookingPdfText(text: string): BookingPdfFields {
     for (let i = Math.max(0, totalIdx - 10); i < totalIdx; i++) {
       const l = lines[i];
       if (/^\d+\.\d+$/.test(l)) {
+        const [intPart, decPart] = l.split(".");
+        // If a float looks like "<cartons><weight>" (long integer part + 3-decimal
+        // weight) and the weight slot is still empty, peel off the leading 1-2
+        // digits as cartons.
+        if (
+          result.grossWeightKg === null &&
+          intPart.length >= 4 &&
+          decPart.length === 3
+        ) {
+          for (let cut = 1; cut <= 3 && cut < intPart.length; cut++) {
+            const cartonsN = parseInt(intPart.slice(0, cut), 10);
+            const weightN = parseFloat(intPart.slice(cut) + "." + decPart);
+            if (cartonsN > 0 && cartonsN < 1000 && weightN >= 1 && weightN < 100000) {
+              if (result.cartons === null) result.cartons = cartonsN;
+              result.grossWeightKg = weightN;
+              break;
+            }
+          }
+          if (result.grossWeightKg !== null) continue;
+        }
         const n = parseFloat(l);
         if (n < 10 && result.measurementCbm === null) result.measurementCbm = n;
         else if (n >= 10 && result.grossWeightKg === null) result.grossWeightKg = n;

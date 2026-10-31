@@ -12,7 +12,6 @@ export default async function JobsPage({ searchParams }: { searchParams: { statu
     where: status === "all" ? {} : { status },
     orderBy: { createdAt: "desc" },
     take: 100,
-    include: { _count: { select: { reviewTickets: true, contractRows: true, poRows: true } } },
   });
 
   return (
@@ -41,9 +40,6 @@ export default async function JobsPage({ searchParams }: { searchParams: { statu
                 <th className="th">Type</th>
                 <th className="th">Business key</th>
                 <th className="th">Status</th>
-                <th className="th">PO</th>
-                <th className="th">Contract</th>
-                <th className="th">Reviews</th>
                 <th className="th">Created</th>
               </tr>
             </thead>
@@ -59,9 +55,6 @@ export default async function JobsPage({ searchParams }: { searchParams: { statu
                   <td className="td text-xs">{j.type}</td>
                   <td className="td font-mono text-xs">{j.businessKey ?? "—"}</td>
                   <td className="td"><StatusBadge status={j.status} /></td>
-                  <td className="td">{j._count.poRows}</td>
-                  <td className="td">{j._count.contractRows}</td>
-                  <td className="td">{j._count.reviewTickets}</td>
                   <td className="td text-xs text-slate-400">{j.createdAt.toISOString().slice(0, 16).replace("T", " ")}</td>
                 </tr>
               ))}

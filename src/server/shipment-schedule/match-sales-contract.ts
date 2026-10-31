@@ -7,11 +7,13 @@ interface HmTemplateRowLike {
   fob: number | null;
   itemDes: string;
   isAnchor: boolean;
+  marketCode?: string;
+  country?: string;
 }
 
 /**
  * Match a PDF's order-no prefix (e.g. "569959") against a candidate list of
- * `HmSalesContractPo` rows. The match is on the OrderNo prefix because the
+ * `SalesContractPo` rows. The match is on the OrderNo prefix because the
  * filename only carries the first segment (e.g. "569959 AUW118.pdf"), while
  * the sales contract's orderNo is the full H&M order number ("569959-8404").
  *
@@ -68,6 +70,11 @@ function hydrateFromSalesContract(po: SalesContractLookup): SalesContractHydrate
   // The anchor row carries orderQty / styleNo / fob / itemDes. If there's no
   // anchor flag (older data), fall back to the first row.
   const anchor = rows.find((r) => r.isAnchor) ?? rows[0];
+  const marketCode = anchor?.marketCode ?? "";
+  // The `country` field is formatted "<tod> <marketCode> (<marketCodeB>) <qty> <pct>%"
+  // – pull marketCodeB out of the parentheses to build the Market+Sub combo.
+  const sub = anchor?.country ? /\(([^)]+)\)/.exec(anchor.country)?.[1] ?? "" : "";
+  const marketSubCode = marketCode && sub ? `${marketCode}${sub}` : marketCode;
   return {
     buyerCode: po.contract.buyerCode || "",
     contractNo: po.contract.marchentContNo || "",
@@ -79,6 +86,8 @@ function hydrateFromSalesContract(po: SalesContractLookup): SalesContractHydrate
     composition: anchor?.itemDes ?? "",
     cat: "",
     hts: "",
+    marketCode,
+    marketSubCode,
   };
 }
 

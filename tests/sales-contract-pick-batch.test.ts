@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { HmTemplateRow } from "@/server/hm-sales-contract";
+import type { SalesContractTemplateRow } from "@/server/sales-contract";
 import {
   extractOrderNo,
   groupByOrderNo,
@@ -9,14 +9,14 @@ import {
   validateBatchFiles,
   MAX_PDFS_PER_BATCH,
   type BatchFile,
-} from "@/server/hm-sales-contract/batch-upload";
+} from "@/server/sales-contract/batch-upload";
 
-const PO_TEXT = readFileSync(join(__dirname, "fixtures/hm-643159-po.txt"), "utf8");
-const SIZE_TEXT = readFileSync(join(__dirname, "fixtures/hm-643159-size.txt"), "utf8");
-const COUNTRY_TEXT = readFileSync(join(__dirname, "fixtures/hm-643159-country.txt"), "utf8");
+const PO_TEXT = readFileSync(join(__dirname, "fixtures/sales-contract-643159-po.txt"), "utf8");
+const SIZE_TEXT = readFileSync(join(__dirname, "fixtures/sales-contract-643159-size.txt"), "utf8");
+const COUNTRY_TEXT = readFileSync(join(__dirname, "fixtures/sales-contract-643159-country.txt"), "utf8");
 
 /** A minimal buffer that passes the `%PDF` header + size checks in
- * validateBatchFiles. We never try to parse it — all parsing is tested with
+ * validateBatchFiles. We never try to parse it – all parsing is tested with
  * the real fixture text already loaded above. */
 function fakePdfBuf(size = 2048): Buffer {
   const buf = Buffer.alloc(size, 0x20);
@@ -24,7 +24,7 @@ function fakePdfBuf(size = 2048): Buffer {
   return buf;
 }
 
-function makeRow(partial: Partial<HmTemplateRow>): HmTemplateRow {
+function makeRow(partial: Partial<SalesContractTemplateRow>): SalesContractTemplateRow {
   return {
     isAnchor: false,
     orderNo: "643159-8756",
@@ -47,7 +47,7 @@ function makeRow(partial: Partial<HmTemplateRow>): HmTemplateRow {
   };
 }
 
-describe("Sales Contract pick-and-upload — Order No extraction (requirement 4)", () => {
+describe("Sales Contract pick-and-upload – Order No extraction (requirement 4)", () => {
   it("extracts the same Order No from all three real H&M PDF kinds for PO 643159-8756", () => {
     expect(extractOrderNo("PurchaseOrder", PO_TEXT)).toBe("643159-8756");
     expect(extractOrderNo("SizePerColourBreakdown", SIZE_TEXT)).toBe("643159-8756");
@@ -64,7 +64,7 @@ describe("Sales Contract pick-and-upload — Order No extraction (requirement 4)
   });
 });
 
-describe("Sales Contract pick-and-upload — grouping by PO (requirement 4)", () => {
+describe("Sales Contract pick-and-upload – grouping by PO (requirement 4)", () => {
   it("merges three PDFs with the same Order No into one group (same-PO consolidation)", () => {
     const parsed = [
       { orderNo: "643159-8756", kind: "PurchaseOrder" },
@@ -99,7 +99,7 @@ describe("Sales Contract pick-and-upload — grouping by PO (requirement 4)", ()
   });
 });
 
-describe("Sales Contract pick-and-upload — conflict detection (requirement 5)", () => {
+describe("Sales Contract pick-and-upload – conflict detection (requirement 5)", () => {
   it("returns no conflict when there is no previous row (first upload for a PO)", () => {
     const next = [makeRow({})];
     expect(detectRowConflicts([], next).hasConflict).toBe(false);
@@ -120,7 +120,7 @@ describe("Sales Contract pick-and-upload — conflict detection (requirement 5)"
   });
 
   it("flags a conflict when the market set differs between uploads (markets are concatenated into one row)", () => {
-    // One row per PO (user spec 2026-10-20) — the market set lives in
+    // One row per PO (user spec 2026-10-20) – the market set lives in
     // row.marketCode as a comma-joined traceability field. A different market
     // set is a conflict because the exported row's column O would change.
     const prev = [makeRow({ marketCode: "OE,OD" })];
@@ -146,7 +146,7 @@ describe("Sales Contract pick-and-upload — conflict detection (requirement 5)"
   });
 });
 
-describe("Sales Contract pick-and-upload — file validation (requirement 2)", () => {
+describe("Sales Contract pick-and-upload – file validation (requirement 2)", () => {
   it("enforces the max PDF-per-batch limit", () => {
     const files: BatchFile[] = [
       { name: "a.pdf", kind: "PurchaseOrder", buffer: fakePdfBuf() },
@@ -193,9 +193,9 @@ describe("Sales Contract pick-and-upload — file validation (requirement 2)", (
   });
 });
 
-describe("Sales Contract pick-and-upload — contract isolation (requirement 3)", () => {
-  // Pure placeholder: contract isolation is enforced by `HmSalesContractPo`'s
-  // `@@unique([contractId, orderNo])` constraint — the pure batch-upload logic
+describe("Sales Contract pick-and-upload – contract isolation (requirement 3)", () => {
+  // Pure placeholder: contract isolation is enforced by `SalesContractPo`'s
+  // `@@unique([contractId, orderNo])` constraint – the pure batch-upload logic
   // never touches another contract's rows. The DB-level enforcement is
   // regression-tested by the existing H&M suite (same model is reused).
   it("documents the per-contract isolation guarantee", () => {

@@ -4,8 +4,7 @@ import { prisma } from "@/lib/db";
 import { PageHeader } from "@/components/ui";
 import { ShipmentScheduleHeaderEditor } from "@/components/ShipmentScheduleHeaderEditor";
 import { ShipmentScheduleCutoffs } from "@/components/ShipmentScheduleCutoffs";
-import { ShipmentScheduleUpload } from "@/components/ShipmentScheduleUpload";
-import { ShipmentScheduleExcelImport } from "@/components/ShipmentScheduleExcelImport";
+import { ShipmentScheduleInvoiceAllocator } from "@/components/ShipmentScheduleInvoiceAllocator";
 import { ShipmentScheduleGrid } from "@/components/ShipmentScheduleGrid";
 
 export const dynamic = "force-dynamic";
@@ -81,9 +80,8 @@ export default async function ShipmentScheduleDetailPage({ params }: { params: {
         <ShipmentScheduleCutoffs scheduleId={schedule.id} cutoffs={cutoffOptions} rowCounts={rowCountsByCutoff} />
       </div>
 
-      <div className="mb-6 grid gap-4 lg:grid-cols-2">
-        <ShipmentScheduleUpload scheduleId={schedule.id} cutoffs={cutoffOptions} />
-        <ShipmentScheduleExcelImport scheduleId={schedule.id} />
+      <div className="mb-6">
+        <ShipmentScheduleInvoiceAllocator scheduleId={schedule.id} rowCount={schedule.rows.length} />
       </div>
 
       <ShipmentScheduleGrid

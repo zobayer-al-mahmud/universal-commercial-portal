@@ -1,5 +1,5 @@
 /**
- * Shipment Schedule v2 — pure types. No I/O, no Prisma.
+ * Shipment Schedule v2 – pure types. No I/O, no Prisma.
  *
  * Workflow:
  *   1. User creates a Shipment Schedule for a week (title + weekNo).
@@ -7,7 +7,7 @@
  *   3. User uploads booking-confirmation PDFs under a chosen cut-off.
  *   4. For each PDF we parse (BCN, BRef, status, ports, qty, weight, cartons,
  *      cbm, market codes, order-no) and cross-match the OrderNo against
- *      `HmSalesContractPo` to hydrate the Sales-Contract-sourced columns
+ *      `SalesContractPo` to hydrate the Sales-Contract-sourced columns
  *      (BuyerCode, Cont.No., Date, Style, FOB, Composition, PCS).
  *   5. The assembled row is persisted under the chosen cut-off.
  */
@@ -23,7 +23,7 @@ export interface FilenameParts {
 }
 
 /** Fields we try to pull from a booking-confirmation PDF's text. All optional
- *  (any field we fail to find is left blank — never invented). */
+ *  (any field we fail to find is left blank – never invented). */
 export interface BookingPdfFields {
   bcn: string;               // "61880638"
   bookingRef: string;        // "CTG4407121"
@@ -39,11 +39,12 @@ export interface BookingPdfFields {
   cartons: number | null;    // 3
   grossWeightKg: number | null;
   measurementCbm: number | null;
+  expectedDelivery: string;  // "2026-10-05" (raw text under the "Expected Delivery" label)
   rawTextLen: number;        // for debugging
   warnings: string[];        // non-blocking notes
 }
 
-/** Minimal shape of a HmSalesContractPo row we look up by OrderNo for matching.
+/** Minimal shape of a SalesContractPo row we look up by OrderNo for matching.
  *  Taking just what we need so the matcher stays testable without Prisma. */
 export interface SalesContractLookup {
   contract: {
@@ -55,7 +56,7 @@ export interface SalesContractLookup {
   };
   orderNo: string;         // "734928-8404"
   state: string;           // "READY" | "UPLOADED" | ...
-  rowsJson: string;        // HmTemplateRow[] JSON
+  rowsJson: string;        // SalesContractTemplateRow[] JSON
 }
 
 /** Shape of what we pull from a matched sales-contract row. */
@@ -64,12 +65,14 @@ export interface SalesContractHydrated {
   contractNo: string;      // marchentContNo
   contractDate: string;
   orderNo: string;         // full orderNo (e.g. "734928-8404")
-  pcs: number | null;      // orderQty from HmTemplateRow
-  style: string;           // styleNo from HmTemplateRow
+  pcs: number | null;      // orderQty from SalesContractTemplateRow
+  style: string;           // styleNo from SalesContractTemplateRow
   fob: number | null;
   composition: string;     // itemDes
-  cat: string;             // "" (unset at HmSalesContract level today)
-  hts: string;             // "" (unset at HmSalesContract level today)
+  cat: string;             // "" (unset at SalesContract level today)
+  hts: string;             // "" (unset at SalesContract level today)
+  marketCode: string;      // from the anchor row's marketCode (e.g. "OE")
+  marketSubCode: string;   // marketCode + marketCodeB (e.g. "OEOLCEU"), from `country`
 }
 
 /** Result of matching one PDF's orderNoPrefix against the sales-contract POs. */

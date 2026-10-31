@@ -212,7 +212,9 @@ export async function generateBulkInvoices(opts: {
       const templateFile = resolved?.filename ?? "";
       const countryCode = resolved?.countryCode ?? row.marketCode.toUpperCase();
 
-      let inv = await prisma.customsInvoice.findUnique({ where: { orderNo: row.orderKey } });
+      // His schema made CustomsInvoice per-invoice-no (orderNo alone is no longer
+      // unique), so look up the first invoice for this order rather than findUnique.
+      let inv = await prisma.customsInvoice.findFirst({ where: { orderNo: row.orderKey } });
       let isNew = false;
       if (!inv) {
         inv = await prisma.customsInvoice.create({
