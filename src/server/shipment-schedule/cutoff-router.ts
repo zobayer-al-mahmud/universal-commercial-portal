@@ -101,19 +101,61 @@ export function formatCutoffDate(d: Date): string {
 }
 
 /**
- * Read the DB mapping (seeded from `prisma/seed-data/cfs-cutoff-days.json`,
- * editable in-portal). Returns `null` when the market code is not in the
- * mapping -- caller must leave the shipment unrouted (never guess).
+ * Resolve the CFS cut-off day for a market code.
+ *
+ * Lookup order (so a fresh clone on another PC "just works" without running
+ * the seed step first — user rule 2026-11-01):
+ *   1. DB mapping — `ReferenceData` rows with `type = "cfs-cutoff-day"`,
+ *      loaded by `prisma/seed.ts` from `prisma/seed-data/cfs-cutoff-days.json`
+ *      and editable in-portal.
+ *   2. Bundled JSON fallback — the SAME file is also committed under
+ *      `src/server/shipment-schedule/data/cfs-cutoff-days.json`, which Next
+ *      bundles into the server build. Used when the DB row is missing or
+ *      inactive (unseeded DB, admin disabled the row, DB connectivity blip).
+ *
+ * Returns `null` when BOTH sources fail — the caller then leaves the
+ * shipment unrouted (fail-closed, never guess).
  */
 export async function resolveCutoffDayForMarket(marketCode: string): Promise<CutoffDay | null> {
   const code = String(marketCode || "").trim().toUpperCase();
   if (!code) return null;
-  const row = await prisma.referenceData.findUnique({
-    where: { type_code: { type: "cfs-cutoff-day", code } },
-  });
-  if (!row || !row.active) return null;
-  const v = row.value.toLowerCase();
-  return v === "monday" || v === "friday" ? v : null;
+  try {
+    const row = await prisma.referenceData.findUnique({
+      where: { type_code: { type: "cfs-cutoff-day", code } },
+    });
+    if (row && row.active) {
+      const v = row.value.toLowerCase();
+      if (v === "monday" || v === "friday") return v;
+    }
+  } catch { /* fall through to the bundled fallback */ }
+  return resolveCutoffDayFromBundle(code);
+}
+
+/**
+ * Pure JSON-file fallback. Loads the bundled seed exactly once and keeps the
+ * map in memory. Exposed so unit tests can hit the fallback without a DB.
+ */
+let bundledMap: Map<string, CutoffDay> | null = null;
+export function resolveCutoffDayFromBundle(marketCode: string): CutoffDay | null {
+  const code = String(marketCode || "").trim().toUpperCase();
+  if (!code) return null;
+  if (!bundledMap) {
+    bundledMap = new Map();
+    try {
+      // Lazy require so a test environment that stubs the file still works.
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const data = require("./data/cfs-cutoff-days.json") as {
+        marketCodeToCutoffDay?: Record<string, string>;
+      };
+      for (const [k, v] of Object.entries(data.marketCodeToCutoffDay ?? {})) {
+        const lo = String(v).toLowerCase();
+        if (lo === "monday" || lo === "friday") {
+          bundledMap.set(k.toUpperCase(), lo);
+        }
+      }
+    } catch { /* leave bundledMap empty — caller gets null */ }
+  }
+  return bundledMap.get(code) ?? null;
 }
 
 export interface ResolvedRoute {
