@@ -260,6 +260,13 @@ export async function buildContractSheetRows(contractId: string): Promise<{
     let extract: SalesContractPoExtract | null = null;
     try { extract = JSON.parse(po.poJson || "null"); } catch { extract = null; }
     if (!extract) continue;
+    // A malformed/empty extract (e.g. a junk master-list row persisted with
+    // poJson "{}", or a separator line read as a PO) parses to an object that
+    // lacks the parsed-PDF shape. Skip it rather than let `extract.marketRows`
+    // / `extract.header` throw and crash the whole sheet export — same intent
+    // as the "skip unparseable PO" guard above, so a contract with some junk
+    // rows still exports its valid POs.
+    if (!extract.header || !Array.isArray(extract.marketRows)) continue;
 
     // User sheet-view overrides, merged on top of the extracted values.
     let edits: Partial<SalesContractSheetRow> = {};
