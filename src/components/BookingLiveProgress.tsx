@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import type { StepPhase } from "@/server/booking-correction/progress";
 import { retryBookingDocAction, confirmBookingPdfAction } from "@/app/actions/booking-batch";
@@ -54,6 +55,9 @@ interface StatusPayload {
   stopped?: boolean;
   totals: { total: number; completed: number; review: number; failed: number };
   docs: DocStatus[];
+  /** Doc ids the active/most-recent run is processing; when set, the progress
+   *  bar, counters, current-row and log are scoped to these rows only. */
+  runScope?: string[] | null;
 }
 
 const TERMINAL_ERROR = new Set(["MISMATCH", "STATUS_MISMATCH", "SEARCH_FAILED", "DOWNLOAD_FAILED", "FAILED", "NEEDS_REVIEW", "PORTAL_AUTH_REQUIRED"]);
@@ -245,6 +249,8 @@ export function BookingLiveProgress({
   const [showLog, setShowLog] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wasRunningRef = useRef(false);
+  const router = useRouter();
 
   const stop = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -257,11 +263,16 @@ export function BookingLiveProgress({
       const payload = (await r.json()) as StatusPayload;
       setData(payload);
       setErr(null);
+      // When a run finishes (running → not-running), refresh the server-rendered
+      // page once so the status badge, "Start automation" button and counters
+      // sync with the backend's final state (they are not polled).
+      if (wasRunningRef.current && !payload.running) router.refresh();
+      wasRunningRef.current = payload.running;
       if (!payload.running) stop();
     } catch (e) {
       setErr(e instanceof Error ? e.message : "poll failed");
     }
-  }, [batchId, stop]);
+  }, [batchId, stop, router]);
 
   useEffect(() => {
     void poll();
@@ -275,7 +286,12 @@ export function BookingLiveProgress({
     void poll();
   }, [poll]);
 
-  const failedDocs = (data?.docs ?? []).filter((d) => d.stage.phase === "error");
+  // Scope everything the progress panel reports to the rows the active run is
+  // processing (Process Selected / Retry / Reprocess). Falls back to the whole
+  // batch when no scope is recorded. The review lists below stay whole-batch.
+  const runScopeSet = data?.runScope && data.runScope.length ? new Set(data.runScope) : null;
+  const inScope = (d: DocStatus) => !runScopeSet || runScopeSet.has(d.id);
+  const failedDocs = (data?.docs ?? []).filter((d) => inScope(d) && d.stage.phase === "error");
   const retryAllFailed = useCallback(() => {
     startRetryAll(async () => {
       for (const d of failedDocs) {
@@ -296,19 +312,21 @@ export function BookingLiveProgress({
     );
   }
 
-  // --- Overall batch summary (one bar for all uploaded PDFs) -----------------
+  // --- Run progress (scoped to the active run's rows, not the whole batch) ---
   const docs = data.docs;
-  const total = data.totals.total || docs.length;
-  const confirmed = docs.filter((d) => d.state === "COMPLETED").length;
-  const requested = docs.filter((d) => isUnconfirmed(d)).length;
-  const failed = docs.filter((d) => d.stage.phase === "error" && !isUnconfirmed(d) && d.state !== "COMPLETED").length;
-  const doneCount = docs.filter((d) => d.stage.phase === "done" || d.stage.phase === "error").length;
+  const scoped = docs.filter(inScope);
+  const isScoped = !!runScopeSet && scoped.length < docs.length;
+  const total = scoped.length || data.totals.total || docs.length;
+  const confirmed = scoped.filter((d) => d.state === "COMPLETED").length;
+  const requested = scoped.filter((d) => isUnconfirmed(d)).length;
+  const failed = scoped.filter((d) => d.stage.phase === "error" && !isUnconfirmed(d) && d.state !== "COMPLETED").length;
+  const doneCount = scoped.filter((d) => d.stage.phase === "done" || d.stage.phase === "error").length;
   const pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
-  const currentDoc = docs.find((d) => d.stage.phase === "running");
-  const attention = docs.filter(needsAttention);
+  const currentDoc = scoped.find((d) => d.stage.phase === "running");
+  const attention = docs.filter(needsAttention); // review list stays whole-batch
 
-  // Combined, chronological live log across every document (successes + errors).
-  const combinedLog = docs
+  // Live log, scoped to the rows this run is processing.
+  const combinedLog = scoped
     .flatMap((d) => (d.events ?? []).map((e) => ({ ...e, serial: d.serial, docName: d.name })))
     .sort((a, b) => a.at.localeCompare(b.at))
     .slice(-200);
@@ -318,7 +336,7 @@ export function BookingLiveProgress({
       {/* The one unified batch progress bar + summary counts + centralized log. */}
       <div className="card p-5">
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold text-slate-800">Batch progress</h3>
+          <h3 className="text-sm font-semibold text-slate-800">{isScoped ? `Processing ${total} selected row${total === 1 ? "" : "s"}` : "Batch progress"}</h3>
           <div className="flex items-center gap-2 text-xs">
             {canRetry && failedDocs.length > 0 ? (
               <button onClick={retryAllFailed} disabled={retrying} className="btn-ghost btn-xs">
@@ -333,7 +351,7 @@ export function BookingLiveProgress({
           <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${pct}%` }} />
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
-          <span className="font-semibold text-slate-700">{total} uploaded</span>
+          <span className="font-semibold text-slate-700">{total} {isScoped ? "selected" : "uploaded"}</span>
           <span className="text-emerald-700">{confirmed} confirmed</span>
           <span className="text-amber-700">{requested} requested</span>
           <span className="text-rose-700">{failed} failed</span>

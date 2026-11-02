@@ -251,7 +251,10 @@ export async function runLivePortalForDoc(input: {
       !!m && m.comparisons.some((c) => IDENTITY_FIELDS.includes(c.field) && !c.match);
 
     for (const cand of candidates) {
-      const opened = await openBookingDetail(cand.soNumber);
+      // Open each candidate by DIRECT URL (search.shipperId) so EVERY candidate is
+      // inspected, not just the first — the results-grid link is gone once we have
+      // navigated into any candidate's detail.
+      const opened = await openBookingDetail(cand.soNumber, search.shipperId);
       if (!opened) {
         inspected.push({ cand, values: { grossWeight: "", cartons: "", quantity: "", headingStatus: cand.headingStatus, fieldStatus: cand.fieldStatus }, details: null, match: null, pdf: null });
         continue;

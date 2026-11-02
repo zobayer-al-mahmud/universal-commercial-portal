@@ -110,7 +110,8 @@ export function BookingExcelManager() {
   };
 
   const processSelected = () => {
-    if (!batchId || selected.size === 0) return;
+    if (!batchId) return;
+    if (selected.size === 0) { setNotice("Select at least one row to process."); return; }
     if (dirty) { setNotice("Save your edits before processing."); return; }
     start(async () => {
       const fd = new FormData();
@@ -169,6 +170,7 @@ export function BookingExcelManager() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               {notice ? <span className="text-xs font-medium text-slate-600">{notice}</span> : null}
+              {selected.size === 0 && validRows.length > 0 ? <span className="text-xs font-medium text-amber-600">Select at least one row to process.</span> : null}
               <button onClick={save} disabled={pending || !dirty} className="btn-secondary text-xs disabled:opacity-40">💾 Save changes</button>
               <a href={`/api/booking/${batchId}/excel`} className="btn-secondary text-xs">⬇ Download Excel</a>
               <button onClick={processSelected} disabled={pending || selected.size === 0} className="btn-primary text-xs disabled:opacity-40">

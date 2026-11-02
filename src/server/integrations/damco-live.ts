@@ -21,6 +21,7 @@ export type { BookingDetailValues } from "@/server/booking-correction/booking-de
  */
 
 const SEARCH_URL = "https://booking.damco.com/ShipperPortalWeb/SearchAction.action";
+const VIEW_SO_URL = "https://booking.damco.com/ShipperPortalWeb/ViewSOAction.action";
 
 export interface LiveBooking {
   bookingNumber: string;
@@ -38,6 +39,9 @@ export interface LiveSearchResult {
   message: string;
   bookings: LiveBooking[];
   resultCount: number;
+  /** The shipper id the result-grid links carry (searchByShipper_id); used to
+   *  open each candidate's detail by direct URL instead of a results-page click. */
+  shipperId: string;
 }
 
 export interface LiveSearchInput {
@@ -92,12 +96,16 @@ async function openBookingTab(page: Page): Promise<void> {
   throw new Error("Booking tab did not activate (searchSO_PO_NO not visible).");
 }
 
-function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[]; noResults: boolean }> {
+function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[]; noResults: boolean; shipperId: string }> {
   return page.evaluate(() => {
     const body = (document.body.innerText || "").replace(/\s+/g, " ");
     const noResults = /No Booking found matching the search criteria/i.test(body);
     const m = body.match(/Result\s+[\d-]+\s+out of\s+(\d+)/i);
     const count = m ? Number(m[1]) : 0;
+    // The result-grid booking links all carry searchByShipper_id=<id>; capture it
+    // so each candidate's detail can be opened by direct URL (every candidate, not
+    // just the first — a results-page click only works while the grid is showing).
+    const shipperId = (document.documentElement.outerHTML.match(/searchByShipper_id=(\d+)/) || [])[1] || "";
     const bookings: LiveBooking[] = [];
     for (const tr of [...document.querySelectorAll("tr")]) {
       const link = [...tr.querySelectorAll("a")].find((a) => /^\d{6,}$/.test((a.textContent || "").trim()));
@@ -116,7 +124,7 @@ function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[];
         bookingReference: "",
       });
     }
-    return { count, bookings, noResults };
+    return { count, bookings, noResults, shipperId };
   });
 }
 
@@ -124,7 +132,7 @@ function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[];
 export async function liveSearchBookings(input: LiveSearchInput): Promise<LiveSearchResult> {
   const auth: AuthResult = await ensureAuthenticated();
   if (auth.outcome !== "AUTHENTICATED") {
-    return { ok: false, authRequired: true, noResults: false, message: auth.message, bookings: [], resultCount: 0 };
+    return { ok: false, authRequired: true, noResults: false, message: auth.message, bookings: [], resultCount: 0, shipperId: "" };
   }
   const page = await getDamcoPage();
   await page.goto(SEARCH_URL, { waitUntil: "domcontentloaded" });
@@ -149,18 +157,52 @@ export async function liveSearchBookings(input: LiveSearchInput): Promise<LiveSe
     message: grid.noResults ? "No Booking found matching the search criteria." : `${grid.bookings.length} booking(s) found.`,
     bookings: grid.bookings,
     resultCount: grid.count,
+    shipperId: grid.shipperId,
   };
 }
 
-/** Open one booking's detail page (ViewSOAction) by clicking its result link. */
-export async function openBookingDetail(bookingNumber: string): Promise<boolean> {
+/**
+ * Open one booking's detail page (ViewSOAction).
+ *
+ * Preferred path: navigate STRAIGHT to the detail URL (needs `shipperId`). The
+ * inspection loop opens several candidates in turn; after the first, the page is
+ * on a detail view — not the results grid — so the old "click the result link"
+ * approach could only ever open candidate[0]. Every later candidate came back
+ * blank ("FR ?"), and a row whose correct booking was NOT first was wrongly sent
+ * to review. A direct URL opens any candidate regardless of the current page.
+ * Falls back to the results-grid click when no shipperId is available.
+ */
+export async function openBookingDetail(bookingNumber: string, shipperId?: string): Promise<boolean> {
   const page = await getDamcoPage();
-  const clicked = await page.evaluate((bk) => {
-    const a = [...document.querySelectorAll("a")].find((x) => (x.textContent || "").trim() === bk) as HTMLElement | null;
-    if (!a) return false;
-    a.click();
-    return true;
-  }, bookingNumber);
+  if (shipperId) {
+    const url = `${VIEW_SO_URL}?so_number=${encodeURIComponent(bookingNumber)}&searchByShipper_id=${encodeURIComponent(shipperId)}`;
+    await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => undefined);
+    await page.waitForTimeout(1500);
+    if (/ViewSOAction/i.test(page.url())) return true;
+    // Direct nav did not land (session/URL quirk) — fall through to the click path.
+  }
+  let clicked: boolean;
+  try {
+    clicked = await page.evaluate((bk) => {
+      const a = [...document.querySelectorAll("a")].find((x) => (x.textContent || "").trim() === bk) as HTMLElement | null;
+      if (!a) return false;
+      a.click();
+      return true;
+    }, bookingNumber);
+  } catch (e) {
+    // Clicking the result link navigates SYNCHRONOUSLY, which can tear down the
+    // evaluate's execution context before it returns ("Execution context was
+    // destroyed, most likely because of a navigation"). That throw means the
+    // click DID fire and the page is navigating — not a failure. Treat it as
+    // clicked and let the URL check below confirm we landed on ViewSOAction;
+    // any other error is still real and re-thrown. (Without this, an otherwise
+    // valid booking intermittently fails the whole row on a live batch.)
+    if (/execution context was destroyed|context was destroyed|frame (?:was )?detached|navigating and changing/i.test(String((e as Error)?.message ?? e))) {
+      clicked = true;
+    } else {
+      throw e;
+    }
+  }
   if (!clicked) return false;
   await page.waitForLoadState("domcontentloaded").catch(() => undefined);
   await page.waitForTimeout(2000);
@@ -191,13 +233,13 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
   }
 
   // Click the DETAILS sub-tab so the SUMMARY + BOOKING LINES sections render.
-  await page.evaluate(() => {
-    const tab = [...document.querySelectorAll("a, li, button, span")].find((e) => /^\s*details\s*$/i.test(e.textContent || ""));
-    if (tab) (tab as HTMLElement).click();
-  }).catch(() => undefined);
-  await page.waitForTimeout(1200);
+  const clickDetails = () =>
+    page.evaluate(() => {
+      const tab = [...document.querySelectorAll("a, li, button, span")].find((e) => /^\s*details\s*$/i.test(e.textContent || ""));
+      if (tab) (tab as HTMLElement).click();
+    }).catch(() => undefined);
 
-  const raw = await page.evaluate((): RawBookingDetails => {
+  const readRaw = (): Promise<RawBookingDetails> => page.evaluate((): RawBookingDetails => {
     /** Read the *value* of a control: input/textarea value, or a select's chosen
      *  option text — but never a placeholder option (value "", "Select...", …). */
     const readControlValue = (el: Element | null | undefined): string => {
@@ -348,6 +390,22 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
       dynamicFields,
     };
   });
+
+  // The Details tab renders its SUMMARY + dynamic fields asynchronously, so a
+  // single fixed wait sometimes reads BEFORE the FR input is populated — the FR
+  // then comes back empty on an otherwise-valid booking and the row is wrongly
+  // sent to review (observed intermittently on large live batches, while the
+  // same booking reads fine in isolation). Click, wait, read; if FR is still
+  // empty, re-click Details and retry with a growing pause. This never invents a
+  // value: a genuinely FR-less booking still returns "" after the retries.
+  await clickDetails();
+  await page.waitForTimeout(1200);
+  let raw = await readRaw();
+  for (let attempt = 0; attempt < 3 && !assembleBookingDetails(raw).frCode; attempt++) {
+    await clickDetails();
+    await page.waitForTimeout(1200 + attempt * 1200);
+    raw = await readRaw();
+  }
 
   return assembleBookingDetails(raw);
 }

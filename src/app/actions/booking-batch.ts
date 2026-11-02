@@ -12,6 +12,7 @@ import {
   processBatch,
   processSelected,
   processDocument,
+  setBookingRunScope,
 } from "@/server/booking-correction/batch";
 import { parsePackingListXlsx } from "@/server/booking-correction/excel";
 import { writeCorrectedPdf, type CorrectedPdfValues } from "@/server/booking-correction/corrected-pdf";
@@ -201,6 +202,15 @@ export async function processSelectedBookingAction(formData: FormData): Promise<
   let docIds: string[] = [];
   try { docIds = JSON.parse(String(formData.get("docIds") ?? "[]")); } catch { docIds = []; }
   if (!batchId || docIds.length === 0) return;
+  // Mark the batch running SYNCHRONOUSLY before kicking off the background run.
+  // The client navigates to the batch page immediately after this returns; if the
+  // batch still looks idle there, its auto-start fires "process all" — which both
+  // ignores the user's row selection AND drives the single live browser with a
+  // second concurrent loop (navigation/"execution context destroyed" races).
+  await prisma.bookingBatch.update({
+    where: { id: batchId },
+    data: { status: "processing", ...(env.INTEGRATION_MODE === "live" ? { liveStatus: "running", liveUpdatedAt: new Date() } : {}) },
+  }).catch(() => undefined);
   void processSelected(batchId, docIds, { actor: user.email }).catch((e) => console.error("[booking] process selected failed", e));
   await audit({ entityType: "job", entityId: batchId, action: "booking.excel.process-selected", actor: user.email, data: { count: docIds.length } });
   revalidatePath(`/booking/${batchId}`);
@@ -213,6 +223,12 @@ export async function processAllBookingAction(formData: FormData): Promise<void>
   if (!user || !userHasPermission(user, PERMISSIONS.JOB_CREATE)) return;
   const batchId = String(formData.get("batchId") ?? "");
   if (!batchId) return;
+  // Mark running synchronously (same race as Process Selected): stop the batch
+  // page's auto-start from launching a second concurrent "process all" loop.
+  await prisma.bookingBatch.update({
+    where: { id: batchId },
+    data: { status: "processing", ...(env.INTEGRATION_MODE === "live" ? { liveStatus: "running", liveUpdatedAt: new Date() } : {}) },
+  }).catch(() => undefined);
   void processBatch(batchId, { actor: user.email }).catch((e) => console.error("[booking] process all failed", e));
   await audit({ entityType: "job", entityId: batchId, action: "booking.excel.process-all", actor: user.email, data: {} });
   revalidatePath(`/booking/${batchId}`);
@@ -226,6 +242,8 @@ export async function retryBookingDocAction(formData: FormData): Promise<void> {
   const docId = String(formData.get("docId") ?? "");
   const batchId = String(formData.get("batchId") ?? "");
   if (!docId) return;
+  // Scope the run to just this row, so the progress panel shows this retry only.
+  if (batchId) await setBookingRunScope(batchId, [docId]);
   // Reset the live step so the indicator restarts cleanly, then run in the background.
   await prisma.bookingDocument.update({ where: { id: docId }, data: { liveStep: "", error: "", warning: "" } }).catch(() => undefined);
   void processDocument(docId, { actor: user.email, force: true }).catch((e) => console.error("[booking] retry failed", e));
@@ -398,7 +416,7 @@ export async function confirmBookingPdfAction(formData: FormData): Promise<void>
     if (search.authRequired) return { ok: false, kind: "AUTH", message: search.message } as const;
     if (!search.ok || search.bookings.length === 0) return { ok: false, kind: "NO_MATCH", message: search.message || "No booking found in the portal." } as const;
     const picked = search.bookings[0];
-    const opened = await openBookingDetail(picked.bookingNumber);
+    const opened = await openBookingDetail(picked.bookingNumber, search.shipperId);
     if (!opened) return { ok: false, kind: "NO_MATCH", message: `Could not open booking ${picked.bookingNumber}.` } as const;
     const pdf = await generateBookingPdf(picked.bookingNumber);
     if (!pdf) return { ok: false, kind: "NO_PDF", message: `Portal did not deliver a PDF for booking ${picked.bookingNumber}.` } as const;

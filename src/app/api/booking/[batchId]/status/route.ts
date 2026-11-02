@@ -5,6 +5,17 @@ import { prisma } from "@/lib/db";
 import { liveStage, BOOKING_STEPS } from "@/server/booking-correction/progress";
 import type { MatchResult } from "@/server/booking-correction/batch-types";
 
+/** Parse the batch's stored run-scope (JSON array of doc ids) → string[] | null. */
+function parseRunScope(json: string | null): string[] | null {
+  if (!json) return null;
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) && arr.length ? (arr as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 export const dynamic = "force-dynamic";
 
 /** Live status + per-document progress for one booking batch (polled by the UI). */
@@ -22,19 +33,19 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     include: { events: { orderBy: { createdAt: "asc" }, take: 40 } },
   });
 
-  const TERMINAL = new Set([
-    "COMPLETED",
-    "MISMATCH",
-    "STATUS_MISMATCH",
-    "SEARCH_FAILED",
-    "DOWNLOAD_FAILED",
-    "FAILED",
-    "NEEDS_REVIEW",
-    "PORTAL_AUTH_REQUIRED",
+  // Actively-processing document states (mid-pipeline). UPLOADED is NOT one of
+  // them — it means "pending / never started". A run is "running" only while the
+  // backend run is live (batch.liveStatus === "running") or at least one document
+  // is mid-pipeline; untouched UPLOADED rows (e.g. the rows a Process Selected run
+  // never picked) must NOT keep the batch "running" — that left the Stop button,
+  // the "live" indicator and polling stuck on after a scoped run had finished.
+  const IN_FLIGHT = new Set([
+    "EXTRACTING", "READY_TO_SEARCH", "PORTAL_SEARCH", "BOOKING_MATCHING", "PDF_GENERATING", "STATUS_VALIDATION",
   ]);
-  const allTerminal = docs.length > 0 && docs.every((d) => TERMINAL.has(d.state));
+  const anyInFlight = docs.some((d) => IN_FLIGHT.has(d.state));
   const stopping = batch.status === "stopping";
   const stopped = batch.status === "stopped";
+  const isRunning = !stopped && (batch.liveStatus === "running" || stopping || anyInFlight);
 
   return NextResponse.json({
     batchId: batch.id,
@@ -45,9 +56,14 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     liveDocId: batch.liveDocId,
     steps: BOOKING_STEPS,
     // "stopping" stays running so the UI keeps polling until the batch is parked.
-    running: !allTerminal && !stopped,
+    running: isRunning,
     stopping,
     stopped,
+    // Doc ids the active/most-recent run is processing (Process Selected / Retry /
+    // Reprocess). The UI scopes the progress bar, counters, current-row and log to
+    // these so a 3-row selection never displays as whole-batch progress. null when
+    // a run covers the whole batch or no scope is recorded.
+    runScope: parseRunScope(batch.runScopeJson),
     totals: {
       total: batch.totalDocs,
       completed: batch.completedDocs,

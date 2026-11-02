@@ -26,6 +26,22 @@ function bookingKey(batchId: string): string {
   return runKey("booking", batchId);
 }
 
+/**
+ * Record the doc ids the CURRENT run is processing on the batch (DB-backed). The
+ * status API returns `runScopeJson` so the progress bar, counters, current-row
+ * and log reflect ONLY the rows the user chose to process (Process Selected /
+ * Retry / Reprocess) — a 3-row selection must never display as "213/372". It is
+ * stored in the DB (not process memory) because the API route and the server
+ * action are bundled separately by Next, so a shared in-process map is not seen
+ * across them. Pass [] to clear (whole-batch run).
+ */
+export async function setBookingRunScope(batchId: string, docIds: string[]): Promise<void> {
+  const scope = [...new Set(docIds)];
+  await prisma.bookingBatch
+    .update({ where: { id: batchId }, data: { runScopeJson: scope.length ? JSON.stringify(scope) : null } })
+    .catch(() => undefined);
+}
+
 export interface UploadFile {
   name: string;
   buffer: Buffer;
@@ -586,14 +602,28 @@ const SUCCESS_STATES: BookingState[] = ["COMPLETED"];
 const REVIEW_STATES: BookingState[] = ["NEEDS_REVIEW", "MISMATCH", "STATUS_MISMATCH", "PORTAL_AUTH_REQUIRED"];
 const FAIL_STATES: BookingState[] = ["SEARCH_FAILED", "DOWNLOAD_FAILED", "FAILED"];
 
+/** Documents actively mid-pipeline (a run is working on them). UPLOADED is NOT
+ *  here — it is "pending / not started" and must never read as "processing". */
+const ACTIVE_STATES: BookingState[] = ["EXTRACTING", "READY_TO_SEARCH", "PORTAL_SEARCH", "BOOKING_MATCHING", "PDF_GENERATING", "STATUS_VALIDATION"];
+
 /** Recompute batch-level counters + status from its documents. */
 export async function recomputeBatch(batchId: string): Promise<void> {
   const docs = await prisma.bookingDocument.findMany({ where: { batchId }, select: { state: true } });
   const completed = docs.filter((d) => SUCCESS_STATES.includes(d.state as BookingState)).length;
   const review = docs.filter((d) => REVIEW_STATES.includes(d.state as BookingState)).length;
   const failed = docs.filter((d) => FAIL_STATES.includes(d.state as BookingState)).length;
-  const inFlight = docs.length - completed - review - failed;
-  const status = inFlight > 0 ? "processing" : failed + review === 0 ? "completed" : completed > 0 ? "partial" : "failed";
+  const active = docs.filter((d) => ACTIVE_STATES.includes(d.state as BookingState)).length;
+  const pending = docs.length - completed - review - failed - active; // UPLOADED, not yet started
+  // "processing" ONLY while something is actively mid-pipeline — a finished run
+  // that left pending UPLOADED rows is NOT "processing" (it is "partial"), so the
+  // status badge and Recent-batches list stop showing "Processing" after the run.
+  let status: string;
+  if (active > 0) status = "processing";
+  else if (pending === 0) status = failed + review === 0 ? "completed" : completed > 0 ? "partial" : "failed";
+  // Idle with rows still pending: "partial" once a run has produced any result
+  // (completed or failed), else "uploaded" (nothing processed yet — review rows
+  // here are just invalid-on-upload data awaiting correction).
+  else status = completed > 0 || failed > 0 ? "partial" : "uploaded";
   await prisma.bookingBatch.update({ where: { id: batchId }, data: { completedDocs: completed, reviewDocs: review, failedDocs: failed, status } });
 }
 
@@ -608,6 +638,9 @@ async function drainDocuments(batchId: string, queue: string[], opts: { actor: s
   // A Stop closes the visible Damco browser so an in-flight portal step throws
   // at once instead of running to its navigation timeout.
   onCancel(bookingKey(batchId), () => { void detachDamcoBrowser().catch(() => undefined); });
+  // Record exactly which docs THIS run processes, so the UI progress/counters show
+  // only them (Process Selected of 3 rows must read "0/3 → 3/3", never "/372").
+  await setBookingRunScope(batchId, queue);
   const limit = env.INTEGRATION_MODE === "live" ? 1 : Math.max(1, env.BOOKING_CONCURRENCY);
   let cursor = 0;
   async function worker() {

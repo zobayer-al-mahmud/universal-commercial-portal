@@ -3,6 +3,17 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
 
+/** Parse the job's stored run-scope (JSON array of row ids) → string[] | null. */
+function parseRunScope(json: string | null): string[] | null {
+  if (!json) return null;
+  try {
+    const arr = JSON.parse(json);
+    return Array.isArray(arr) && arr.length ? (arr as string[]) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Live status + per-row state + recent events for one EXP job (polled by the UI). */
 export async function GET(_req: Request, { params }: { params: { jobId: string } }) {
   const user = await getSessionUser();
@@ -26,6 +37,17 @@ export async function GET(_req: Request, { params }: { params: { jobId: string }
     include: { row: { select: { rowNo: true } } },
   });
 
+  // A run is actually in progress only while a row is queued or mid-flight (or a
+  // Stop is being applied). Deriving "running" from live row state — NOT from a
+  // possibly-stale job.status — is what stops a reopened or idle partial batch
+  // from showing the Stop button, the spinner and endless polling when nothing
+  // is running. (job.status can linger on "running" across reopens; the rows are
+  // the source of truth.)
+  const anyRowActive = rows.some((r) => r.status === "queued" || r.status === "running");
+  const stopping = job.status === "stopping";
+  const stopped = job.status === "stopped";
+  const running = !stopped && (stopping || anyRowActive);
+
   const remaining = job.total - job.processed;
   return NextResponse.json({
     id: job.id,
@@ -48,9 +70,13 @@ export async function GET(_req: Request, { params }: { params: { jobId: string }
     },
     // "stopping" still counts as running so the UI keeps polling until the loop
     // finishes parking the job (then status flips to "stopped").
-    running: job.status === "running" || job.status === "stopping",
-    stopping: job.status === "stopping",
-    stopped: job.status === "stopped",
+    running,
+    stopping,
+    stopped,
+    // Row ids the active/most-recent run is processing (Process selected / Retry
+    // / Process all). The UI scopes the progress bar, counters, current-row and
+    // log to these. null when no run has been scoped.
+    runScope: parseRunScope(job.runScopeJson),
     events: recentEvents.map((e) => ({ rowNo: e.row.rowNo, step: e.step, status: e.status, message: e.message, at: e.createdAt.toISOString() })),
     rows: rows.map((r) => {
       let mismatched: { portalLabel: string; excel: string; portal: string }[] = [];

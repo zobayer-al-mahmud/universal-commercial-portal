@@ -4,7 +4,6 @@ import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge, Stat } from "@/components/ui";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { BookingBatchAutoStart } from "@/components/BookingBatchAutoStart";
 import { BookingLiveProgress } from "@/components/BookingLiveProgress";
 import { reprocessBatchAction, startBookingBatchAction } from "@/app/actions/booking-batch";
 import { env } from "@/lib/env";
@@ -28,7 +27,12 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
   const failed = docs.filter((d) => ["FAILED", "SEARCH_FAILED", "DOWNLOAD_FAILED"].includes(d.state)).length;
   const liveConfigured = env.INTEGRATION_MODE === "live" && env.DAMCO_LIVE_ENABLED && !!env.DAMCO_USERNAME && !!env.DAMCO_PASSWORD;
   const pendingDocs = docs.filter((d) => d.state !== "COMPLETED").length;
-  const canAutoStart = canRetry && liveConfigured && pendingDocs > 0 && batch.liveStatus !== "running";
+  // Processing is EXPLICIT-ONLY: it begins only when the user clicks Process
+  // Selected / Process All / Start / Retry / Reprocess. The batch page no longer
+  // auto-starts anything on mount — opening or reloading a batch must never kick
+  // off work, and "Process Selected" of a few rows must never turn into a
+  // whole-batch run (user requirement). An in-flight run keeps going in the
+  // server process regardless; this page just polls and shows it.
 
   return (
     <div>
@@ -44,8 +48,6 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
         <Stat label="Needs review" value={review} tone="text-amber-700" />
         <Stat label="Failed" value={failed} tone="text-rose-700" />
       </div>
-
-      <BookingBatchAutoStart batchId={batch.id} shouldStart={canAutoStart} action={startBookingBatchAction} />
 
       <div className="mb-4 flex flex-wrap items-center gap-2">
         {canRetry && liveConfigured ? (
@@ -68,11 +70,10 @@ export default async function BookingBatchPage({ params }: { params: { batchId: 
         <Link href="/modules/booking-correction" className="btn-ghost text-xs">← Back to process</Link>
       </div>
 
-      {batch.liveMessage ? (
-        <div className={`mb-4 rounded-md border px-3 py-2 text-xs ${batch.liveStatus === "blocked" ? "border-amber-200 bg-amber-50 text-amber-800" : batch.liveStatus === "failed" ? "border-rose-200 bg-rose-50 text-rose-800" : "border-slate-200 bg-slate-50 text-slate-700"}`}>
-          <strong>Damco automation:</strong> {batch.liveStatus} · {batch.liveMessage}
-        </div>
-      ) : null}
+      {/* The automation status line is rendered LIVE inside BookingLiveProgress
+          (which polls), so no static server-rendered "Damco automation: running"
+          banner here — that snapshot went stale and kept showing "running" after
+          the run had finished. */}
       {!liveConfigured ? (
         <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
           Live Damco automation isn&apos;t enabled on this server, so this batch runs in simulation mode. Contact your administrator to enable live processing.
