@@ -52,6 +52,7 @@ interface JobStatus {
   sourceName: string;
   status: string;
   running: boolean;
+  runScope?: string[] | null;
   hasFile?: boolean;
   fileBytes?: number;
   counts: { total: number; processed: number; matched: number; changed: number; partial: number; downloaded: number; skipped: number; failed: number; remaining: number };
@@ -68,6 +69,7 @@ const TABS: { kind: ExpKind; label: string; blurb: string }[] = [
 function statusTone(status: string): string {
   switch (status) {
     case "matched":
+    case "updated":
     case "downloaded": return "bg-green-50 text-green-700 border-green-200";
     case "filled":
     case "updated_verified": return "bg-emerald-50 text-emerald-700 border-emerald-200";
@@ -87,6 +89,8 @@ function statusTone(status: string): string {
 function statusLabel(status: string): string {
   switch (status) {
     case "filled": return "Form Filled";
+    case "updated": return "Updated";
+    case "update_failed": return "Update failed";
     case "downloaded": return "Downloaded";
     case "not_found": return "Not found";
     case "needs_auth": return "Needs sign-in";
@@ -99,9 +103,29 @@ function statusLabel(status: string): string {
   }
 }
 
-const TERMINAL = new Set(["matched", "filled", "updated_verified", "partially_updated", "downloaded", "skipped", "not_found", "mismatch", "failed", "needs_auth"]);
-const RETRYABLE = new Set(["not_found", "mismatch", "failed", "needs_auth", "partially_updated"]);
-const EDITABLE = new Set(["pending", "skipped", "not_found", "mismatch", "failed", "needs_auth", "partially_updated"]);
+const TERMINAL = new Set(["matched", "filled", "updated", "update_failed", "updated_verified", "partially_updated", "downloaded", "skipped", "not_found", "mismatch", "failed", "needs_auth"]);
+const RETRYABLE = new Set(["not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed"]);
+const EDITABLE = new Set(["pending", "skipped", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed"]);
+// Rows that "Process selected" / "Process all pending" can actually queue. Clean
+// successes (matched/filled/downloaded…) and invalid "skipped" rows are filtered
+// out by the backend, so they must NOT be selectable here — otherwise the button
+// count would promise to process rows that are silently dropped. Mirrors the
+// eligible-status set in processExpRows().
+const PROCESSABLE = new Set(["pending", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed", "stopped"]);
+// Row statuses that count toward "processed" vs "remaining" when scoping the
+// progress display to a single run's rows.
+const COUNT_DONE = new Set(["matched", "filled", "updated", "update_failed", "updated_verified", "partially_updated", "downloaded", "skipped", "not_found", "mismatch", "failed", "needs_auth"]);
+const COUNT_REMAINING = new Set(["pending", "queued", "running", "stopped"]);
+
+// --- per-tab / per-job UI persistence (survives tab switches + page refresh) ---
+const lastJobKey = (kind: ExpKind) => `exp:lastJob:${kind}`;
+const selKey = (jobId: string) => `exp:selected:${jobId}`;
+function readSession(k: string): string | null {
+  try { return sessionStorage.getItem(k); } catch { return null; }
+}
+function writeSession(k: string, v: string | null): void {
+  try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch { /* storage unavailable */ }
+}
 
 function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, openJobId, onOpened }: { kind: ExpKind; liveEnabled: boolean; credsConfigured: boolean; onHistoryChange: () => void; openJobId: string | null; onOpened: () => void }) {
   const [jobId, setJobId] = useState<string | null>(null);
@@ -113,6 +137,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
   const [pending, startTransition] = useTransition();
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const submittingRef = useRef(false); // guards against duplicate job creation
 
   const stopPolling = useCallback(() => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } }, []);
   const poll = useCallback(async (id: string) => {
@@ -149,6 +174,44 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openJobId]);
 
+  // On mount (including a remount from switching tabs, and a full page refresh)
+  // restore the last job opened for THIS workflow and its selection, so neither
+  // is lost. An explicit "Open" from Job History (openJobId) takes precedence.
+  useEffect(() => {
+    if (openJobId) return;
+    const storedJob = readSession(lastJobKey(kind));
+    if (!storedJob) return;
+    setJobId(storedJob);
+    const storedSel = readSession(selKey(storedJob));
+    if (storedSel) {
+      try { setSelected(new Set(JSON.parse(storedSel) as string[])); } catch { /* ignore */ }
+    }
+    startPolling(storedJob);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Remember which job each workflow tab is showing, and the current selection,
+  // so a tab switch or refresh can restore them.
+  useEffect(() => { if (jobId) writeSession(lastJobKey(kind), jobId); }, [jobId, kind]);
+  useEffect(() => {
+    if (!jobId) return;
+    writeSession(selKey(jobId), JSON.stringify(Array.from(selected)));
+  }, [selected, jobId]);
+
+  // Keep the selection honest as rows finish: drop any selected id that is no
+  // longer eligible to process (e.g. a selected row that just downloaded), so
+  // the "Process selected (N)" count never over-promises.
+  useEffect(() => {
+    if (!job) return;
+    const eligible = new Set(job.rows.filter((r) => PROCESSABLE.has(r.status)).map((r) => r.id));
+    setSelected((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+      for (const id of prev) { if (eligible.has(id)) next.add(id); else changed = true; }
+      return changed ? next : prev;
+    });
+  }, [job]);
+
   async function onUpload() {
     setError(null); setNotice(null);
     const f = fileRef.current?.files?.[0];
@@ -180,7 +243,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
   function toggle(id: string) {
     setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
-  const selectableRows = (job?.rows ?? []).filter((r) => r.status !== "skipped");
+  const selectableRows = (job?.rows ?? []).filter((r) => PROCESSABLE.has(r.status));
   function toggleAll() {
     setSelected((s) => {
       if (s.size >= selectableRows.length && selectableRows.length > 0) return new Set();
@@ -190,13 +253,22 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
 
   function process(rowIds?: string[]) {
     if (!jobId) return;
+    if (submittingRef.current) return; // prevent duplicate job creation on double-click
+    // rowIds === undefined → "Process all pending". A defined-but-empty list means
+    // the user hit "Process selected" with nothing selected: guard it.
+    if (rowIds && rowIds.length === 0) { setError("Select at least one row to process, or use “Process all pending”."); return; }
+    submittingRef.current = true;
     setError(null); setNotice(null);
     startTransition(async () => {
-      const res = await processExpRowsAction(jobId, rowIds);
-      if (res.error) { setError(res.error); return; }
-      setNotice(res.message ?? "Processing started.");
-      setSelected(new Set());
-      startPolling(jobId);
+      try {
+        const res = await processExpRowsAction(jobId, rowIds);
+        if (res.error) { setError(res.error); return; }
+        setNotice(res.message ?? "Processing started.");
+        setSelected(new Set()); // clear ONLY after the job was successfully queued
+        startPolling(jobId);
+      } finally {
+        submittingRef.current = false;
+      }
     });
   }
   function retry(rowId: string) {
@@ -231,8 +303,31 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
   const setD = (k: string, v: string) => setDraft((d) => ({ ...d, [k]: v }));
 
   const c = job?.counts;
-  const pct = c && c.total > 0 ? Math.round((c.processed / c.total) * 100) : 0;
   const isDownload = kind === "download";
+
+  // Scope the progress display to the rows THIS run is processing (the selection,
+  // or all-pending for Process-all), so a 5-row selection shows "0/5 → 5/5", not
+  // whole-job "5/17". When no run is scoped, fall back to the whole-job counts.
+  const runScope = job?.runScope && job.runScope.length ? new Set(job.runScope) : null;
+  const scopedRows = runScope ? (job?.rows ?? []).filter((r) => runScope.has(r.id)) : (job?.rows ?? []);
+  const isScoped = !!runScope && !!job && scopedRows.length < job.rows.length;
+  const scopedCounts = (() => {
+    const n = (pred: (s: string) => boolean) => scopedRows.filter((r) => pred(r.status)).length;
+    return {
+      total: scopedRows.length,
+      processed: n((s) => COUNT_DONE.has(s)),
+      changed: n((s) => s === "filled" || s === "updated" || s === "updated_verified"),
+      downloaded: n((s) => s === "downloaded"),
+      skipped: n((s) => s === "skipped"),
+      failed: n((s) => s === "not_found" || s === "mismatch" || s === "failed" || s === "needs_auth" || s === "update_failed"),
+      remaining: n((s) => COUNT_REMAINING.has(s)),
+    };
+  })();
+  const disp = isScoped ? scopedCounts : c;
+  const pct = disp && disp.total > 0 ? Math.round((disp.processed / disp.total) * 100) : 0;
+  // Events scoped to the run's rows for the live log.
+  const scopeRowNos = runScope ? new Set(scopedRows.map((r) => r.rowNo)) : null;
+  const logEvents = scopeRowNos ? (job?.events ?? []).filter((e) => scopeRowNos.has(e.rowNo)) : (job?.events ?? []);
 
   return (
     <div className="space-y-5">
@@ -280,7 +375,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
               {job.hasFile ? <a href={`/api/exp/${job.id}/file`} className="btn-ghost btn-xs" title="The original uploaded workbook (unchanged)">⬇ Original xlsx</a> : null}
               {job.hasFile ? <a href={`/api/exp/${job.id}/file?edited=1`} className="btn-ghost btn-xs" title="A workbook rebuilt from the current (edited) rows">⬇ Edited xlsx</a> : null}
               <a href={`/api/exp/${job.id}/report`} className="btn-ghost btn-xs">⬇ CSV report</a>
-              <StopProcessButton scope="exp" id={job.id} running={job.running} pending={c?.remaining} onStopped={() => startPolling(job.id)} />
+              <StopProcessButton scope="exp" id={job.id} running={job.running} pending={disp?.remaining} onStopped={() => startPolling(job.id)} />
               {job.running ? <span className="inline-flex items-center gap-1 text-slate-500"><span className="spinner h-3 w-3" /> running</span> : job.status === "stopped" ? <span className="text-rose-600">stopped</span> : <span className="text-slate-400">idle</span>}
             </div>
           </div>
@@ -295,21 +390,22 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
           <div className="mb-2 h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-700">
             <div className="h-full rounded-full bg-sky-500 transition-all" style={{ width: `${pct}%` }} />
           </div>
-          {c ? (
+          {disp ? (
             <div className="mb-1 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600 dark:text-slate-300">
               <span className="font-semibold text-slate-700 dark:text-slate-100">{pct}% complete</span>
-              <span>{c.total} total</span>
-              <span>{c.processed} processed</span>
-              {!isDownload ? <span className="text-emerald-700">{c.changed} form filled</span> : null}
-              {isDownload ? <span className="text-green-700">{c.downloaded} downloaded</span> : null}
-              <span className="text-slate-400">{c.skipped} skipped</span>
-              <span className="text-rose-700">{c.failed} failed</span>
-              <span className="text-sky-700">{c.remaining} remaining</span>
+              <span>{disp.total}{isScoped ? " in this run" : " total"}</span>
+              <span>{disp.processed} processed</span>
+              {!isDownload ? <span className="text-emerald-700">{disp.changed} form filled</span> : null}
+              {isDownload ? <span className="text-green-700">{disp.downloaded} downloaded</span> : null}
+              {!isScoped ? <span className="text-slate-400">{disp.skipped} skipped</span> : null}
+              <span className="text-rose-700">{disp.failed} failed</span>
+              <span className="text-sky-700">{disp.remaining} remaining</span>
             </div>
           ) : null}
           {(() => {
-            // Current activity: the row the serialized driver is on right now.
-            const cur = job.running ? job.rows.find((r) => r.status === "running") : null;
+            // Current activity: the row the serialized driver is on right now
+            // (within this run's scope).
+            const cur = job.running ? scopedRows.find((r) => r.status === "running") : null;
             if (!cur) return <div className="mb-4" />;
             const id = isDownload ? (cur.expNo || cur.saveAs) : `${cur.adscode} · ${cur.expSerial} · ${cur.expYear}`;
             return (
@@ -322,7 +418,10 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
 
           <div className="mb-3 flex flex-wrap items-center gap-3">
             <button onClick={() => process(Array.from(selected))} disabled={pending || selected.size === 0} className="btn-primary btn-sm disabled:opacity-40">▶ Process selected ({selected.size})</button>
-            <button onClick={() => process(undefined)} disabled={pending} className="btn-ghost btn-sm disabled:opacity-40">▶ Process all pending</button>
+            <button onClick={() => process(undefined)} disabled={pending || selectableRows.length === 0} className="btn-ghost btn-sm disabled:opacity-40">▶ Process all pending</button>
+            {selected.size === 0 && selectableRows.length > 0 ? (
+              <span className="text-[11px] font-medium text-amber-600">Select rows to process, or use “Process all pending”.</span>
+            ) : null}
             <label className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               <input type="checkbox" checked={selected.size >= selectableRows.length && selectableRows.length > 0} onChange={toggleAll} /> Select all
             </label>
@@ -348,7 +447,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
                     <Fragment key={r.id}>
                     <tr className="border-t border-slate-100 align-top dark:border-slate-700">
                       <td className="td">
-                        {r.status !== "skipped" ? <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /> : null}
+                        {PROCESSABLE.has(r.status) ? <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /> : null}
                       </td>
                       <td className="td text-slate-400">{r.rowNo}</td>
                       <td className="td font-mono">
@@ -435,13 +534,13 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
             </table>
           </div>
 
-          {job.events && job.events.length ? (
+          {logEvents.length ? (
             <div className="mt-4">
               <div className="mb-1 flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200">
-                Live log {job.running ? <span className="spinner h-3 w-3" /> : null}
+                Live log{isScoped ? " · selected rows" : ""} {job.running ? <span className="spinner h-3 w-3" /> : null}
               </div>
               <div className="max-h-48 space-y-0.5 overflow-auto rounded-lg border border-slate-200 bg-slate-50/60 p-2 font-mono text-[11px] leading-relaxed dark:border-slate-700 dark:bg-slate-800/60">
-                {job.events.map((e, i) => (
+                {logEvents.map((e, i) => (
                   <div key={i} className="flex gap-2">
                     <span className="shrink-0 text-slate-400">{e.at.slice(11, 19)}</span>
                     <span className="shrink-0 text-slate-500">row {e.rowNo}</span>

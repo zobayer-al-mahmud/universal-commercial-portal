@@ -121,9 +121,10 @@ export async function createExpJobFromBuffer(input: {
 export async function recomputeCounters(jobId: string): Promise<void> {
   const rows = await prisma.expJobRow.findMany({ where: { jobId }, select: { status: true } });
   const by = (s: string) => rows.filter((r) => r.status === s).length;
-  const failed = by("not_found") + by("mismatch") + by("failed") + by("needs_auth");
-  // Genuinely processed OK: correction fill, duplicate matched/updated-verified, download.
-  const done = by("matched") + by("filled") + by("updated_verified") + by("downloaded");
+  const failed = by("not_found") + by("mismatch") + by("failed") + by("needs_auth") + by("update_failed");
+  // Genuinely processed OK: correction fill, duplicate matched/updated-verified,
+  // portal-confirmed Update (EXP_AUTO_UPDATE), download.
+  const done = by("matched") + by("filled") + by("updated") + by("updated_verified") + by("downloaded");
   const partial = by("partially_updated"); // duplicate: some fields not verified
   const skipped = by("skipped"); // invalid rows — never processed
   const processed = failed + done + partial + skipped;
@@ -137,15 +138,21 @@ export async function recomputeCounters(jobId: string): Promise<void> {
     // All selected rows have finished: distinguish a clean run from a mixed or
     // total failure so Job History reflects the true outcome.
     status = !anyOk ? "failed" : failed > 0 || partial > 0 ? "partially_failed" : "completed";
-  } else if (failed + done + partial > 0) status = "running"; // some processed, more still pending (idle between selections)
-  else status = "created";
+  } else if (failed + done + partial > 0) {
+    // Some rows processed, more still pending, but NOTHING is queued or running
+    // (idle between selections, or a reopened partial batch). This must NOT be
+    // "running": that left the UI's Stop button, the spinner and polling stuck
+    // on after a scoped run had finished, and the untouched pending rows looked
+    // like a run that "never started". Report a neutral idle state instead.
+    status = "idle";
+  } else status = "created";
 
   await prisma.expJob.update({
     where: { id: jobId },
     data: {
       processed,
       matched: by("matched"),
-      changed: by("filled") + by("updated_verified"), // correction: filled; duplicate: updated+verified
+      changed: by("filled") + by("updated") + by("updated_verified"), // filled / Update-confirmed / updated+verified
       partial,
       downloaded: by("downloaded"),
       skipped,
@@ -170,15 +177,20 @@ export async function processExpRows(input: { jobId: string; rowIds?: string[]; 
   if (!job) return { ok: false, queued: 0, message: "Job not found." };
 
   const where = input.rowIds && input.rowIds.length
-    ? { jobId: job.id, id: { in: input.rowIds }, status: { in: ["pending", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "stopped"] } }
+    ? { jobId: job.id, id: { in: input.rowIds }, status: { in: ["pending", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed", "stopped"] } }
     : { jobId: job.id, status: "pending" as const };
 
   const rows = await prisma.expJobRow.findMany({ where, select: { id: true } });
   if (rows.length === 0) return { ok: false, queued: 0, message: "No eligible rows to process (invalid rows are skipped)." };
 
-  await prisma.expJobRow.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { status: "queued", error: "", step: "" } });
-  await prisma.expJob.update({ where: { id: job.id }, data: { status: "running" } }).catch(() => undefined);
-  await audit({ entityType: "exp", entityId: job.id, action: "exp.job.process", actor: input.actor, data: { queued: rows.length } });
+  // Record EXACTLY the rows this run will process (the selection, or every
+  // pending row for Process-all). The UI scopes its progress/counters/log to
+  // these so a 5-row selection never displays as whole-job progress, and so the
+  // other rows are visibly left untouched.
+  const scopeIds = rows.map((r) => r.id);
+  await prisma.expJobRow.updateMany({ where: { id: { in: scopeIds } }, data: { status: "queued", error: "", step: "" } });
+  await prisma.expJob.update({ where: { id: job.id }, data: { status: "running", runScopeJson: JSON.stringify(scopeIds) } }).catch(() => undefined);
+  await audit({ entityType: "exp", entityId: job.id, action: "exp.job.process", actor: input.actor, data: { queued: rows.length, scoped: input.rowIds ? input.rowIds.length : null } });
 
   // Register the run (a fresh, un-aborted signal — clears any prior Stop) BEFORE
   // the loop is scheduled, so a Stop clicked the instant processing begins can
@@ -326,6 +338,8 @@ export async function runExpRow(rowId: string, actor: string): Promise<void> {
   const status = outcomeToStatus(result, Boolean(pdfPath));
   const finalStep =
     result.outcome === "DOWNLOADED" ? "Download complete"
+    : result.outcome === "UPDATED" ? "Update confirmed by the portal"
+    : result.outcome === "UPDATE_FAILED" ? "Update not confirmed"
     : result.outcome === "FILLED" ? "Form filled (ready for your review)"
     : undefined;
   await prisma.expJobRow.update({
@@ -350,6 +364,8 @@ export async function runExpRow(rowId: string, actor: string): Promise<void> {
 function outcomeToStatus(result: ExpRowResult, hasPdf: boolean): string {
   switch (result.outcome) {
     case "FILLED": return "filled";
+    case "UPDATED": return "updated"; // EXP_AUTO_UPDATE: portal-confirmed Update
+    case "UPDATE_FAILED": return "update_failed"; // filled but Update not confirmed — retryable
     case "DOWNLOADED": return hasPdf ? "downloaded" : "failed";
     case "NOT_FOUND": return "not_found";
     case "NEEDS_AUTH": return "needs_auth";
@@ -358,7 +374,7 @@ function outcomeToStatus(result: ExpRowResult, hasPdf: boolean): string {
 }
 
 /** Statuses that count as a clean success (no error text, not re-queued by default). */
-const CLEAN_STATUSES = new Set(["filled", "downloaded"]);
+const CLEAN_STATUSES = new Set(["filled", "updated", "downloaded"]);
 
 /** Retry one row (re-queues it; a serialized queue drains it). */
 export async function retryExpRow(rowId: string, actor: string): Promise<{ ok: boolean; message: string }> {
@@ -366,7 +382,8 @@ export async function retryExpRow(rowId: string, actor: string): Promise<{ ok: b
   if (!row) return { ok: false, message: "Row not found." };
   if (row.status === "skipped") return { ok: false, message: "This row is invalid and cannot be processed." };
   await prisma.expJobRow.update({ where: { id: rowId }, data: { status: "queued", error: "", step: "", retryCount: { increment: 1 } } });
-  await prisma.expJob.update({ where: { id: row.jobId }, data: { status: "running" } }).catch(() => undefined);
+  // Scope the run (and thus the progress display) to just this retried row.
+  await prisma.expJob.update({ where: { id: row.jobId }, data: { status: "running", runScopeJson: JSON.stringify([rowId]) } }).catch(() => undefined);
   await recomputeCounters(row.jobId);
   const run = startRun(expKey(row.jobId));
   onCancel(expKey(row.jobId), () => { void detachExpBrowser().catch(() => undefined); });
@@ -387,7 +404,7 @@ export async function updateExpRow(input: {
 }): Promise<{ ok: boolean; message: string }> {
   const row = await prisma.expJobRow.findUnique({ where: { id: input.rowId } });
   if (!row) return { ok: false, message: "Row not found." };
-  const EDITABLE = ["pending", "skipped", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "stopped"];
+  const EDITABLE = ["pending", "skipped", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed", "stopped"];
   if (!EDITABLE.includes(row.status)) return { ok: false, message: "This row was processed; retry it instead of editing." };
 
   const parsed = parseRowData(row.dataJson);

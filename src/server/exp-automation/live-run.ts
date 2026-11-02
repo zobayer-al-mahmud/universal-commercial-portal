@@ -8,7 +8,7 @@ import { fillControl, fillSearchField, readFieldValue, fillField, pickEditContro
 import { type FieldDiff, valuesEquivalent, formatDateLike, normDate } from "./compare";
 import { capturePortalDump, summarizeDump, writeDump, type PortalDump } from "./diagnostics";
 import { CORRECTION_FIELDS, DUPLICATE_FIELDS, type FieldMap, type ParsedExpRow } from "./types";
-import { neutralizeSubmitControls, assertSafeToClick } from "./guards";
+import { neutralizeFinalControls, assertSafeToClick } from "./guards";
 import { validateCapturedPdf } from "./pdf";
 import { parsePdfText } from "@/server/pdf/parse-pdf";
 import { CORRECTION_STEPS, DUPLICATE_STEPS } from "./progress";
@@ -33,6 +33,8 @@ import { CORRECTION_STEPS, DUPLICATE_STEPS } from "./progress";
 
 export type ExpOutcome =
   | "FILLED" // mapped fields written from Excel + read-back confirmed (NOT submitted)
+  | "UPDATED" // EXP_AUTO_UPDATE: Update clicked AND the portal confirmed success
+  | "UPDATE_FAILED" // EXP_AUTO_UPDATE: filled, but the Update was rejected / not confirmed
   | "DOWNLOADED"
   | "NOT_FOUND"
   | "NEEDS_AUTH"
@@ -85,6 +87,77 @@ async function clickSearch(page: Page): Promise<void> {
     }
   }
   throw new Error("Search button not found on the form.");
+}
+
+/**
+ * Click the form's **Update** button and confirm the portal accepted it. Only
+ * ever reached when EXP_AUTO_UPDATE is on. Targets the control whose exact label
+ * / value is "Update" (or APEX #UPDATE / request:'UPDATE'), never Acknowledge,
+ * Submit, Save, or a field like "Update Remarks". A row is reported updated ONLY
+ * on a positive portal success signal; an ambiguous response is a failure (we
+ * never mark a row updated merely because the button was clicked).
+ */
+async function clickUpdateAndConfirm(page: Page): Promise<{ ok: boolean; message: string }> {
+  const token = `ucpupd_${Math.random().toString(36).slice(2, 10)}`;
+  const tagged = await page.evaluate((tk) => {
+    const ackRe = /\b(acknowledge|acknowledgement|approve|confirm|submit|save)\b/i;
+    const isExactUpdate = (s: string) => /^\s*update\s*$/i.test(s || "");
+    const cands = Array.from(document.querySelectorAll("button, input[type=submit], input[type=button], a")) as HTMLElement[];
+    const pick = cands.find((el) => {
+      const value = (el as HTMLInputElement).value || "";
+      const text = el.textContent || "";
+      const id = el.id || "";
+      const href = el.getAttribute("href") || "";
+      if (ackRe.test(value) || ackRe.test(text)) return false; // never acknowledge/submit/save
+      if (isExactUpdate(value) || isExactUpdate(text)) return true;
+      if (/^UPDATE$/i.test(id)) return true;
+      if (/request:'UPDATE'|'UPDATE'/.test(href)) return true;
+      return false;
+    });
+    if (!pick) return false;
+    pick.setAttribute("data-ucp-update", tk);
+    return true;
+  }, token);
+  if (!tagged) return { ok: false, message: "The Update button was not found on the form." };
+
+  const loc = page.locator(`[data-ucp-update="${token}"]`).first();
+  try {
+    await assertSafeToClick(loc, "Update", true); // allowUpdate = true (opt-in only)
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  await Promise.all([
+    page.waitForLoadState("networkidle").catch(() => undefined),
+    loc.click({ timeout: 8000 }).catch(() => undefined),
+  ]);
+  await page.waitForTimeout(1500);
+  return readUpdateResult(page);
+}
+
+/** Read the portal's response to an Update — success ONLY on a positive signal. */
+async function readUpdateResult(page: Page): Promise<{ ok: boolean; message: string }> {
+  return page.evaluate(() => {
+    const body = (document.body.innerText || "").replace(/\s+/g, " ").trim();
+    const successSel = ["#APEX_SUCCESS_MESSAGE", ".t-Alert--success", ".apex-page-success", ".a-Notification--success", ".uSuccessMessage"];
+    const errorSel = ["#APEX_ERROR_MESSAGE", ".t-Alert--danger", ".a-Notification--error", ".uErrorMessage", ".t-Form-error", "#wwvFlowNotificationError"];
+    const visibleText = (sel: string) => {
+      const el = document.querySelector(sel) as HTMLElement | null;
+      if (!el) return "";
+      const shown = el.offsetParent !== null || el.getBoundingClientRect().height > 0;
+      return shown ? (el.innerText || "").trim() : "";
+    };
+    let successMsg = "";
+    for (const s of successSel) { const t = visibleText(s); if (t) { successMsg = t; break; } }
+    let errorMsg = "";
+    for (const s of errorSel) { const t = visibleText(s); if (t) { errorMsg = t; break; } }
+    const successText = /(updated|processed|saved|submitted)\s+successfully|successfully\s+(updated|processed|saved)|action\s+processed|changes?\s+(have\s+been\s+)?saved|record\s+(has\s+been\s+)?updated/i;
+    const errorText = /\b(error|invalid|failed|not\s+updated|is\s+required|cannot|could\s+not|must\s+be)\b/i;
+    if (errorMsg) return { ok: false, message: `Portal reported: ${errorMsg.slice(0, 200)}` };
+    if (successMsg) return { ok: true, message: successMsg.slice(0, 200) };
+    if (successText.test(body) && !errorText.test(body)) return { ok: true, message: "Portal confirmed the update." };
+    if (errorText.test(body)) return { ok: false, message: "The portal page shows a validation/error state after Update." };
+    return { ok: false, message: "Clicked Update but could not confirm the portal accepted it (no success message)." };
+  });
 }
 
 /** Fill the shared search panel (ADSCODE / EXP Serial / EXP Year) + Search. */
@@ -246,8 +319,8 @@ async function runFormFill(
       // written (by APEX id, else edit-region label) regardless of its current
       // portal value; blank Excel values are left untouched; unparseable dates are
       // skipped and logged. Nothing is ever submitted (see guards.ts).
-      await emit("Filling Form", "Filling the Edit/Update form from the Excel row (never submitted).");
-      await neutralizeSubmitControls(page);
+      await emit("Filling Form", env.EXP_AUTO_UPDATE ? "Filling the Edit/Update form from the Excel row." : "Filling the Edit/Update form from the Excel row (never submitted).");
+      await neutralizeFinalControls(page, { allowUpdate: env.EXP_AUTO_UPDATE });
       const written: { f: FieldMap; excel: string }[] = [];
       const failed: string[] = [];
       for (const f of fields) {
@@ -291,11 +364,31 @@ async function runFormFill(
         if (!okv) { notConfirmed++; await emit("Filling Form", `Not confirmed — ${f.portalLabel}: wrote "${excel}", form shows "${portal}".`); }
         confirmed.push({ key: f.key, portalLabel: f.portalLabel, excel, portal });
       }
-      await neutralizeSubmitControls(page);
+      await neutralizeFinalControls(page, { allowUpdate: env.EXP_AUTO_UPDATE });
 
       const parts = [`Filled ${written.length} field(s) from Excel`];
       if (notConfirmed) parts.push(`${notConfirmed} not confirmed`);
       if (failed.length) parts.push(`${failed.length} could not be filled`);
+
+      // OPT-IN auto-Update (EXP_AUTO_UPDATE): click the form's Update button and
+      // confirm the portal accepted it. Never Acknowledge. A row is "updated" only
+      // on a positive portal success signal — never just because Update was clicked.
+      if (env.EXP_AUTO_UPDATE) {
+        if (written.length === 0) {
+          await emit("Update skipped", `${parts.join(", ")}. Nothing was written from Excel, so Update was not clicked.`);
+          return { ...base("UPDATE_FAILED", `No fields were written from Excel; Update was not attempted.`, auth), mismatchedFields: confirmed, portalValues: {} };
+        }
+        await emit("Updating record", "Clicking Update and waiting for the portal to confirm.");
+        const upd = await clickUpdateAndConfirm(page);
+        await neutralizeFinalControls(page, { allowUpdate: false }); // re-harden after the attempt
+        if (upd.ok) {
+          await emit("Update confirmed", `${parts.join(", ")}. ${upd.message}`);
+          return { ...base("UPDATED", `${parts.join(", ")}; Update submitted and confirmed by the portal: ${upd.message}`, auth), ok: true, mismatchedFields: confirmed, portalValues: {} };
+        }
+        await emit("Update failed", upd.message);
+        return { ...base("UPDATE_FAILED", `${parts.join(", ")}; the Update was not confirmed: ${upd.message}`, auth), mismatchedFields: confirmed, portalValues: {} };
+      }
+
       await emit("Form Filled", `${parts.join(", ")}. Review and submit it yourself in the visible browser.`);
       return {
         ...base("FILLED", `${parts.join(", ")}; the form is ready for your manual review and submission. Nothing was submitted.`, auth),

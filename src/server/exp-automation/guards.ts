@@ -1,74 +1,88 @@
 import type { Locator, Page } from "playwright";
 
 /**
- * Hard, non-negotiable no-submit guard for the EXP correction + duplicate
- * workflows. The bot FILLS and VERIFIES the form, then stops — it must never
- * perform the final save / submit / acknowledge. There is no configuration flag
- * that enables it: the forbidden controls are simply never clicked, and before
- * any click the driver asserts the control is NOT one of these.
+ * Submit-safety guard for the EXP correction + duplicate workflows.
  *
- * This is defence in depth, not the only safeguard: the drivers only ever click
- * the explicit Search / menu-navigation controls they name, never a generic
- * "submit the form" button.
+ * Default posture: the bot FILLS and VERIFIES the form, then stops — it performs
+ * NO final save/submit/acknowledge. The ONLY action that can ever be automated is
+ * the form's **Update** button, and only when the operator has opted in via
+ * EXP_AUTO_UPDATE (passed here as `allowUpdate`). Everything else — Acknowledge,
+ * Submit, Save, Approve, the Duplicate "Click for Acknowledgement" flag — stays
+ * hard-forbidden regardless of any flag. This is defence in depth: the drivers
+ * also only ever click the specific controls they name (Search / Update), never a
+ * generic "submit the form".
  */
 
-/** Button / control labels the bot must never click on a correction/duplicate form. */
-export const FORBIDDEN_ACTION_RE =
-  /\b(update|submit|save|acknowledge|acknowledgement|confirm|approve|process|apply)\b/i;
+// Labels that are NEVER clickable — the final, acknowledge-style actions.
+const ALWAYS_FORBIDDEN_RE = /\b(acknowledge|acknowledgement|approve|confirm|process|apply|submit|save|delete)\b/i;
+// The one action that MAY be automated, and only when allowUpdate is true.
+const UPDATE_RE = /\bupdate\b/i;
 
-/** Control values/ids on the EXP forms that perform a final save. */
-export const FORBIDDEN_SELECTORS = [
-  "input[type=submit]",
-  "button[type=submit]",
-  "#UPDATE",
-  "#SUBMIT",
+/** Acknowledge / final-action selectors — disabled on every run, flag or not. */
+export const ACKNOWLEDGE_SELECTORS = [
   "[id*='ACKNOWLEDGE' i]",
   "[id*='DUPLICATE_EXPORT' i]",
   // Duplicate EXP Reporting: the "Click for Acknowledgement" checkbox (P3_DUP_FLAG_0)
-  // is the final acknowledge action — disabled so it can never be ticked by the bot.
+  // is the final acknowledge action — never ticked by the bot.
   "[id*='DUP_FLAG' i]",
-  "[value='Update' i]",
-  "[value='Submit' i]",
   "[value='Acknowledge' i]",
+  "[value='Submit' i]",
+  "#SUBMIT",
 ];
+/** Generic submit controls — disabled only when Update is NOT being automated. */
+const GENERIC_SUBMIT_SELECTORS = ["input[type=submit]", "button[type=submit]"];
+/** The Update control — disabled only when Update is NOT being automated. */
+const UPDATE_SELECTORS = ["#UPDATE", "[value='Update' i]"];
 
-/** True when a control's visible label would perform a forbidden final action. */
-export function isForbiddenActionLabel(label: string): boolean {
+/**
+ * True when a control's visible label would perform a forbidden action.
+ * `allowUpdate` carves out ONLY the Update action; acknowledge/submit/save/etc.
+ * stay forbidden.
+ */
+export function isForbiddenActionLabel(label: string, allowUpdate = false): boolean {
   const t = (label || "").trim();
   if (!t) return false;
-  // "Search" / "Back" are allowed even if they contain no forbidden word.
-  return FORBIDDEN_ACTION_RE.test(t);
+  if (ALWAYS_FORBIDDEN_RE.test(t)) return true; // acknowledge / submit / save / … — never
+  if (UPDATE_RE.test(t)) return !allowUpdate; // update — only when opted in
+  return false; // Search / Back / etc. are fine
 }
 
 /**
- * Assert that a located control we are ABOUT to click is safe (not a final-save
- * control). Throws if it is forbidden — so a mistaken selector can never submit.
+ * Assert that a control we are ABOUT to click is safe. Throws if forbidden — so a
+ * mistaken selector can never submit/acknowledge. Update is permitted only when
+ * `allowUpdate` is true (EXP_AUTO_UPDATE).
  */
-export async function assertSafeToClick(locator: Locator, intent: string): Promise<void> {
+export async function assertSafeToClick(locator: Locator, intent: string, allowUpdate = false): Promise<void> {
   let label = "";
   try {
     label = ((await locator.getAttribute("value")) || (await locator.innerText().catch(() => "")) || "").trim();
   } catch {
     /* if we can't read it, fall through — the intent check below still applies */
   }
-  if (isForbiddenActionLabel(intent)) {
-    throw new Error(`Refused to click a forbidden control (intent="${intent}"): the EXP bot never submits.`);
+  if (isForbiddenActionLabel(intent, allowUpdate)) {
+    throw new Error(`Refused to click a forbidden control (intent="${intent}").`);
   }
-  if (label && isForbiddenActionLabel(label)) {
-    throw new Error(`Refused to click control labelled "${label}": the EXP bot never submits.`);
+  if (label && isForbiddenActionLabel(label, allowUpdate)) {
+    throw new Error(`Refused to click control labelled "${label}".`);
   }
 }
 
 /**
- * Best-effort page hardening: disable (not remove) any final-save controls on
- * the current form so an accidental Enter/click can't submit. Non-fatal.
+ * Best-effort page hardening: disable (not remove) final-action controls so an
+ * accidental Enter/click can't submit. When `allowUpdate` is true the Update
+ * control (and generic submits, since Update may itself be a submit) are LEFT
+ * enabled so the driver can click Update; Acknowledge/final controls are still
+ * disabled. Non-fatal.
  */
-export async function neutralizeSubmitControls(page: Page): Promise<number> {
+export async function neutralizeFinalControls(page: Page, opts: { allowUpdate: boolean }): Promise<number> {
+  const selectors = opts.allowUpdate
+    ? ACKNOWLEDGE_SELECTORS
+    : [...ACKNOWLEDGE_SELECTORS, ...GENERIC_SUBMIT_SELECTORS, ...UPDATE_SELECTORS];
   try {
-    return await page.evaluate((selectors) => {
+    return await page.evaluate((sels) => {
       let n = 0;
       const seen = new Set<Element>();
-      for (const sel of selectors) {
+      for (const sel of sels) {
         document.querySelectorAll(sel).forEach((el) => {
           if (seen.has(el)) return;
           seen.add(el);
@@ -85,7 +99,7 @@ export async function neutralizeSubmitControls(page: Page): Promise<number> {
         });
       }
       return n;
-    }, FORBIDDEN_SELECTORS);
+    }, selectors);
   } catch {
     return 0;
   }
