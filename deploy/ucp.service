@@ -1,0 +1,32 @@
+# systemd unit for running UCP directly on a Linux host (the non-Docker option).
+# Install: copy to /etc/systemd/system/ucp.service, then
+#   sudo systemctl daemon-reload && sudo systemctl enable --now ucp
+# Assumes: app deployed at /opt/ucp, a `ucp` system user, Node 20+ and Chromium
+# installed on the host, and /opt/ucp/.env holding config/secrets (see .env.example).
+[Unit]
+Description=UCP - Ananta Universal Commercial Portal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ucp
+Group=ucp
+WorkingDirectory=/opt/ucp
+EnvironmentFile=/opt/ucp/.env
+Environment=NODE_ENV=production
+Environment=AUTOMATION_HEADLESS=true
+Environment=AUTOMATION_BROWSER_ENGINE=chromium
+# Apply DB migrations before starting (idempotent; creates the DB on first run).
+ExecStartPre=/usr/bin/node node_modules/prisma/build/index.js migrate deploy
+ExecStart=/usr/bin/node node_modules/next/dist/bin/next start -p 3300
+Restart=always
+RestartSec=5
+# Give Chromium enough file descriptors.
+LimitNOFILE=65536
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ucp
+
+[Install]
+WantedBy=multi-user.target

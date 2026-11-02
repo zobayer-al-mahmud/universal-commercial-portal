@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+var
+*.log
+# Local SQLite DB + Prisma engine artifacts (the image regenerates the client and
+# the entrypoint creates/migrates the DB on the mounted volume).
+prisma/dev.db
+prisma/dev.db-journal
+.env
+.env.local
+# Scratch / editor
+.DS_Store
+scripts/**/out

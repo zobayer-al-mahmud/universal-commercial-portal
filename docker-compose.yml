@@ -1,0 +1,47 @@
+# UCP production stack. One service (the Next.js app + headless Chromium backend
+# automation). Persistent data (SQLite DB + uploaded Excel / downloaded PDFs) is
+# kept on a named volume so it survives image rebuilds.
+services:
+  ucp:
+    build: .
+    image: ucp:latest
+    restart: unless-stopped
+    ports:
+      - "3300:3300"
+    environment:
+      # Secrets/config come from a local .env file (never committed). See
+      # .env.example for the full list.
+      AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      DATABASE_URL: file:/data/ucp.db
+      STORAGE_ROOT: /data/storage
+      AUTOMATION_HEADLESS: "true"
+      AUTOMATION_BROWSER_ENGINE: chromium
+      AUTOMATION_BROWSER_PATH: /usr/bin/chromium
+      INTEGRATION_MODE: ${INTEGRATION_MODE:-mock}
+      # Portal credentials / live gates (set in .env as needed):
+      EXP_LIVE_ENABLED: ${EXP_LIVE_ENABLED:-false}
+      EXP_USERNAME: ${EXP_USERNAME:-}
+      EXP_PASSWORD: ${EXP_PASSWORD:-}
+      EXP_AUTO_UPDATE: ${EXP_AUTO_UPDATE:-false}
+      DAMCO_LIVE_ENABLED: ${DAMCO_LIVE_ENABLED:-false}
+      DAMCO_USERNAME: ${DAMCO_USERNAME:-}
+      DAMCO_PASSWORD: ${DAMCO_PASSWORD:-}
+      CONTAINER_LIVE_ENABLED: ${CONTAINER_LIVE_ENABLED:-false}
+      # First-deploy only — seed roles/permissions/admin, then set back to false:
+      RUN_SEED: ${RUN_SEED:-false}
+      BOOTSTRAP_ADMIN_USERNAME: ${BOOTSTRAP_ADMIN_USERNAME:-admin}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - ucp-data:/data
+    # /dev/shm is small by default; Chromium needs more (we also pass
+    # --disable-dev-shm-usage, but this avoids crashes under load).
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3300/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  ucp-data:
