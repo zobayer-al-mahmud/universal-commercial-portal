@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { PageHeader, StatusBadge, Empty } from "@/components/ui";
+import { AdminUserManager, type AdminUserRow } from "@/components/AdminUserManager";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +18,20 @@ export default async function AdminPage() {
     );
   }
 
-  const [users, adapters, refGroups] = await Promise.all([
+  const [users, roles, adapters, refGroups] = await Promise.all([
     prisma.user.findMany({ include: { role: true }, orderBy: { createdAt: "asc" } }),
+    prisma.role.findMany({ orderBy: { name: "asc" } }),
     prisma.integrationAdapter.findMany(),
     prisma.referenceData.groupBy({ by: ["type"], _count: { _all: true } }),
   ]);
+  const userRows: AdminUserRow[] = users.map((u) => ({
+    id: u.id,
+    username: u.username ?? "",
+    email: u.email,
+    name: u.name,
+    roleName: u.role.name,
+    isActive: u.isActive,
+  }));
 
   return (
     <div>
@@ -49,21 +59,9 @@ export default async function AdminPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <section className="card overflow-hidden">
           <div className="panel-head"><div className="panel-title">Users &amp; roles</div></div>
-          <table className="w-full">
-            <thead className="bg-slate-50/70">
-              <tr><th className="th">Name</th><th className="th">Email</th><th className="th">Role</th><th className="th">Active</th></tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {users.map((u) => (
-                <tr key={u.id} className="hover:bg-slate-50/60">
-                  <td className="td">{u.name}</td>
-                  <td className="td text-xs">{u.email}</td>
-                  <td className="td"><span className="badge bg-ananta-100 text-ananta-700">{u.role.name}</span></td>
-                  <td className="td">{u.isActive ? "✓" : "✗"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="p-3">
+            <AdminUserManager users={userRows} roles={roles.map((r) => r.name)} currentUserId={user!.id} />
+          </div>
         </section>
 
         <section className="card overflow-hidden">

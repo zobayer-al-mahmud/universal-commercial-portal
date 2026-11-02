@@ -11,6 +11,7 @@ const secret = new TextEncoder().encode(env.AUTH_SECRET);
 
 export interface SessionUser {
   id: string;
+  username: string;
   email: string;
   name: string;
   role: string;
@@ -66,7 +67,10 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   if (!user || !user.isActive) return null;
   return {
     id: user.id,
-    email: user.email,
+    // Actor/display identity: username when set, else the legacy email, else id —
+    // so the ~50 `actor: user.email` audit call sites keep a meaningful value.
+    username: user.username ?? "",
+    email: user.email || user.username || user.id,
     name: user.name,
     role: user.role.name,
     permissions: user.role.permissions.map((rp) => rp.permission.key as PermissionKey),
@@ -77,10 +81,28 @@ export function userHasPermission(user: SessionUser | null, key: PermissionKey):
   return !!user && user.permissions.includes(key);
 }
 
-/** Authenticate by email + password. Returns the user id on success. */
-export async function authenticate(email: string, password: string): Promise<string | null> {
-  const user = await prisma.user.findUnique({ where: { email: email.toLowerCase().trim() } });
+/**
+ * Authenticate by USERNAME + password. Returns the user id on success.
+ * Usernames are stored as entered but matched case-insensitively. For backward
+ * compatibility during the email→username migration, a value containing "@" that
+ * matches no username falls back to an email lookup (so a not-yet-migrated login
+ * still works). Passwords are unchanged bcrypt hashes.
+ */
+export async function authenticate(identifier: string, password: string): Promise<string | null> {
+  const id = identifier.trim();
+  if (!id) return null;
+  // Usernames are stored lowercased (see normalizeUsername), so a lowercased
+  // exact match is case-insensitive without SQLite's unsupported `mode`.
+  let user = await prisma.user.findUnique({ where: { username: id.toLowerCase() } });
+  if (!user && id.includes("@")) {
+    user = await prisma.user.findUnique({ where: { email: id.toLowerCase() } });
+  }
   if (!user || !user.isActive) return null;
   const ok = await verifyPassword(password, user.passwordHash);
   return ok ? user.id : null;
+}
+
+/** Canonical username form: trimmed + lowercased. Use everywhere a username is stored or looked up. */
+export function normalizeUsername(raw: string): string {
+  return raw.trim().toLowerCase();
 }

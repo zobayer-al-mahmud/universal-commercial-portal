@@ -19,6 +19,11 @@ datasource db {
 
 model User {
   id           String   @id @default(cuid())
+  // Login identity is now the USERNAME (unique, case-insensitive-compared in
+  // code). `email` is retained for audit/display + backward compatibility; it is
+  // no longer the login key. Existing rows keep their email and get a backfilled
+  // username; admin-created accounts may have a synthetic placeholder email.
+  username     String?  @unique
   email        String   @unique
   name         String
   passwordHash String
@@ -635,6 +640,11 @@ model BookingBatch {
   liveStep      String    @default("")
   liveDocId     String?
   liveMessage   String    @default("")
+  // JSON array of the doc ids the active/most-recent run is processing (Process
+  // Selected / Retry / Reprocess). The status API returns it so the progress bar,
+  // counters, current-row and log reflect ONLY those rows — a 3-row selection is
+  // never shown as whole-batch progress. null = a whole-batch run / no scope.
+  runScopeJson  String?
   liveStartedAt DateTime?
   liveUpdatedAt DateTime?
   createdAt     DateTime  @default(now())
@@ -1112,7 +1122,12 @@ model ExpJob {
   downloaded Int      @default(0) // download: PDFs captured
   skipped    Int      @default(0)
   failed     Int      @default(0)
-  status     String   @default("created") // created | running | completed | failed
+  status     String   @default("created") // created | running | idle | completed | partially_failed | failed | stopping | stopped
+  // Doc/row ids the active (or most-recent) run is processing: the rows a
+  // "Process selected" / retry queued, as a JSON string[]. The UI scopes the
+  // progress bar, counters, current-row and log to these so a 5-row selection
+  // never displays as whole-job progress. null when no run has been scoped yet.
+  runScopeJson String?
   actor      String   @default("system")
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt

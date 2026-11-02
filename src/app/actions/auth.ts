@@ -9,17 +9,17 @@ export interface LoginState {
 }
 
 export async function loginAction(_prev: LoginState, formData: FormData): Promise<LoginState> {
-  const email = String(formData.get("email") ?? "");
+  const username = String(formData.get("username") ?? "").trim();
   const password = String(formData.get("password") ?? "");
-  if (!email || !password) return { error: "Email and password are required." };
+  if (!username || !password) return { error: "Username and password are required." };
 
-  const userId = await authenticate(email, password);
+  const userId = await authenticate(username, password);
   if (!userId) {
-    await audit({ entityType: "auth", entityId: email, action: "login.failed" });
-    return { error: "Invalid email or password." };
+    await audit({ entityType: "auth", entityId: username, action: "login.failed" });
+    return { error: "Invalid username or password." };
   }
   await setSessionCookie(userId);
-  await audit({ entityType: "auth", entityId: userId, action: "login.success", actor: email });
+  await audit({ entityType: "auth", entityId: userId, action: "login.success", actor: username });
   redirect("/dashboard");
 }
 

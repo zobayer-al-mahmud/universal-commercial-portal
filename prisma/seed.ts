@@ -62,26 +62,30 @@ async function main() {
     }
   }
 
-  // Admin bootstrap (SRS Â§10) â€” from env, changeable after first login.
-  const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim();
+  // Admin bootstrap (SRS Â§10) â€” USERNAME-based login, from env, changeable after
+  // first login. `email` is a retained legacy/display field (synthetic when no
+  // BOOTSTRAP_ADMIN_EMAIL is given); the login identity is the username.
+  const adminUsername = (process.env.BOOTSTRAP_ADMIN_USERNAME?.trim() || "admin").toLowerCase();
   const adminPass = process.env.BOOTSTRAP_ADMIN_PASSWORD?.trim();
-  if (adminEmail && adminPass) {
+  const adminEmail = (process.env.BOOTSTRAP_ADMIN_EMAIL?.trim() || `${adminUsername}@ucp.local`).toLowerCase();
+  if (adminPass) {
     const adminRole = await prisma.role.findUnique({ where: { name: "ADMIN" } });
     if (adminRole) {
       await prisma.user.upsert({
-        where: { email: adminEmail.toLowerCase() },
+        where: { username: adminUsername },
         update: {},
         create: {
-          email: adminEmail.toLowerCase(),
+          username: adminUsername,
+          email: adminEmail,
           name: "Portal Administrator",
           passwordHash: await bcrypt.hash(adminPass, 10),
           roleId: adminRole.id,
         },
       });
-      console.log(`âœ” Admin bootstrapped: ${adminEmail}`);
+      console.log(`âœ” Admin bootstrapped: ${adminUsername}`);
     }
   } else {
-    console.log("â€¦ Skipped admin bootstrap (BOOTSTRAP_ADMIN_EMAIL/PASSWORD not set).");
+    console.log("â€¦ Skipped admin bootstrap (BOOTSTRAP_ADMIN_PASSWORD not set).");
   }
 
   // Modules

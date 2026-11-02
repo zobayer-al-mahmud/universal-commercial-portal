@@ -12,6 +12,23 @@ const schema = z.object({
   // Read-only directory holding the scanned PDFs for the PDF-rename apply step.
   RENAME_INPUT_DIR: z.string().optional().or(z.literal("")),
   INTEGRATION_MODE: z.enum(["mock", "dryrun", "live"]).default("mock"),
+
+  // --- Automation runtime (Linux/production) --------------------------------
+  // All portal automation runs in the BACKEND browser (never the user's browser).
+  // On a Linux server set AUTOMATION_HEADLESS=true so the backend browser runs
+  // with no window. Engine is Chromium (required: the Container module captures
+  // its result PDF via CDP Page.printToPDF, which only Chromium provides; EXP/
+  // Damco/Container portal driving all work headless on Chromium). The "firefox"
+  // value is reserved/forward-compat and must be validated on the host first.
+  AUTOMATION_BROWSER_ENGINE: z.enum(["chromium", "firefox"]).default("chromium"),
+  AUTOMATION_HEADLESS: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Cross-cutting browser executable override (used when a module-specific
+  // *_BROWSER_PATH is not set). On Linux, point at google-chrome / chromium.
+  AUTOMATION_BROWSER_PATH: z.string().optional().or(z.literal("")),
+  // After a server restart, re-queue rows left mid-run by the crash/restart.
+  // false (default) = just un-stick them to a resumable state (never auto-drive
+  // the live portal unattended). true = also resume processing on boot.
+  AUTOMATION_RESUME_ON_BOOT: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   AUTO_SUBMIT: z
     .enum(["true", "false"])
     .default("false")
@@ -34,6 +51,8 @@ const schema = z.object({
   OCR_MAX_PAGES: z.coerce.number().int().positive().max(10).default(5),
   BOOTSTRAP_ADMIN_EMAIL: z.string().email().optional().or(z.literal("")),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().or(z.literal("")),
+  // Login identity for the bootstrap administrator (username-based auth).
+  BOOTSTRAP_ADMIN_USERNAME: z.string().default("admin"),
 
   // --- Damco Shipper Portal (Booking Correction) --------------------------
   // Credentials come ONLY from the environment / a secrets manager – never from
@@ -171,6 +190,12 @@ const schema = z.object({
   EXP_USERNAME: z.string().optional().or(z.literal("")),
   EXP_PASSWORD: z.string().optional().or(z.literal("")),
   EXP_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // OPT-IN: when true, the Correction + Duplicate workflows click the form's
+  // **Update** button after filling + read-back, then CONFIRM the portal's actual
+  // success before marking the row "updated". OFF by default — the bot otherwise
+  // fills and stops (manual submit). It never clicks Acknowledge / final-action
+  // controls (see guards.ts); only the Update/save is automated.
+  EXP_AUTO_UPDATE: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Visible browser for the automation (own CDP port + profile so it never
   // clashes with the Damco/Container windows).
   EXP_BROWSER_PATH: z.string().optional().or(z.literal("")),

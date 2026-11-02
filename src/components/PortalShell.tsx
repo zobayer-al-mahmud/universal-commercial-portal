@@ -65,7 +65,7 @@ export function PortalShell({
   openReviews,
   children,
 }: {
-  user: { name: string; email: string; role: string };
+  user: { name: string; username?: string; email: string; role: string };
   openReviews: number;
   children: ReactNode;
 }) {
@@ -114,7 +114,7 @@ export function PortalShell({
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium text-slate-800">{user.name}</div>
-          <div className="truncate text-xs text-slate-400">{user.email}</div>
+          <div className="truncate text-xs text-slate-400">{user.username || user.email}</div>
         </div>
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 px-2">
