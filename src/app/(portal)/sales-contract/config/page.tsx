@@ -25,7 +25,7 @@ export default async function HmConfigPage() {
       <section className="card space-y-3">
         <h2 className="font-semibold text-sm">Folder mappings</h2>
         <p className="text-xs text-slate-500">
-          One row per source folder (A, B, C …). The <strong>sequence</strong> column sets the folder order inside each Sales Contract on the Summary Excel; the <strong>Column E date</strong> applies to every row from this folder across every contract; the <strong>Source path</strong> is the absolute local folder the &quot;Scan folder&quot; button reads (e.g. <code>D:\order\A</code>). Each row saves as one unit.
+          One row per source folder (A, B, C …). The <strong>sequence</strong> column sets the folder order inside each Sales Contract on the Summary Excel; the <strong>Column E date</strong> applies to every row from this folder across every contract; the <strong>Merchandisers</strong> list is the persistent folder→merchandiser mapping every scanned PO inherits. The <strong>Source folder path</strong> field is <em>optional</em> and no longer required — scans now upload the folder the user picks on their own PC through the Sales Contract page. Keep the field blank or leave the legacy path in — either way the mapping persists until someone changes it here.
         </p>
         {folders.map((f) => (
           <form key={f.folderLetter} action={saveFolderMappingAction} className="grid gap-2 rounded-md border border-slate-200 p-3 sm:grid-cols-6">
@@ -43,8 +43,8 @@ export default async function HmConfigPage() {
               <input name="commercialDate" defaultValue={f.commercialDate} placeholder="01 Nov, 2026" className="input w-full text-xs" />
             </label>
             <label className="text-xs sm:col-span-3">
-              <span className="mb-1 inline-block text-slate-500">Source folder path (local, server-visible)</span>
-              <input name="sourceFolderPath" defaultValue={f.sourceFolderPath} placeholder={`D:\\order\\${f.folderLetter}`} className="input w-full font-mono text-xs" />
+              <span className="mb-1 inline-block text-slate-500">Source folder path (legacy, optional)</span>
+              <input name="sourceFolderPath" defaultValue={f.sourceFolderPath} placeholder="(optional — scans now use your PC's folder picker)" className="input w-full font-mono text-xs" />
             </label>
             <label className="text-xs sm:col-span-5">
               <span className="mb-1 inline-block text-slate-500">Merchandisers (one per line)</span>

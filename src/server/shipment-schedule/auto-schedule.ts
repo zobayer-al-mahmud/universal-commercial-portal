@@ -175,6 +175,40 @@ export async function autoScheduleFromPo(opts: {
     if (anchor?.itemDes) anchorComposition = anchor.itemDes;
   } catch { /* ignore */ }
 
+  // User rule 2026-11-03: only the current Creation-date version's data stays
+  // in Shipment Schedule. On every auto-schedule run for this PO we FULLY
+  // drop every shipment row that carries its orderNo and then recreate from
+  // the current PO's TOD × market breakdown. New PO → 0 rows to drop, same
+  // outcome as before. Replace → every stale row (including ones with
+  // user-entered booking info from a prior version) is wiped so the newer
+  // PO's TOD / country / qty is the single source of truth.
+  const existingRows = await prisma.shipmentScheduleRow.findMany({
+    where: { orderNo: po.orderNo },
+    select: {
+      id: true, marketCode: true, marketSubCode: true,
+      invoiceNo: true, bookingRef: true, bcn: true,
+    },
+  });
+  if (existingRows.length > 0) {
+    const ids = existingRows.map((r) => r.id);
+    await prisma.shipmentScheduleRowEdit.deleteMany({ where: { rowId: { in: ids } } });
+    await prisma.shipmentScheduleRow.deleteMany({ where: { id: { in: ids } } });
+    await audit({
+      entityType: "shipment-schedule",
+      entityId: po.id,
+      action: "shipment-schedule.row.wipe_for_po_version",
+      actor,
+      data: {
+        orderNo: po.orderNo, wipedCount: existingRows.length,
+        currentCreationDate: po.creationDate,
+        touchedRowsLost: existingRows.filter((r) => (r.invoiceNo || r.bookingRef || r.bcn) !== "").map((r) => ({
+          marketCode: r.marketCode, marketSubCode: r.marketSubCode,
+          invoiceNo: r.invoiceNo, bookingRef: r.bookingRef, bcn: r.bcn,
+        })),
+      },
+    });
+  }
+
   const routed: AutoScheduleResult[] = [];
   const failed: AutoScheduleResult[] = [];
   for (const c of combos) {
@@ -288,6 +322,22 @@ export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<
     if (effective.contractNo && existing.contractNo !== effective.contractNo) updates.contractNo = effective.contractNo;
     if (effective.contractDate && existing.contractDate !== effective.contractDate) updates.contractDate = effective.contractDate;
     if (effective.style && existing.style !== effective.style) updates.style = effective.style;
+    // Numeric PO-sourced fields (pcs/fob) + the composition line are refreshed
+    // when the caller supplied a value — needed by the re-scan flow where a
+    // newer PO's qty / unit price / description must overwrite the stored
+    // values (user rule 2026-11-01). Manual columns (invoiceNo, cartons,
+    // grossWeightKg, truckNo etc.) are not in this set and stay untouched.
+    if (effective.pcs !== undefined && effective.pcs !== null && existing.pcs !== effective.pcs) {
+      updates.pcs = effective.pcs;
+    }
+    if (effective.fob !== undefined && effective.fob !== null && existing.fob !== effective.fob) {
+      updates.fob = effective.fob;
+    }
+    if (effective.composition && existing.composition !== effective.composition) {
+      updates.composition = effective.composition;
+    }
+    if (effective.cat && existing.cat !== effective.cat) updates.cat = effective.cat;
+    if (effective.hts && existing.hts !== effective.hts) updates.hts = effective.hts;
     if (Object.keys(updates).length > 0) {
       await prisma.shipmentScheduleRow.update({ where: { id: existing.id }, data: updates });
     }

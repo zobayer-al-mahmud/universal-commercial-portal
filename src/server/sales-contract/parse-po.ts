@@ -101,7 +101,120 @@ export function extractHeader(lines: string[]): SalesContractPdfHeader {
     season: mid["Season:"] ?? null,
     customsCustomerGroup: mid["Customs Customer Group:"] ?? null,
     typeOfConstruction: mid["Type of Construction:"] ?? null,
+    creationDate: extractCreationDate(lines),
   };
+}
+
+/**
+ * Pick the "Creation date" out of a PO PDF. H&M PDFs flatten the layout, so
+ * the label and its value may appear on consecutive lines OR on the same
+ * concatenated line ("Creation date:29 Oct, 2026"). Known label variants:
+ *   Creation date:   Creation Date:
+ *   Date Created:    Date of Creation:
+ *   Document Creation Date:    Document Date:
+ *
+ * Returns null if no variant matches. The caller treats null as "unknown
+ * creation date" and allows the new scan to supersede any existing copy
+ * (fail-open on unknown date — safer than rejecting a valid update).
+ *
+ * Deliberately does NOT fall back to "Date of Order:" or any date from the
+ * market/TOD table: the user explicitly said Creation date and TOD date are
+ * different and must not be conflated (user rule 2026-11-01).
+ */
+export function extractCreationDate(lines: string[]): string | null {
+  // H&M POs label this as "Created:" with the date on the following line
+  // and the clock time + "Version Number: NN" on the next two. We prefer
+  // the exact H&M wording but also accept legacy variants.
+  //                      Created:                 ← label (line i)
+  //                      20 Apr, 2026             ← date (i+1)
+  //                      9:12 AM                  ← time (i+2)
+  //                      Version Number: 01       ← revision (i+3)
+  const labels = [
+    /^Created\s*:/i,
+    /^Creation\s*date\s*:/i,
+    /^Date\s*Created\s*:/i,
+    /^Date\s*of\s*Creation\s*:/i,
+    /^Document\s*Creation\s*Date\s*:/i,
+    /^Document\s*Date\s*:/i,
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    for (const re of labels) {
+      const match = line.match(re);
+      if (!match) continue;
+      let date = "";
+      let time = "";
+      let version = "";
+      // Case A: value on the same line after the colon.
+      const inline = line.slice(match[0].length).trim();
+      if (inline) {
+        const picked = pickDateToken(inline);
+        if (picked) date = picked;
+        const t = pickTimeToken(inline);
+        if (t) time = t;
+      }
+      // Case B: following lines carry date / time / Version Number.
+      for (let j = i + 1; j < Math.min(i + 6, lines.length); j++) {
+        const v = lines[j]?.trim();
+        if (!v) continue;
+        // Stop at the next labelled field (unless it's "Version Number:").
+        if (/^Version\s*Number\s*:/i.test(v)) {
+          const vn = v.match(/^Version\s*Number\s*:\s*(.+?)$/i);
+          if (vn) version = vn[1].trim();
+          continue;
+        }
+        if (/^[A-Z][A-Za-z /]+:$/.test(v)) break;
+        if (!date) {
+          const picked = pickDateToken(v);
+          if (picked) { date = picked; continue; }
+        }
+        if (!time) {
+          const t = pickTimeToken(v);
+          if (t) { time = t; continue; }
+        }
+      }
+      if (date) {
+        // Compact format "<date> <time>[ v<version>]" so creation-date
+        // comparison in dedup-order-no.ts can diff down to the minute AND
+        // let a bumped Version Number win when the clock stamp is unchanged.
+        const parts = [date];
+        if (time) parts.push(time);
+        if (version) parts.push(`v${version}`);
+        return parts.join(" ");
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Pull the first recognisable date token from a free-form snippet. Supports
+ *   29 Oct, 2026 / 29 Oct 2026 / 29 October, 2026
+ *   2026-10-29
+ *   29/10/2026 / 29.10.2026 / 29-10-2026
+ * The caller gets back the ORIGINAL substring (no reformatting) so audit
+ * logs show exactly what the PDF said.
+ */
+function pickDateToken(s: string): string | null {
+  const patterns = [
+    /\b\d{1,2}\s+[A-Za-z]{3,9},?\s+\d{4}\b/,
+    /\b\d{4}-\d{2}-\d{2}\b/,
+    /\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/,
+  ];
+  for (const re of patterns) {
+    const m = s.match(re);
+    if (m) return m[0].trim();
+  }
+  return null;
+}
+
+/** Pick a clock-time string ("9:12 AM", "14:30"). */
+function pickTimeToken(s: string): string | null {
+  const am = s.match(/\b(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM))\b/i);
+  if (am) return am[1].replace(/\s+/g, " ").toUpperCase();
+  const h24 = s.match(/\b(\d{1,2}:\d{2}(?::\d{2})?)\b/);
+  if (h24) return h24[1];
+  return null;
 }
 
 /**

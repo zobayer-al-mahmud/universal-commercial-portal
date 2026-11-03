@@ -23,10 +23,12 @@
     "seed": "node node_modules/tsx/dist/cli.mjs prisma/seed.ts"
   },
   "dependencies": {
+    "@kenjiuno/msgreader": "^1.29.0",
     "@prisma/client": "5.22.0",
     "bcryptjs": "2.4.3",
     "exceljs": "4.4.0",
     "jose": "5.9.6",
+    "jszip": "^3.10.2",
     "next": "14.2.33",
     "pdf-lib": "1.17.1",
     "pdf-parse": "1.1.1",

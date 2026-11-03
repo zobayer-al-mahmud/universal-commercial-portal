@@ -25,6 +25,11 @@ export interface SalesContractPdfHeader {
   season: string | null;       // "4-2026"
   customsCustomerGroup: string | null; // "Boys"
   typeOfConstruction: string | null;   // "Woven"
+  // "Creation date" from the PO PDF (raw string as it appears). Distinct from
+  // dateOfOrder (which is the order's dated-of-order field) and from the TOD
+  // date in the market table. Used to decide whether a re-scanned PO is
+  // newer than an already-extracted copy (user rule 2026-11-01).
+  creationDate: string | null; // "29 Oct, 2026" / "2026-10-29" / raw
 }
 
 /** One row of the PO's market table (date / markets / qty / pct). */

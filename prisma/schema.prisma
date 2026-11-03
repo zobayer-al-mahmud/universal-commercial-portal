@@ -810,6 +810,12 @@ model SalesContractPo {
   // module can match a template without going through Shipment Schedule.
   // First entry is treated as the primary country for a single-invoice-per-PO flow.
   countryCodesJson String      @default("[]")
+  // "Creation date" from the PO PDF (raw string as parsed). Used to decide
+  // whether a re-scanned PO supersedes an existing copy (user rule 2026-11-01).
+  // Empty when a legacy PO was imported before this field existed, OR when
+  // the parser could not find the label — in both cases a newer scan with a
+  // non-empty creationDate wins (fail-open).
+  creationDate String          @default("")
   error       String          @default("")
   warning     String          @default("")
   attempts    Int             @default(0)

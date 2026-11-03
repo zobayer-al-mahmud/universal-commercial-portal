@@ -94,11 +94,28 @@ function poDir(contractId: string, poId: string): string {
  * the set to BLOCKED via the match step). Duplicate files (same sha256 for the
  * same kind) are rejected so the same PDF cannot be uploaded twice.
  */
+export interface UploadResult {
+  poId: string;
+  rejected: { name: string; reason: string }[];
+  /**
+   * Outcome of the creation-date arbitration (user rule 2026-11-01):
+   *   inserted  — new PO added to this contract (no prior copy anywhere)
+   *   replaced  — existing PO (in `existingContractId`) refreshed with newer data
+   *   duplicate — same creation date already extracted; no change
+   *   rejected  — older creation date; placeholder kept as BLOCKED with message
+   *   failed    — extraction itself failed (parse / IO)
+   */
+  outcome: "inserted" | "replaced" | "duplicate" | "rejected" | "failed";
+  orderNo: string;
+  message: string;
+  existingContractId: string | null;
+}
+
 export async function uploadSalesContractPdfSet(
   contractId: string,
   files: SalesContractUploadFile[],
   opts: { actor?: string; folderLetter?: string } = {},
-): Promise<{ poId: string; rejected: { name: string; reason: string }[] }> {
+): Promise<UploadResult> {
   const actor = opts.actor ?? "system";
   const maxBytes = env.SALES_CONTRACT_MAX_FILE_MB * 1024 * 1024;
   const rejected: { name: string; reason: string }[] = [];
@@ -164,7 +181,74 @@ export async function uploadSalesContractPdfSet(
   // Process immediately so the preview is ready when the UI reloads.
   await processSalesContractPoSet(po.id, { actor });
 
-  return { poId: po.id, rejected };
+  // Figure out what processing decided (creation-date arbitration can delete
+  // the placeholder when it replaces an existing PO, so the placeholder id
+  // may be stale — look it up again, and fall back to the owning PO by
+  // orderNo when it's gone).
+  const stillHere = await prisma.salesContractPo.findUnique({
+    where: { id: po.id },
+    select: { id: true, state: true, orderNo: true, warning: true, reasons: true, error: true, creationDate: true },
+  });
+  // Latest audit event tells us which branch intake took.
+  const latestAudit = await prisma.auditEvent.findFirst({
+    where: {
+      entityType: "document",
+      action: { in: [
+        "hm.set.processed",
+        "hm.set.updated_newer_creation_date",
+        "hm.set.rescan_same_creation_date",
+        "hm.set.rejected_older_creation_date",
+        "hm.set.failed",
+      ] },
+      createdAt: { gte: new Date(Date.now() - 60_000) },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  let outcome: UploadResult["outcome"] = "inserted";
+  let message = "";
+  let orderNo = "";
+  let existingContractId: string | null = null;
+  let returnedPoId = po.id;
+  const auditData = (() => {
+    try { return JSON.parse(String(latestAudit?.dataJson ?? "{}")) as Record<string, unknown>; } catch { return {}; }
+  })();
+  switch (latestAudit?.action) {
+    case "hm.set.updated_newer_creation_date":
+      outcome = "replaced";
+      orderNo = String(auditData.orderNo ?? "");
+      existingContractId = String(auditData.existingContract ?? "") || null;
+      message = String(auditData.message ?? `Order ${orderNo} updated in its original contract (newer Creation date).`);
+      returnedPoId = String(latestAudit.entityId);
+      break;
+    case "hm.set.rescan_same_creation_date":
+      outcome = "duplicate";
+      orderNo = String(auditData.orderNo ?? "");
+      existingContractId = String(auditData.existingContract ?? "") || null;
+      message = String(auditData.message ?? `Order ${orderNo} already extracted with the same Creation date (no change).`);
+      returnedPoId = String(latestAudit.entityId);
+      break;
+    case "hm.set.rejected_older_creation_date":
+      outcome = "rejected";
+      orderNo = String(auditData.orderNo ?? stillHere?.orderNo ?? "");
+      existingContractId = String(auditData.existingContract ?? "") || null;
+      message = String(auditData.message ?? "Rejected: older Creation date than the existing copy.");
+      break;
+    case "hm.set.processed":
+      outcome = "inserted";
+      orderNo = stillHere?.orderNo ?? "";
+      message = `Order ${orderNo} ingested into this contract.`;
+      break;
+    case "hm.set.failed":
+      outcome = "failed";
+      message = String(auditData.message ?? "Extraction failed.");
+      break;
+    default:
+      outcome = stillHere?.state === "BLOCKED" ? "rejected" : "inserted";
+      orderNo = stillHere?.orderNo ?? "";
+      message = stillHere?.warning || stillHere?.reasons || stillHere?.error || "";
+  }
+
+  return { poId: returnedPoId, rejected, outcome, orderNo, message, existingContractId };
 }
 
 /**
@@ -208,67 +292,145 @@ export async function processSalesContractPoSet(
     const result = buildSetResult(poExtract, sizeExtract, countryExtract, match, recon);
 
     const orderNo = result.orderNo || po.orderNo;
+    // Creation-date resolution (user rule 2026-11-01):
+    //   1. Explicit "Creation date:" label from the PO PDF (parsed by
+    //      extractCreationDate in parse-po.ts).
+    //   2. Fallback: the yyyymmdd_hhmmss timestamp embedded in H&M's
+    //      standard attachment filename pattern
+    //      `<orderNo>_PurchaseOrder_Supplier_<yyyymmdd>_<hhmmss>.pdf` —
+    //      every H&M PO carries this even when the PDF text has no label.
+    let creationDate = poExtract?.header.creationDate ?? "";
+    if (!creationDate) {
+      const poPdf = po.pdfs.find((p) => p.kind === "PurchaseOrder");
+      if (poPdf?.originalName) {
+        const { extractCreationDateFromFilename } = await import("./scan-folder");
+        creationDate = extractCreationDateFromFilename(poPdf.originalName) || "";
+      }
+    }
     let state: "READY" | "BLOCKED" = result.blockWrite ? "BLOCKED" : "READY";
 
-    // Cross-contract dedup (user rule 2026-10-28): refuse to accept this
-    // extraction if the order-no already belongs to another Sales Contract.
-    // The user must first move the existing PO via `reassignPoToContract`.
-    const { checkOrderNoConflict } = await import("./dedup-order-no");
-    const conflict = await checkOrderNoConflict(orderNo, po.contractId);
-    if (conflict) {
-      await prisma.salesContractPo.update({
-        where: { id: poId },
-        data: {
-          state: "BLOCKED",
-          blockWrite: true,
-          error: conflict.message,
-          reasons: conflict.message,
-          processedAt: new Date(),
-        },
-      });
-      await audit({
-        entityType: "document",
-        entityId: poId,
-        action: "hm.set.rejected_cross_contract",
-        actor,
-        data: { orderNo, attemptedContract: po.contractId, existingContract: conflict.conflictingContractId },
-      });
-      return;
-    }
-
-    // Extract country codes from the Country Breakdown PDF (and the PO's own
-    // market list as a fallback). Deduped + uppercased so the Customs Invoice
-    // module can match a template without going through Shipment Schedule.
-    const countryCodes = extractCountryCodes(countryExtract, poExtract);
-
     // Season + PO year – stored on the PO so the Summary writer and
-    // merchandiser-name composer don't have to re-parse PO JSON. Season is
-    // the raw "<season>-<year>" string if confident; the parsed parts live
-    // on `season` and `poYear`.
+    // merchandiser-name composer don't have to re-parse PO JSON.
     const { parseSeason, extractPoYear } = await import("./config");
     const parsedSeason = parseSeason(poExtract?.header.season ?? null);
     const season = parsedSeason?.season ?? "";
     const poYear = parsedSeason?.year || extractPoYear(poExtract?.header.dateOfOrder ?? null);
 
+    const countryCodes = extractCountryCodes(countryExtract, poExtract);
+
+    const extractionPayload = {
+      orderNo,
+      state,
+      blockWrite: result.blockWrite,
+      reasons: result.reasons.join("\n"),
+      matchJson: JSON.stringify(match),
+      reconJson: JSON.stringify(recon),
+      poJson: JSON.stringify(poExtract),
+      sizeJson: JSON.stringify(sizeExtract),
+      countryJson: JSON.stringify(countryExtract),
+      rowsJson: JSON.stringify(result.rows),
+      countryCodesJson: JSON.stringify(countryCodes),
+      creationDate,
+      warning: result.reasons[0] ?? "",
+      processedAt: new Date(),
+      season,
+      poYear,
+    } as const;
+
+    // One Order No. owns ONE SalesContractPo globally — regardless of which
+    // contract the user re-uploads into (user rule 2026-11-01).
+    //
+    //   newer creation date → UPDATE existing in its original contract,
+    //                         transfer the new PDFs over, delete this
+    //                         placeholder, re-propagate to shipment.
+    //   same creation date  → delete this placeholder (idempotent re-scan).
+    //   older creation date → keep placeholder as BLOCKED with a warning;
+    //                         existing data stands.
+    const { resolveCreationDateVerdict } = await import("./dedup-order-no");
+    const verdict = orderNo && !orderNo.startsWith("pending-")
+      ? await resolveCreationDateVerdict(orderNo, creationDate, poId)
+      : { outcome: "no_existing" as const };
+
+    if (verdict.outcome === "newer") {
+      await replacePoWithNewerScan({
+        placeholderPoId: poId,
+        existingPoId: verdict.existing.poId,
+        extractionPayload,
+      });
+      await audit({
+        entityType: "document",
+        entityId: verdict.existing.poId,
+        action: "hm.set.updated_newer_creation_date",
+        actor,
+        data: {
+          orderNo,
+          existingContract: verdict.existing.contractId,
+          attemptedContract: po.contractId,
+          replacedCreationDate: verdict.existing.creationDate,
+          newCreationDate: creationDate,
+          message: verdict.message,
+        },
+      });
+      // Fresh propagation to Shipment Schedule using the updated PO.
+      if (extractionPayload.state === "READY" && !result.blockWrite) {
+        await repropagateToShipment(verdict.existing.poId, actor);
+      }
+      return;
+    }
+
+    if (verdict.outcome === "same") {
+      await discardPlaceholder(poId);
+      await audit({
+        entityType: "document",
+        entityId: verdict.existing.poId,
+        action: "hm.set.rescan_same_creation_date",
+        actor,
+        data: { orderNo, existingContract: verdict.existing.contractId, message: verdict.message },
+      });
+      return;
+    }
+
+    if (verdict.outcome === "older") {
+      // Leave orderNo as the pending-<ts> placeholder so the composite
+      // `@@unique([contractId, orderNo])` can't collide when the existing
+      // copy lives in the SAME contract. The warning/reasons text names the
+      // real order no and the existing contract so the review UI shows it.
+      await prisma.salesContractPo.update({
+        where: { id: poId },
+        data: {
+          state: "BLOCKED",
+          blockWrite: true,
+          creationDate,
+          error: verdict.message,
+          reasons: verdict.message,
+          warning: verdict.message,
+          processedAt: new Date(),
+          poJson: JSON.stringify(poExtract),
+          sizeJson: JSON.stringify(sizeExtract),
+          countryJson: JSON.stringify(countryExtract),
+        },
+      });
+      await audit({
+        entityType: "document",
+        entityId: poId,
+        action: "hm.set.rejected_older_creation_date",
+        actor,
+        data: {
+          orderNo,
+          existingContract: verdict.existing.contractId,
+          existingCreationDate: verdict.existing.creationDate,
+          incomingCreationDate: creationDate,
+          message: verdict.message,
+        },
+      });
+      return;
+    }
+
+    // No existing PO owns this order — proceed with the placeholder as the
+    // canonical row (original path).
     await prisma.salesContractPo.update({
       where: { id: poId },
-      data: {
-        orderNo,
-        state,
-        blockWrite: result.blockWrite,
-        reasons: result.reasons.join("\n"),
-        matchJson: JSON.stringify(match),
-        reconJson: JSON.stringify(recon),
-        poJson: JSON.stringify(poExtract),
-        sizeJson: JSON.stringify(sizeExtract),
-        countryJson: JSON.stringify(countryExtract),
-        rowsJson: JSON.stringify(result.rows),
-        countryCodesJson: JSON.stringify(countryCodes),
-        warning: result.reasons[0] ?? "",
-        processedAt: new Date(),
-        season,
-        poYear,
-      },
+      data: extractionPayload,
     });
 
     await audit({ entityType: "document", entityId: poId, action: "hm.set.processed", actor, data: { orderNo, state, rows: result.rows.length } });
@@ -278,6 +440,7 @@ export async function processSalesContractPoSet(
       try {
         const { autoScheduleFromPo } = await import("@/server/shipment-schedule/auto-schedule");
         const r = await autoScheduleFromPo({ poId, actor });
+        await surfaceUnroutedMarkets(poId, orderNo, r.failed, actor);
         await audit({
           entityType: "document",
           entityId: poId,
@@ -398,6 +561,184 @@ export async function loadContractSets(contractId: string) {
       reasons,
     };
   });
+}
+
+/**
+ * Replace an EXISTING SalesContractPo with the newer extraction carried by a
+ * placeholder PO row. The existing row keeps its id (so sheet edits + shipment
+ * / customs-invoice links by orderNo remain valid) and stays in its original
+ * contract — only its data and attached PDFs are swapped out.
+ *
+ * Side effects:
+ *  1. Delete the existing PO's SalesContractPdf rows AND their files on disk.
+ *  2. Reparent the placeholder's SalesContractPdf rows (and physical files
+ *     stay in the placeholder's dir — the reparented rows still point at
+ *     their original absolute paths, which keeps the "View PDF" link valid).
+ *  3. Overwrite the existing PO's extraction JSON + creationDate + folder /
+ *     season / poYear with the incoming values.
+ *  4. Delete the placeholder PO row (no PDFs attached by now).
+ *
+ * The whole thing runs in one Prisma transaction so a crash mid-swap can't
+ * leave the DB with two rows for the same orderNo.
+ */
+async function replacePoWithNewerScan(opts: {
+  placeholderPoId: string;
+  existingPoId: string;
+  extractionPayload: Record<string, unknown>;
+}): Promise<void> {
+  const { placeholderPoId, existingPoId, extractionPayload } = opts;
+
+  // Snapshot the existing PO's PDF files BEFORE the txn so we can delete
+  // them on disk after the DB swap commits.
+  const existingPdfs = await prisma.salesContractPdf.findMany({
+    where: { poId: existingPoId },
+    select: { storagePath: true },
+  });
+
+  // Grab the placeholder's folderLetter so the existing PO carries the
+  // most-recent-source metadata too.
+  const placeholder = await prisma.salesContractPo.findUnique({
+    where: { id: placeholderPoId },
+    select: { folderLetter: true },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    await tx.salesContractPdf.deleteMany({ where: { poId: existingPoId } });
+    await tx.salesContractPdf.updateMany({
+      where: { poId: placeholderPoId },
+      data: { poId: existingPoId },
+    });
+    await tx.salesContractPo.update({
+      where: { id: existingPoId },
+      data: {
+        ...extractionPayload,
+        folderLetter: placeholder?.folderLetter || undefined,
+        updatedAt: new Date(),
+      },
+    });
+    // Placeholder's PDFs have been reparented, so the cascade on delete is
+    // a no-op; its folder on disk is orphaned (small leak, acceptable).
+    await tx.salesContractPo.delete({ where: { id: placeholderPoId } });
+  });
+
+  // Delete the existing PO's old PDF files from disk (post-commit).
+  for (const pdf of existingPdfs) {
+    try {
+      const { rm } = await import("fs/promises");
+      await rm(pdf.storagePath, { force: true });
+    } catch { /* best-effort; orphaning the file is tolerable */ }
+  }
+}
+
+/** Delete a placeholder PO + its uploaded PDFs when the scan is idempotent
+ *  (same creation date already extracted). Files on disk are removed too. */
+async function discardPlaceholder(placeholderPoId: string): Promise<void> {
+  const placeholder = await prisma.salesContractPo.findUnique({
+    where: { id: placeholderPoId },
+    include: { pdfs: { select: { storagePath: true } } },
+  });
+  if (!placeholder) return;
+  await prisma.salesContractPo.delete({ where: { id: placeholderPoId } });
+  for (const pdf of placeholder.pdfs) {
+    try {
+      const { rm } = await import("fs/promises");
+      await rm(pdf.storagePath, { force: true });
+    } catch { /* ignore */ }
+  }
+}
+
+/**
+ * Re-propagate updated PO data to the Week-wise Shipment Schedule rows and
+ * refresh the mechanical fields of any Customs Invoices tied to this Order
+ * No. The user rule is: "keep records, update PO-sourced fields only" —
+ * so neither shipment manual fields (invoice no, pallet, truck) nor customs
+ * manual fields (invoice no, carton no, etc.) are touched.
+ */
+/**
+ * Write unrouted markets back to the PO's `warning` field so the user sees
+ * exactly which (marketCode / TOD) combos the Shipment Schedule could not
+ * place automatically — those stay to be placed manually. Idempotent: each
+ * call OVERWRITES the previous "Shipment-schedule" note so the warning
+ * reflects the current PO version, not a stale accumulation across replaces.
+ */
+async function surfaceUnroutedMarkets(
+  poId: string,
+  orderNo: string,
+  failedResults: ReadonlyArray<Record<string, unknown>>,
+  actor: string,
+): Promise<void> {
+  // Narrow to the failure branch of AutoScheduleResult.
+  const failed = failedResults
+    .filter((r) => r.routed === false)
+    .map((r) => ({ reason: String(r.reason), detail: r.detail !== undefined ? String(r.detail) : undefined }));
+  const po = await prisma.salesContractPo.findUnique({ where: { id: poId }, select: { warning: true } });
+  if (!po) return;
+  // Strip any previous shipment-schedule note (prefixed with marker).
+  const marker = "[SHIP-UNROUTED]";
+  const kept = (po.warning || "")
+    .split(/\n+/)
+    .filter((l) => l && !l.includes(marker))
+    .join("\n");
+
+  let next = kept;
+  if (failed.length > 0) {
+    const reasonLabel: Record<string, string> = {
+      no_tod_date: "no TOD date",
+      unknown_market_code: "unknown market code",
+      unparseable_tod: "unparseable TOD date",
+      unmapped_cutoff: "market not in CFS cut-off map",
+    };
+    const summary = failed
+      .map((f) => `${f.detail ?? "?"} (${reasonLabel[f.reason] ?? f.reason})`)
+      .join(", ");
+    const note = `${marker} ${failed.length} market(s) on order ${orderNo} could not be auto-routed to the Weekly Shipment Schedule — add them manually: ${summary}`;
+    next = kept ? `${kept}\n${note}` : note;
+  }
+
+  if (next !== po.warning) {
+    await prisma.salesContractPo.update({ where: { id: poId }, data: { warning: next } });
+    if (failed.length > 0) {
+      await audit({
+        entityType: "document", entityId: poId, action: "shipment-schedule.unrouted.surfaced", actor,
+        data: {
+          orderNo,
+          markets: failed.map((f) => ({ reason: f.reason, detail: f.detail ?? "" })),
+        },
+      });
+    }
+  }
+}
+
+async function repropagateToShipment(existingPoId: string, actor: string): Promise<void> {
+  try {
+    const { autoScheduleFromPo } = await import("@/server/shipment-schedule/auto-schedule");
+    const r = await autoScheduleFromPo({ poId: existingPoId, actor });
+    const refreshed = await prisma.salesContractPo.findUnique({
+      where: { id: existingPoId }, select: { orderNo: true },
+    });
+    await surfaceUnroutedMarkets(existingPoId, refreshed?.orderNo ?? "", r.failed, actor);
+    await audit({
+      entityType: "document",
+      entityId: existingPoId,
+      action: "hm.set.auto_scheduled",
+      actor,
+      data: { routed: r.routed.length, failed: r.failed.length, reason: "updated_newer_creation_date" },
+    });
+  } catch (e) {
+    await audit({
+      entityType: "document",
+      entityId: existingPoId,
+      action: "hm.set.auto_schedule_failed",
+      actor,
+      data: { message: e instanceof Error ? e.message : "unknown", reason: "updated_newer_creation_date" },
+    });
+  }
+  // Customs invoices already pull fresh data on page load (auto-sync in
+  // customs-invoice/[id]/page.tsx) via buildPrefill, so updated PO fields
+  // (country code, descriptionOfGoods, buyerCode, …) flow in automatically
+  // the next time the user opens an affected invoice; the manual columns
+  // (invoiceNumber, cartons, truckNo, pallet) stay untouched because the
+  // auto-sync is a NON-OVERWRITING fill. Nothing to do here.
 }
 
 export { MODULE as SALES_CONTRACT_MODULE_KEY };
