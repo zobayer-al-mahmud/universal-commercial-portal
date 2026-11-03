@@ -1,6 +1,7 @@
 import type { Page } from "playwright";
 import { env } from "@/lib/env";
 import { getExpPage } from "./browser";
+import { getExpCredentials } from "./credentials";
 
 /**
  * Bangladesh Bank EXP portal authentication (Oracle APEX, app 112).
@@ -113,14 +114,15 @@ export async function ensureExpAuth(): Promise<AuthResult> {
     }
   }
 
-  if (!env.EXP_USERNAME || !env.EXP_PASSWORD) {
-    return { outcome: "CONFIG_MISSING", message: "EXP_USERNAME / EXP_PASSWORD are not configured on the server." };
+  const creds = await getExpCredentials();
+  if (!creds) {
+    return { outcome: "CONFIG_MISSING", message: "EXP portal credentials are not configured. Set them in EXP Automation → Credentials." };
   }
 
   const u = (await firstVisible(page, USERNAME_SELECTORS))!;
   const p = (await firstVisible(page, PASSWORD_SELECTORS))!;
-  await page.fill(u, env.EXP_USERNAME);
-  await page.fill(p, env.EXP_PASSWORD);
+  await page.fill(u, creds.username);
+  await page.fill(p, creds.password);
   const btn = await firstVisible(page, LOGIN_BUTTON_SELECTORS);
   await Promise.all([
     page.waitForLoadState("networkidle").catch(() => undefined),

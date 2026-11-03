@@ -3,90 +3,111 @@ import type { Locator, Page } from "playwright";
 /**
  * Submit-safety guard for the EXP correction + duplicate workflows.
  *
- * Default posture: the bot FILLS and VERIFIES the form, then stops — it performs
- * NO final save/submit/acknowledge. The ONLY action that can ever be automated is
- * the form's **Update** button, and only when the operator has opted in via
- * EXP_AUTO_UPDATE (passed here as `allowUpdate`). Everything else — Acknowledge,
- * Submit, Save, Approve, the Duplicate "Click for Acknowledgement" flag — stays
- * hard-forbidden regardless of any flag. This is defence in depth: the drivers
- * also only ever click the specific controls they name (Search / Update), never a
- * generic "submit the form".
+ * Default posture (no policy): the bot FILLS and VERIFIES the form, then stops —
+ * it performs NO final save/apply/acknowledge. Two actions can be unlocked, each
+ * by its own explicit opt-in passed as a {@link ClickPolicy}:
+ *   - `allowApply`       → the form's **Apply Changes** save button (EXP_AUTO_UPDATE)
+ *   - `allowAcknowledge` → the Duplicate "Acknowledge/Duplicate Export" checkbox
+ *                          (EXP_AUTO_ACKNOWLEDGE; the irreversible acknowledgement)
+ *
+ * Everything else — Submit, Save, Approve, Confirm, Process, Delete, a generic
+ * "Update" — stays hard-forbidden regardless of any flag. This is defence in
+ * depth: the drivers also only ever click the specific controls they name
+ * (Search / Apply Changes / the Acknowledge checkbox), never a generic submit.
  */
 
-// Labels that are NEVER clickable — the final, acknowledge-style actions.
-const ALWAYS_FORBIDDEN_RE = /\b(acknowledge|acknowledgement|approve|confirm|process|apply|submit|save|delete)\b/i;
-// The one action that MAY be automated, and only when allowUpdate is true.
-const UPDATE_RE = /\bupdate\b/i;
+/** Which final-action controls the driver is explicitly allowed to operate. */
+export interface ClickPolicy {
+  /** Allow clicking the form's "Apply Changes" save button. */
+  allowApply?: boolean;
+  /** Allow ticking the Duplicate "Acknowledge/Duplicate Export" checkbox. */
+  allowAcknowledge?: boolean;
+}
 
-/** Acknowledge / final-action selectors — disabled on every run, flag or not. */
+// Words that are NEVER clickable, whatever the policy. (The real save button is
+// "Apply Changes", so a bare "Update" is treated as always-forbidden here.)
+const HARD_FORBIDDEN_RE = /\b(submit|save|approve|confirm|process|delete|update)\b/i;
+// "Apply" / "Apply Changes" — only when allowApply.
+const APPLY_RE = /\bapply\b/i;
+// "Acknowledge" / "Acknowledgement" — only when allowAcknowledge.
+const ACK_RE = /\back(nowledge|nowledgement)?\b/i;
+
+/** Acknowledge / final-action selectors (attribute-only; used by neutralize). */
 export const ACKNOWLEDGE_SELECTORS = [
   "[id*='ACKNOWLEDGE' i]",
   "[id*='DUPLICATE_EXPORT' i]",
-  // Duplicate EXP Reporting: the "Click for Acknowledgement" checkbox (P3_DUP_FLAG_0)
-  // is the final acknowledge action — never ticked by the bot.
   "[id*='DUP_FLAG' i]",
   "[value='Acknowledge' i]",
   "[value='Submit' i]",
   "#SUBMIT",
 ];
-/** Generic submit controls — disabled only when Update is NOT being automated. */
-const GENERIC_SUBMIT_SELECTORS = ["input[type=submit]", "button[type=submit]"];
-/** The Update control — disabled only when Update is NOT being automated. */
-const UPDATE_SELECTORS = ["#UPDATE", "[value='Update' i]"];
 
 /**
- * True when a control's visible label would perform a forbidden action.
- * `allowUpdate` carves out ONLY the Update action; acknowledge/submit/save/etc.
- * stay forbidden.
+ * True when a control's visible label would perform a forbidden action under the
+ * given policy. An empty policy forbids every final action.
  */
-export function isForbiddenActionLabel(label: string, allowUpdate = false): boolean {
+export function isForbiddenActionLabel(label: string, policy: ClickPolicy = {}): boolean {
   const t = (label || "").trim();
   if (!t) return false;
-  if (ALWAYS_FORBIDDEN_RE.test(t)) return true; // acknowledge / submit / save / … — never
-  if (UPDATE_RE.test(t)) return !allowUpdate; // update — only when opted in
-  return false; // Search / Back / etc. are fine
+  if (HARD_FORBIDDEN_RE.test(t)) return true; // submit / save / update / … — never
+  if (APPLY_RE.test(t)) return !policy.allowApply; // apply — only when opted in
+  if (ACK_RE.test(t)) return !policy.allowAcknowledge; // acknowledge — only when opted in
+  return false; // Search / Back / Edit / Print EXP / … are fine
 }
 
 /**
  * Assert that a control we are ABOUT to click is safe. Throws if forbidden — so a
- * mistaken selector can never submit/acknowledge. Update is permitted only when
- * `allowUpdate` is true (EXP_AUTO_UPDATE).
+ * mistaken selector can never submit/acknowledge against the policy.
  */
-export async function assertSafeToClick(locator: Locator, intent: string, allowUpdate = false): Promise<void> {
+export async function assertSafeToClick(locator: Locator, intent: string, policy: ClickPolicy = {}): Promise<void> {
   let label = "";
   try {
     label = ((await locator.getAttribute("value")) || (await locator.innerText().catch(() => "")) || "").trim();
   } catch {
     /* if we can't read it, fall through — the intent check below still applies */
   }
-  if (isForbiddenActionLabel(intent, allowUpdate)) {
+  if (isForbiddenActionLabel(intent, policy)) {
     throw new Error(`Refused to click a forbidden control (intent="${intent}").`);
   }
-  if (label && isForbiddenActionLabel(label, allowUpdate)) {
+  if (label && isForbiddenActionLabel(label, policy)) {
     throw new Error(`Refused to click control labelled "${label}".`);
   }
 }
 
 /**
- * Best-effort page hardening: disable (not remove) final-action controls so an
- * accidental Enter/click can't submit. When `allowUpdate` is true the Update
- * control (and generic submits, since Update may itself be a submit) are LEFT
- * enabled so the driver can click Update; Acknowledge/final controls are still
- * disabled. Non-fatal.
+ * Best-effort page hardening: disable (not remove) final-action controls that the
+ * current policy does NOT permit, so an accidental Enter/click can't submit. The
+ * permitted control(s) are left enabled so the driver can click them; everything
+ * else — including the Duplicate acknowledge checkbox when allowAcknowledge is
+ * off — is disabled. Non-fatal.
  */
-export async function neutralizeFinalControls(page: Page, opts: { allowUpdate: boolean }): Promise<number> {
-  const selectors = opts.allowUpdate
-    ? ACKNOWLEDGE_SELECTORS
-    : [...ACKNOWLEDGE_SELECTORS, ...GENERIC_SUBMIT_SELECTORS, ...UPDATE_SELECTORS];
+export async function neutralizeFinalControls(page: Page, policy: ClickPolicy = {}): Promise<number> {
   try {
-    return await page.evaluate((sels) => {
-      let n = 0;
-      const seen = new Set<Element>();
-      for (const sel of sels) {
-        document.querySelectorAll(sel).forEach((el) => {
-          if (seen.has(el)) return;
-          seen.add(el);
-          const he = el as HTMLElement & { disabled?: boolean };
+    return await page.evaluate(
+      (pol) => {
+        const HARD = /\b(submit|save|approve|confirm|process|delete|update)\b/i;
+        const APPLY = /\bapply\b/i;
+        const ACK = /\back(nowledge|nowledgement)?\b/i;
+        const forbidden = (s: string): boolean => {
+          const t = (s || "").trim();
+          if (!t) return false;
+          if (HARD.test(t)) return true;
+          if (APPLY.test(t)) return !pol.allowApply;
+          if (ACK.test(t)) return !pol.allowAcknowledge;
+          return false;
+        };
+        let n = 0;
+        const nodes = Array.from(
+          document.querySelectorAll("button, input[type=submit], input[type=button], input[type=checkbox], a"),
+        );
+        for (const node of nodes) {
+          const he = node as HTMLElement & { disabled?: boolean; value?: string };
+          const id = he.id || "";
+          // The acknowledge checkbox is identified by id even when its label is elsewhere.
+          const isAckControl = /ACKNOWLEDGE|DUPLICATE_EXPORT|DUP_FLAG/i.test(id);
+          const label = (he.value || he.textContent || he.getAttribute("title") || "").trim();
+          const block = isAckControl ? !pol.allowAcknowledge : forbidden(label);
+          if (!block) continue;
           try {
             he.setAttribute("data-ucp-disabled", "1");
             if ("disabled" in he) he.disabled = true;
@@ -96,10 +117,11 @@ export async function neutralizeFinalControls(page: Page, opts: { allowUpdate: b
           } catch {
             /* ignore individual control */
           }
-        });
-      }
-      return n;
-    }, selectors);
+        }
+        return n;
+      },
+      { allowApply: !!policy.allowApply, allowAcknowledge: !!policy.allowAcknowledge },
+    );
   } catch {
     return 0;
   }

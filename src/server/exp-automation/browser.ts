@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { spawn, type ChildProcess } from "child_process";
 import { mkdirSync } from "fs";
 import { resolve } from "path";
 import { chromium, type Browser } from "playwright";
@@ -16,6 +16,9 @@ import { resolveChromiumExecutable, cdpLaunchArgs, isHeadless } from "@/server/a
  */
 
 let browser: Browser | null = null;
+// The spawned Chromium process, tracked so a credential change can terminate it
+// (releasing the profile's file locks) and force a fresh sign-in next run.
+let proc: ChildProcess | null = null;
 
 function profileDir(): string {
   const dir = resolve(env.EXP_SESSION_DIR, "profile");
@@ -44,6 +47,8 @@ export async function getExpBrowser(): Promise<Browser> {
       stdio: "ignore",
       windowsHide: isHeadless(),
     });
+    proc = child;
+    child.on("exit", () => { if (proc === child) proc = null; });
     child.unref();
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
@@ -76,4 +81,23 @@ export async function detachExpBrowser(): Promise<void> {
     /* ignore */
   }
   browser = null;
+}
+
+/**
+ * Fully stop the EXP browser: detach Playwright AND terminate the spawned
+ * Chromium process so its persistent profile is unlocked. Used when credentials
+ * change, so the next run starts a brand-new session that must sign in with the
+ * new password (a still-valid old session is never silently reused).
+ */
+export async function shutdownExpBrowser(): Promise<void> {
+  await detachExpBrowser();
+  const p = proc;
+  proc = null;
+  if (p && !p.killed) {
+    try {
+      p.kill();
+    } catch {
+      /* ignore */
+    }
+  }
 }

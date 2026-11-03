@@ -108,6 +108,27 @@ export const DUPLICATE_FIELDS: FieldMap[] = [
   { key: "transportDocDate", excelHeaders: ["Transport Document Date", "Transport Doc Date"], portalLabel: "Transport Document Date", portalId: "P3_LADING_DATE", control: "date", skipIfBlank: true },
   { key: "invoiceNo", excelHeaders: ["Invoice No", "*Invoice No"], portalLabel: "Invoice No", portalId: "P3_INVOICE_NO", control: "text", skipIfBlank: true },
   { key: "invoiceDate", excelHeaders: ["Invoice Date", "*Invoice Date"], portalLabel: "Invoice Date", portalId: "P3_INVOICE_DATE", control: "date", skipIfBlank: true },
+
+  // Special requirement (2026-11-03): when the Export Acknowledgement form exposes
+  // "Invoice Amount" AND "Invoice Amount Confirmed By Customs" as EDITABLE inputs,
+  // copy the SAME Excel invoice amount into BOTH, then verify. On records where
+  // either is read-only (as in the sample screenshot), the fill simply fails and
+  // is logged for manual entry — never forced. APEX ids are not pinned for these,
+  // so they are located by edit-region-aware label; confirm live before relying on
+  // them for a production run.
+  { key: "invoiceAmount", excelHeaders: ["Invoice Amount (Issue)", "Invoice Amount"], portalLabel: "Invoice Amount (Issue)", control: "number", skipIfBlank: true },
+  { key: "invoiceAmountCustoms", excelHeaders: ["Invoice Amount Confirmed By Customs", "Invoice Amount (Issue)", "Invoice Amount"], portalLabel: "Invoice Amount Confirmed By Customs", control: "number", skipIfBlank: true },
+
+  // Other editable fields on the Export Acknowledgement form (from the live
+  // screenshot). Located by label (ids not yet pinned); a field the form does not
+  // expose as an editable input is logged for manual entry, never forced.
+  { key: "quantity", excelHeaders: ["Quantity"], portalLabel: "Quantity", control: "number", skipIfBlank: true },
+  { key: "portOfShipment", excelHeaders: ["Port of Shipment"], portalLabel: "Port of Shipment", control: "select", skipIfBlank: true },
+  { key: "duplicatingBank", excelHeaders: ["Duplicating Bank"], portalLabel: "Duplicating Bank", control: "select", skipIfBlank: true },
+  { key: "duplicatingBranch", excelHeaders: ["Duplicating Branch"], portalLabel: "Duplicating Branch", control: "select", skipIfBlank: true },
+  { key: "sector", excelHeaders: ["Sector"], portalLabel: "Sector", control: "select", skipIfBlank: true },
+  { key: "banksBillDate", excelHeaders: ["Bank's Bill Date", "Banks Bill Date"], portalLabel: "Bank's Bill Date", control: "date", skipIfBlank: true },
+  { key: "banksBillNo", excelHeaders: ["Bank's Bill No.", "Bank's Bill No", "Banks Bill No"], portalLabel: "Bank's Bill No.", control: "text", skipIfBlank: true },
 ];
 
 /** Fields the field maps don't drive but the row still carries as identifiers. */

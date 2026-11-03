@@ -7,8 +7,8 @@ import type { Response as PwResponse } from "playwright";
 import { fillControl, fillSearchField, readFieldValue, fillField, pickEditControl } from "./form-fields";
 import { type FieldDiff, valuesEquivalent, formatDateLike, normDate } from "./compare";
 import { capturePortalDump, summarizeDump, writeDump, type PortalDump } from "./diagnostics";
-import { CORRECTION_FIELDS, DUPLICATE_FIELDS, type FieldMap, type ParsedExpRow } from "./types";
-import { neutralizeFinalControls, assertSafeToClick } from "./guards";
+import { CORRECTION_FIELDS, DUPLICATE_FIELDS, type FieldMap, type ParsedExpRow, type ExpKind } from "./types";
+import { neutralizeFinalControls, assertSafeToClick, type ClickPolicy } from "./guards";
 import { validateCapturedPdf } from "./pdf";
 import { parsePdfText } from "@/server/pdf/parse-pdf";
 import { CORRECTION_STEPS, DUPLICATE_STEPS } from "./progress";
@@ -90,39 +90,39 @@ async function clickSearch(page: Page): Promise<void> {
 }
 
 /**
- * Click the form's **Update** button and confirm the portal accepted it. Only
- * ever reached when EXP_AUTO_UPDATE is on. Targets the control whose exact label
- * / value is "Update" (or APEX #UPDATE / request:'UPDATE'), never Acknowledge,
- * Submit, Save, or a field like "Update Remarks". A row is reported updated ONLY
- * on a positive portal success signal; an ambiguous response is a failure (we
- * never mark a row updated merely because the button was clicked).
+ * Click the form's **Apply Changes** save button and confirm the portal accepted
+ * it. Only ever reached when policy.allowApply is on (EXP_AUTO_UPDATE). Targets a
+ * control whose label/value contains "Apply" (the portal's "Apply Changes"), or
+ * APEX #APPLY / request:'APPLY…', never Submit / Save / Update / Acknowledge. A
+ * row is reported updated ONLY on a positive portal success signal; an ambiguous
+ * response is a failure (never marked updated merely because the button clicked).
  */
-async function clickUpdateAndConfirm(page: Page): Promise<{ ok: boolean; message: string }> {
-  const token = `ucpupd_${Math.random().toString(36).slice(2, 10)}`;
+async function clickApplyAndConfirm(page: Page, policy: ClickPolicy): Promise<{ ok: boolean; message: string }> {
+  const token = `ucpapply_${Math.random().toString(36).slice(2, 10)}`;
   const tagged = await page.evaluate((tk) => {
-    const ackRe = /\b(acknowledge|acknowledgement|approve|confirm|submit|save)\b/i;
-    const isExactUpdate = (s: string) => /^\s*update\s*$/i.test(s || "");
+    const hardRe = /\b(submit|save|approve|confirm|process|delete|update|acknowledge|acknowledgement)\b/i;
+    const applyRe = /\bapply\b/i; // "Apply Changes" / "Apply"
     const cands = Array.from(document.querySelectorAll("button, input[type=submit], input[type=button], a")) as HTMLElement[];
     const pick = cands.find((el) => {
       const value = (el as HTMLInputElement).value || "";
       const text = el.textContent || "";
       const id = el.id || "";
       const href = el.getAttribute("href") || "";
-      if (ackRe.test(value) || ackRe.test(text)) return false; // never acknowledge/submit/save
-      if (isExactUpdate(value) || isExactUpdate(text)) return true;
-      if (/^UPDATE$/i.test(id)) return true;
-      if (/request:'UPDATE'|'UPDATE'/.test(href)) return true;
+      if (hardRe.test(value) || hardRe.test(text)) return false; // never submit/save/update/acknowledge
+      if (applyRe.test(value) || applyRe.test(text)) return true;
+      if (/^APPLY/i.test(id)) return true;
+      if (/request:'APPLY/i.test(href)) return true;
       return false;
     });
     if (!pick) return false;
-    pick.setAttribute("data-ucp-update", tk);
+    pick.setAttribute("data-ucp-apply", tk);
     return true;
   }, token);
-  if (!tagged) return { ok: false, message: "The Update button was not found on the form." };
+  if (!tagged) return { ok: false, message: "The 'Apply Changes' button was not found on the form." };
 
-  const loc = page.locator(`[data-ucp-update="${token}"]`).first();
+  const loc = page.locator(`[data-ucp-apply="${token}"]`).first();
   try {
-    await assertSafeToClick(loc, "Update", true); // allowUpdate = true (opt-in only)
+    await assertSafeToClick(loc, "Apply Changes", policy);
   } catch (e) {
     return { ok: false, message: (e as Error).message };
   }
@@ -132,6 +132,49 @@ async function clickUpdateAndConfirm(page: Page): Promise<{ ok: boolean; message
   ]);
   await page.waitForTimeout(1500);
   return readUpdateResult(page);
+}
+
+/**
+ * Duplicate EXP Reporting only: tick the "Acknowledge/Duplicate Export" checkbox
+ * ("Click for Acknowledgement") before Apply Changes. Reached ONLY when
+ * policy.allowAcknowledge is on (EXP_AUTO_ACKNOWLEDGE). Locates the checkbox by
+ * APEX id (DUP_FLAG / ACKNOWLEDGE / DUPLICATE_EXPORT) or its label text, ticks it
+ * if not already ticked, and verifies the checked state afterwards.
+ */
+async function tickAcknowledge(page: Page): Promise<{ ok: boolean; message: string }> {
+  const token = `ucpack_${Math.random().toString(36).slice(2, 10)}`;
+  const res = await page.evaluate((tk) => {
+    const boxes = Array.from(document.querySelectorAll("input[type=checkbox]")) as HTMLInputElement[];
+    const match = (el: HTMLInputElement) => {
+      const id = el.id || "";
+      if (/DUP_FLAG|ACKNOWLEDGE|DUPLICATE_EXPORT/i.test(id)) return true;
+      const lab = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+      const t = lab?.textContent || "";
+      return /acknowledge|duplicate export|click for acknowledgement/i.test(t);
+    };
+    const cb = boxes.find(match);
+    if (!cb) return { found: false, checked: false };
+    cb.setAttribute("data-ucp-ack", tk);
+    return { found: true, checked: cb.checked };
+  }, token);
+  if (!res.found) return { ok: false, message: "The 'Acknowledge/Duplicate Export' checkbox was not found on the form." };
+
+  const loc = page.locator(`[data-ucp-ack="${token}"]`).first();
+  try {
+    await assertSafeToClick(loc, "Acknowledge", { allowAcknowledge: true });
+  } catch (e) {
+    return { ok: false, message: (e as Error).message };
+  }
+  if (!res.checked) {
+    await loc.check({ timeout: 5000 }).catch(async () => {
+      await loc.click({ timeout: 5000 }).catch(() => undefined);
+    });
+  }
+  await page.waitForTimeout(400);
+  const nowChecked = await loc.isChecked().catch(() => false);
+  return nowChecked
+    ? { ok: true, message: "Acknowledge/Duplicate Export ticked." }
+    : { ok: false, message: "Could not tick the Acknowledge/Duplicate Export checkbox." };
 }
 
 /** Read the portal's response to an Update — success ONLY on a positive signal. */
@@ -266,9 +309,18 @@ async function runFormFill(
   fields: typeof CORRECTION_FIELDS,
   steps: readonly string[],
   openForm: (p: Page) => Promise<boolean>,
+  kind: ExpKind,
   onProgress?: ProgressFn,
 ): Promise<ExpRowResult> {
   const emit = async (s: string, d?: string) => { try { await onProgress?.(s, d); } catch { /* best-effort */ } };
+
+  // What the bot may click on the live portal, from the opt-in env flags. Apply
+  // (EXP_AUTO_UPDATE) unlocks "Apply Changes"; Acknowledge (EXP_AUTO_ACKNOWLEDGE,
+  // duplicate only, and only with Apply on) unlocks the acknowledge checkbox.
+  const policy: ClickPolicy = {
+    allowApply: env.EXP_AUTO_UPDATE,
+    allowAcknowledge: env.EXP_AUTO_UPDATE && env.EXP_AUTO_ACKNOWLEDGE && kind === "duplicate",
+  };
 
   return serializeExpRun(async () => {
     let auth: AuthResult = { outcome: "CONFIG_MISSING", message: "" };
@@ -319,8 +371,8 @@ async function runFormFill(
       // written (by APEX id, else edit-region label) regardless of its current
       // portal value; blank Excel values are left untouched; unparseable dates are
       // skipped and logged. Nothing is ever submitted (see guards.ts).
-      await emit("Filling Form", env.EXP_AUTO_UPDATE ? "Filling the Edit/Update form from the Excel row." : "Filling the Edit/Update form from the Excel row (never submitted).");
-      await neutralizeFinalControls(page, { allowUpdate: env.EXP_AUTO_UPDATE });
+      await emit("Filling Form", policy.allowApply ? "Filling the Edit/Update form from the Excel row." : "Filling the Edit/Update form from the Excel row (never submitted).");
+      await neutralizeFinalControls(page, policy);
       const written: { f: FieldMap; excel: string }[] = [];
       const failed: string[] = [];
       for (const f of fields) {
@@ -364,29 +416,40 @@ async function runFormFill(
         if (!okv) { notConfirmed++; await emit("Filling Form", `Not confirmed — ${f.portalLabel}: wrote "${excel}", form shows "${portal}".`); }
         confirmed.push({ key: f.key, portalLabel: f.portalLabel, excel, portal });
       }
-      await neutralizeFinalControls(page, { allowUpdate: env.EXP_AUTO_UPDATE });
+      await neutralizeFinalControls(page, policy);
 
       const parts = [`Filled ${written.length} field(s) from Excel`];
       if (notConfirmed) parts.push(`${notConfirmed} not confirmed`);
       if (failed.length) parts.push(`${failed.length} could not be filled`);
 
-      // OPT-IN auto-Update (EXP_AUTO_UPDATE): click the form's Update button and
-      // confirm the portal accepted it. Never Acknowledge. A row is "updated" only
-      // on a positive portal success signal — never just because Update was clicked.
-      if (env.EXP_AUTO_UPDATE) {
+      // OPT-IN auto-apply (EXP_AUTO_UPDATE): for Duplicate with EXP_AUTO_ACKNOWLEDGE
+      // also tick Acknowledge/Duplicate Export first, then click Apply Changes and
+      // confirm the portal accepted it. A row is "updated" only on a positive portal
+      // success signal — never just because the button was clicked.
+      if (policy.allowApply) {
         if (written.length === 0) {
-          await emit("Update skipped", `${parts.join(", ")}. Nothing was written from Excel, so Update was not clicked.`);
-          return { ...base("UPDATE_FAILED", `No fields were written from Excel; Update was not attempted.`, auth), mismatchedFields: confirmed, portalValues: {} };
+          await emit("Apply skipped", `${parts.join(", ")}. Nothing was written from Excel, so Apply Changes was not clicked.`);
+          return { ...base("UPDATE_FAILED", `No fields were written from Excel; Apply Changes was not attempted.`, auth), mismatchedFields: confirmed, portalValues: {} };
         }
-        await emit("Updating record", "Clicking Update and waiting for the portal to confirm.");
-        const upd = await clickUpdateAndConfirm(page);
-        await neutralizeFinalControls(page, { allowUpdate: false }); // re-harden after the attempt
+        if (policy.allowAcknowledge) {
+          await emit("Acknowledging", "Ticking Acknowledge/Duplicate Export before applying.");
+          const ack = await tickAcknowledge(page);
+          if (!ack.ok) {
+            await neutralizeFinalControls(page, {}); // re-harden
+            await emit("Acknowledge failed", ack.message);
+            return { ...base("UPDATE_FAILED", `${parts.join(", ")}; ${ack.message} Apply Changes was not clicked.`, auth), mismatchedFields: confirmed, portalValues: {} };
+          }
+          await emit("Acknowledged", ack.message);
+        }
+        await emit("Applying changes", "Clicking Apply Changes and waiting for the portal to confirm.");
+        const upd = await clickApplyAndConfirm(page, policy);
+        await neutralizeFinalControls(page, {}); // re-harden after the attempt
         if (upd.ok) {
-          await emit("Update confirmed", `${parts.join(", ")}. ${upd.message}`);
-          return { ...base("UPDATED", `${parts.join(", ")}; Update submitted and confirmed by the portal: ${upd.message}`, auth), ok: true, mismatchedFields: confirmed, portalValues: {} };
+          await emit("Apply confirmed", `${parts.join(", ")}. ${upd.message}`);
+          return { ...base("UPDATED", `${parts.join(", ")}; Apply Changes submitted and confirmed by the portal: ${upd.message}`, auth), ok: true, mismatchedFields: confirmed, portalValues: {} };
         }
-        await emit("Update failed", upd.message);
-        return { ...base("UPDATE_FAILED", `${parts.join(", ")}; the Update was not confirmed: ${upd.message}`, auth), mismatchedFields: confirmed, portalValues: {} };
+        await emit("Apply failed", upd.message);
+        return { ...base("UPDATE_FAILED", `${parts.join(", ")}; Apply Changes was not confirmed: ${upd.message}`, auth), mismatchedFields: confirmed, portalValues: {} };
       }
 
       await emit("Form Filled", `${parts.join(", ")}. Review and submit it yourself in the visible browser.`);
@@ -404,12 +467,12 @@ async function runFormFill(
 
 export function runCorrection(row: ParsedExpRow, onProgress?: ProgressFn): Promise<ExpRowResult> {
   // Correction and Duplicate use the SAME logic: fill every mapped field from Excel.
-  return runFormFill(row, CORRECTION_FIELDS, CORRECTION_STEPS, openCorrectionForm, onProgress);
+  return runFormFill(row, CORRECTION_FIELDS, CORRECTION_STEPS, openCorrectionForm, "correction", onProgress);
 }
 
 export function runDuplicate(row: ParsedExpRow, onProgress?: ProgressFn): Promise<ExpRowResult> {
   // Identical to Correction: fill the Export Acknowledgement form directly from Excel (no comparison).
-  return runFormFill(row, DUPLICATE_FIELDS, DUPLICATE_STEPS, openDuplicateForm, onProgress);
+  return runFormFill(row, DUPLICATE_FIELDS, DUPLICATE_STEPS, openDuplicateForm, "duplicate", onProgress);
 }
 
 /** Click a labelled control (link / button / input) — flexible, visible-only, guarded. Never submits. */

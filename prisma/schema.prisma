@@ -1195,3 +1195,19 @@ model ExpJobRowEvent {
 
   @@index([rowId, createdAt])
 }
+
+// ---------------------------------------------------------------------------
+// Portal credentials (encrypted at rest) — managed from the UCP frontend so the
+// password can be rotated without a redeploy. `secretEnc` is an AES-256-GCM
+// base64 blob (see src/lib/crypto.ts); the plaintext password is NEVER stored,
+// logged, or returned to the client. One row per portal (e.g. "exp").
+// ---------------------------------------------------------------------------
+model PortalCredential {
+  id        String   @id @default(cuid())
+  portal    String   @unique // "exp" | (future: "damco" | "container" | …)
+  username  String   @default("")
+  secretEnc String   @default("") // AES-256-GCM base64 blob, never plaintext
+  updatedBy String   @default("") // actor who last saved it (audit/display)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

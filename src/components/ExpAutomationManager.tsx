@@ -3,11 +3,18 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { processExpRowsAction, retryExpRowAction, updateExpRowAction } from "@/app/actions/exp";
+import { processExpRowsAction, retryExpRowAction, updateExpRowAction, saveExpCredentialsAction } from "@/app/actions/exp";
 import { fieldsForKind } from "@/server/exp-automation/types";
 import { StopProcessButton } from "@/components/StopProcessButton";
 
 export type ExpKind = "correction" | "duplicate" | "download";
+
+export interface ExpCredStatusView {
+  source: "store" | "env" | "none";
+  username: string;
+  updatedAt: string | null;
+  updatedBy: string | null;
+}
 
 export interface ExpRecentJob {
   id: string;
@@ -61,8 +68,8 @@ interface JobStatus {
 }
 
 const TABS: { kind: ExpKind; label: string; blurb: string }[] = [
-  { kind: "correction", label: "Issued EXP Correction", blurb: "Search each record and fill the Edit/Update EXP form from your Excel row. The form is never submitted — you review and submit it yourself." },
-  { kind: "duplicate", label: "Duplicate EXP Reporting", blurb: "Search each record and fill the Export Acknowledgement form from your Excel row (same as Correction). The acknowledgement is never clicked — left ready for your review." },
+  { kind: "correction", label: "Issued EXP Correction", blurb: "Search each record, fill the Edit/Update EXP form from your Excel row, and read every field back to confirm it. The banner above shows whether it stops for your review or applies the changes." },
+  { kind: "duplicate", label: "Duplicate EXP Reporting", blurb: "Search each record, fill the Export Acknowledgement form from your Excel row, and read every field back to confirm it. The banner above shows whether it stops for your review or applies/acknowledges." },
   { kind: "download", label: "Download EXP", blurb: "Search each EXP by AD Code + Serial + Year, verify the EXP No, and download the EXP PDF named by your Save_As value." },
 ];
 
@@ -127,7 +134,7 @@ function writeSession(k: string, v: string | null): void {
   try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch { /* storage unavailable */ }
 }
 
-function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, openJobId, onOpened }: { kind: ExpKind; liveEnabled: boolean; credsConfigured: boolean; onHistoryChange: () => void; openJobId: string | null; onOpened: () => void }) {
+function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAcknowledge, onHistoryChange, openJobId, onOpened }: { kind: ExpKind; liveEnabled: boolean; credsConfigured: boolean; autoApply: boolean; autoAcknowledge: boolean; onHistoryChange: () => void; openJobId: string | null; onOpened: () => void }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -337,10 +344,16 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
           <code> .env</code> to drive the real portal. You can still upload and preview; no result is ever fabricated.
         </div>
       ) : (
-        <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300">
+        <div className={`rounded-md border p-3 text-xs ${autoApply && !isDownload ? "border-amber-300 bg-amber-50 text-amber-800 dark:border-amber-700/60 dark:bg-amber-900/20 dark:text-amber-200" : "border-slate-200 bg-slate-50 text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>
           Live automation is <strong>on</strong>. A visible browser opens on the server and drives the EXP portal one record at a time.
-          Sign-in is {credsConfigured ? "configured" : <strong>not configured — set EXP_USERNAME/EXP_PASSWORD</strong>}.
-          {!isDownload ? <> The form is <strong>filled from Excel and read back to confirm</strong>; the bot never clicks Update / Submit / Acknowledge.</> : null}
+          Sign-in is {credsConfigured ? "configured" : <strong>not configured — set it in the Credentials panel</strong>}.
+          {!isDownload ? (
+            autoApply ? (
+              <> Each form is <strong>filled from Excel, read back to confirm</strong>, then <strong>Apply Changes is clicked</strong>{autoAcknowledge && kind === "duplicate" ? <> and the <strong>Acknowledge/Duplicate Export</strong> checkbox is ticked</> : null}; a row is marked done only when the portal confirms success.</>
+            ) : (
+              <> Each form is <strong>filled from Excel and read back to confirm</strong>, then left for your review — the bot does not click Apply Changes or Acknowledge.</>
+            )
+          ) : null}
         </div>
       )}
 
@@ -558,7 +571,68 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, onHistoryChange, op
   );
 }
 
-export function ExpAutomationManager({ liveEnabled, credsConfigured, recentJobs }: { liveEnabled: boolean; credsConfigured: boolean; recentJobs: ExpRecentJob[] }) {
+/** Admin/Commercial-only panel to view + update the EXP portal sign-in. The
+ *  password is write-only: it is never sent to the browser, only submitted. */
+function CredentialsPanel({ status }: { status: ExpCredStatusView }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [username, setUsername] = useState(status.username ?? "");
+  const [password, setPassword] = useState("");
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+
+  function save() {
+    setMsg(null); setErr(null);
+    if (!username.trim()) { setErr("Enter the EXP portal username."); return; }
+    if (!password) { setErr("Enter the new EXP portal password."); return; }
+    startTransition(async () => {
+      const res = await saveExpCredentialsAction({ username: username.trim(), password });
+      if (res.error) { setErr(res.error); return; }
+      setPassword("");
+      setMsg(res.message ?? "Saved.");
+      router.refresh();
+    });
+  }
+
+  const sourceLabel =
+    status.source === "store" ? "Saved in UCP (encrypted)" : status.source === "env" ? "From server .env (fallback)" : "Not set";
+
+  return (
+    <div className="card p-4">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between text-left">
+        <span className="text-sm font-semibold text-slate-800 dark:text-slate-100">EXP portal credentials</span>
+        <span className="text-xs text-slate-500">
+          {status.source === "none" ? <span className="text-rose-600">Not configured</span> : <>User <code className="font-mono">{status.username || "—"}</code> · {sourceLabel}</>} · {open ? "Hide" : "Manage"}
+        </span>
+      </button>
+      {open ? (
+        <div className="mt-3 space-y-3 border-t border-slate-100 pt-3 dark:border-slate-700">
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Update the username/password used by every EXP automation run. Stored encrypted; the password is never shown again or written to logs.
+            Saving it signs the current session out so the next run uses the new password.
+            {status.updatedAt ? <> Last updated {status.updatedAt.slice(0, 16).replace("T", " ")}{status.updatedBy ? ` by ${status.updatedBy}` : ""}.</> : null}
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <label className="text-xs text-slate-600 dark:text-slate-300">
+              <span className="mb-1 block font-semibold">Username</span>
+              <input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" className="w-56 rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+            </label>
+            <label className="text-xs text-slate-600 dark:text-slate-300">
+              <span className="mb-1 block font-semibold">New password</span>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" placeholder={status.source !== "none" ? "•••••••• (leave to keep)" : ""} className="w-56 rounded border border-slate-300 px-2 py-1 text-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100" />
+            </label>
+            <button onClick={save} disabled={pending} className="btn-primary btn-sm disabled:opacity-40">{pending ? "Saving…" : "Save credentials"}</button>
+          </div>
+          {err ? <div className="rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">{err}</div> : null}
+          {msg ? <div className="rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700">{msg}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export function ExpAutomationManager({ liveEnabled, credsConfigured, canManageCreds, credStatus, autoApply, autoAcknowledge, recentJobs }: { liveEnabled: boolean; credsConfigured: boolean; canManageCreds: boolean; credStatus: ExpCredStatusView; autoApply: boolean; autoAcknowledge: boolean; recentJobs: ExpRecentJob[] }) {
   const router = useRouter();
   const [tab, setTab] = useState<ExpKind>("correction");
   const [historyFilter, setHistoryFilter] = useState<string>("all");
@@ -574,6 +648,8 @@ export function ExpAutomationManager({ liveEnabled, credsConfigured, recentJobs 
 
   return (
     <div className="space-y-6">
+      {canManageCreds ? <CredentialsPanel status={credStatus} /> : null}
+
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200">
         {TABS.map((t) => (
           <button
@@ -586,7 +662,7 @@ export function ExpAutomationManager({ liveEnabled, credsConfigured, recentJobs 
         ))}
       </div>
 
-      <WorkflowPanel key={tab} kind={tab} liveEnabled={liveEnabled} credsConfigured={credsConfigured} onHistoryChange={() => router.refresh()} openJobId={openJobId} onOpened={() => setOpenJobId(null)} />
+      <WorkflowPanel key={tab} kind={tab} liveEnabled={liveEnabled} credsConfigured={credsConfigured} autoApply={autoApply} autoAcknowledge={autoAcknowledge} onHistoryChange={() => router.refresh()} openJobId={openJobId} onOpened={() => setOpenJobId(null)} />
 
       <div className="card">
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
@@ -639,8 +715,11 @@ export function ExpAutomationManager({ liveEnabled, credsConfigured, recentJobs 
       </div>
 
       <p className="text-[11px] text-slate-400">
-        Safety: the Correction and Duplicate workflows search and fill the portal form, then stop — the bot never clicks Update, Submit or
-        Acknowledge. Review each prepared form in the visible browser and submit it yourself.{" "}
+        {autoApply ? (
+          <>Auto-apply is <strong>on</strong>: after filling and reading every field back, the Correction and Duplicate workflows click <strong>Apply Changes</strong>{autoAcknowledge ? <> and tick <strong>Acknowledge/Duplicate Export</strong></> : null} on the live portal, and a row is marked done only when the portal confirms success. Watch the visible browser and keep the Excel row as the source of truth.</>
+        ) : (
+          <>Safety: the Correction and Duplicate workflows search and fill the portal form, then stop — the bot does not click Apply Changes or Acknowledge. Review each prepared form in the visible browser and submit it yourself.</>
+        )}{" "}
         <Link href="/modules/exp-automation" className="hidden">.</Link>
       </p>
     </div>

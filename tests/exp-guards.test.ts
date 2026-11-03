@@ -2,30 +2,40 @@ import { describe, it, expect } from "vitest";
 import { isForbiddenActionLabel } from "@/server/exp-automation/guards";
 
 /**
- * Safety guard for the EXP auto-Update feature (EXP_AUTO_UPDATE). The bot may
- * click **Update** only when opted in, and must NEVER click Acknowledge / final
- * actions regardless of the flag.
+ * Submit-safety guard for the EXP workflows. Two final actions can be unlocked,
+ * each by its own opt-in policy flag:
+ *   - allowApply       → the "Apply Changes" save button (EXP_AUTO_UPDATE)
+ *   - allowAcknowledge → the "Acknowledge/Duplicate Export" checkbox (EXP_AUTO_ACKNOWLEDGE)
+ * Everything else (Submit/Save/Approve/Confirm/Process/Delete/Update) is always forbidden.
  */
 describe("EXP submit guard — isForbiddenActionLabel", () => {
-  it("never allows Acknowledge / final actions, flag on or off", () => {
-    for (const label of ["Acknowledge", "Click for Acknowledgement", "Submit", "Save", "Approve", "Confirm", "Process", "Delete"]) {
-      expect(isForbiddenActionLabel(label, false)).toBe(true);
-      expect(isForbiddenActionLabel(label, true)).toBe(true); // allowUpdate must NOT unlock these
+  it("never allows hard final actions, whatever the policy", () => {
+    const policies = [{}, { allowApply: true }, { allowAcknowledge: true }, { allowApply: true, allowAcknowledge: true }];
+    for (const label of ["Submit", "Save", "Approve", "Confirm", "Process", "Delete", "Update", "Update Remarks"]) {
+      for (const p of policies) expect(isForbiddenActionLabel(label, p)).toBe(true);
     }
   });
 
-  it("forbids Update by default, allows it only when opted in", () => {
-    expect(isForbiddenActionLabel("Update", false)).toBe(true);
-    expect(isForbiddenActionLabel("Update", true)).toBe(false);
-    // 'Update Remarks' is an update-ish label: forbidden by default, permitted only under the flag
-    expect(isForbiddenActionLabel("Update Remarks", false)).toBe(true);
-    expect(isForbiddenActionLabel("Update Remarks", true)).toBe(false);
+  it("gates Apply Changes behind allowApply only", () => {
+    for (const label of ["Apply Changes", "Apply"]) {
+      expect(isForbiddenActionLabel(label, {})).toBe(true);
+      expect(isForbiddenActionLabel(label, { allowAcknowledge: true })).toBe(true); // ack flag must not unlock apply
+      expect(isForbiddenActionLabel(label, { allowApply: true })).toBe(false);
+    }
   });
 
-  it("allows benign navigation controls", () => {
+  it("gates Acknowledge behind allowAcknowledge only", () => {
+    for (const label of ["Acknowledge", "Click for Acknowledgement", "Acknowledge/Duplicate Export"]) {
+      expect(isForbiddenActionLabel(label, {})).toBe(true);
+      expect(isForbiddenActionLabel(label, { allowApply: true })).toBe(true); // apply flag must not unlock ack
+      expect(isForbiddenActionLabel(label, { allowAcknowledge: true })).toBe(false);
+    }
+  });
+
+  it("allows benign navigation controls under any policy", () => {
     for (const label of ["Search", "Back", "Home", "Print EXP", ""]) {
-      expect(isForbiddenActionLabel(label, false)).toBe(false);
-      expect(isForbiddenActionLabel(label, true)).toBe(false);
+      expect(isForbiddenActionLabel(label, {})).toBe(false);
+      expect(isForbiddenActionLabel(label, { allowApply: true, allowAcknowledge: true })).toBe(false);
     }
   });
 });

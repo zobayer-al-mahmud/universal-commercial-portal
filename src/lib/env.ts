@@ -187,15 +187,31 @@ const schema = z.object({
   // FILL and VERIFY the form only — a final Update/Submit/Acknowledge is never
   // performed by the bot (hard-coded; no flag enables it).
   EXP_PORTAL_URL: z.string().default("https://exp.bb.org.bd/ords/f?p=112:LOGIN:0:::::"),
+  // Fallback credentials. The PREFERRED source is the DB credential store
+  // (managed in the EXP Automation → Credentials panel, encrypted at rest); these
+  // env values are used only when the store is empty, so an existing deployment
+  // keeps working until the operator saves credentials in the UI.
   EXP_USERNAME: z.string().optional().or(z.literal("")),
   EXP_PASSWORD: z.string().optional().or(z.literal("")),
+  // Optional dedicated key for encrypting stored portal passwords. When unset the
+  // key is derived from AUTH_SECRET. Set a stable value on prod (>=16 chars) so
+  // rotating AUTH_SECRET never orphans already-encrypted credentials.
+  EXP_CRED_KEY: z.string().optional().or(z.literal("")),
   EXP_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
-  // OPT-IN: when true, the Correction + Duplicate workflows click the form's
-  // **Update** button after filling + read-back, then CONFIRM the portal's actual
-  // success before marking the row "updated". OFF by default — the bot otherwise
-  // fills and stops (manual submit). It never clicks Acknowledge / final-action
-  // controls (see guards.ts); only the Update/save is automated.
+  // OPT-IN (default OFF): when true, the Correction + Duplicate workflows click the
+  // form's **Apply Changes** save button after filling + a full read-back, then
+  // CONFIRM the portal's actual success before marking the row "updated". OFF by
+  // default — the bot otherwise fills and stops for manual submission. By itself
+  // this does NOT tick the Duplicate "Acknowledge/Duplicate Export" checkbox; that
+  // is a separate opt-in (EXP_AUTO_ACKNOWLEDGE) because it is the irreversible
+  // central-bank acknowledgement. See guards.ts for the click-safety allow-list.
   EXP_AUTO_UPDATE: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // OPT-IN (default OFF): for Duplicate EXP Reporting only, tick the
+  // "Acknowledge/Duplicate Export" checkbox (and set the Acknowledge date) before
+  // Apply Changes. Requires EXP_AUTO_UPDATE to also be on (acknowledge without a
+  // save is meaningless). This performs the final, irreversible acknowledgement —
+  // keep OFF until an operator has validated the fill live.
+  EXP_AUTO_ACKNOWLEDGE: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Visible browser for the automation (own CDP port + profile so it never
   // clashes with the Damco/Container windows).
   EXP_BROWSER_PATH: z.string().optional().or(z.literal("")),

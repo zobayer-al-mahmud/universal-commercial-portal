@@ -13,6 +13,7 @@ import { listRootFolders } from "@/server/pdf-combiner/folders";
 import { ensureActiveMaster, readActiveMasterBytes, extractMatrixGrid } from "@/server/pdf-combiner/master-store";
 import { parseMatrixGrid } from "@/server/pdf-combiner/parse-matrix";
 import { getSessionUser } from "@/lib/auth";
+import { getExpCredentialStatus } from "@/server/exp-automation/credentials";
 import { env } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
@@ -162,6 +163,10 @@ export default async function ModulePage({ params }: { params: { key: string } }
   }
 
   if (module.key === "exp-automation") {
+    const user = await getSessionUser();
+    const role = (user?.role ?? "").toUpperCase();
+    const canManageCreds = role === "ADMIN" || role === "COMMERCIAL";
+    const credStatus = await getExpCredentialStatus();
     const jobs = await prisma.expJob.findMany({ orderBy: { createdAt: "desc" }, take: 30 });
     const recentJobs: ExpRecentJob[] = jobs.map((j) => ({
       id: j.id,
@@ -177,16 +182,24 @@ export default async function ModulePage({ params }: { params: { key: string } }
       hasFile: Boolean(j.storedPath),
       createdAt: j.createdAt.toISOString().slice(0, 16).replace("T", " "),
     }));
+    // When auto-submit is on the forms ARE applied/acknowledged on the live portal;
+    // the UI copy reflects whichever posture is configured.
+    const autoApply = env.EXP_AUTO_UPDATE;
+    const autoAcknowledge = env.EXP_AUTO_UPDATE && env.EXP_AUTO_ACKNOWLEDGE;
     return (
       <div>
         <PageHeader
           title="EXP Automation"
-          subtitle="Bangladesh Bank EXP portal — fill Issued EXP Correction and Duplicate EXP Reporting forms from Excel (never submits), and bulk-download EXP PDFs from Excel."
+          subtitle="Bangladesh Bank EXP portal — fill Issued EXP Correction and Duplicate EXP Reporting forms from Excel, and bulk-download EXP PDFs from Excel."
           actions={<StatusBadge status={module.status} />}
         />
         <ExpAutomationManager
           liveEnabled={env.EXP_LIVE_ENABLED}
-          credsConfigured={Boolean(env.EXP_USERNAME && env.EXP_PASSWORD)}
+          credsConfigured={credStatus.configured}
+          canManageCreds={canManageCreds}
+          credStatus={{ source: credStatus.source, username: credStatus.username, updatedAt: credStatus.updatedAt, updatedBy: credStatus.updatedBy }}
+          autoApply={autoApply}
+          autoAcknowledge={autoAcknowledge}
           recentJobs={recentJobs}
         />
       </div>
