@@ -90,6 +90,7 @@ describe("H&M config helpers (2026-10-26 spec)", () => {
       season: "4-2026",
       customsCustomerGroup: null,
       typeOfConstruction: null,
+      creationDate: null,
     };
 
     it("produces ref + merchandiser-name when everything is present", () => {

@@ -47,7 +47,18 @@ export async function scanFolderAction(formData: FormData): Promise<void> {
   const { scanConfiguredFolder } = await import("@/server/sales-contract/scan-folder");
   try {
     const r = await scanConfiguredFolder({ contractId, folderLetter, actor: user.email });
-    console.log(`[scanFolderAction] ${folderLetter}: scanned=${r.preview.foldersFound}, imported=${r.commit.imported.length}, skipped=${r.commit.skipped.length}`);
+    console.log(
+      `[scanFolderAction] ${folderLetter}: scanned=${r.preview.foldersFound}, ` +
+      `imported=${r.commit.imported.length}, ` +
+      `updates=${r.commit.updates.length} ` +
+      `(replaced=${r.commit.updates.filter((u) => u.outcome === "replaced").length}, ` +
+      `duplicate=${r.commit.updates.filter((u) => u.outcome === "duplicate").length}, ` +
+      `rejected=${r.commit.updates.filter((u) => u.outcome === "rejected").length}), ` +
+      `skipped=${r.commit.skipped.length}`,
+    );
+    for (const u of r.commit.updates) {
+      console.log(`[scanFolderAction]   ${u.orderNo}: ${u.outcome} — ${u.message}`);
+    }
     revalidatePath(`/sales-contract/${contractId}`);
     revalidatePath("/sales-contract");
   } catch (e) {

@@ -32,7 +32,15 @@ export async function POST(req: Request, { params }: { params: { id: string } })
 
   try {
     const res = await uploadSalesContractPdfSet(params.id, files, { actor: user.email, folderLetter });
-    return NextResponse.json({ poId: res.poId, rejected: res.rejected, folderLetter });
+    return NextResponse.json({
+      poId: res.poId,
+      rejected: res.rejected,
+      folderLetter,
+      outcome: res.outcome,
+      orderNo: res.orderNo,
+      message: res.message,
+      existingContractId: res.existingContractId,
+    });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "Upload failed." }, { status: 400 });
   }

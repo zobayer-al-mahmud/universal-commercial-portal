@@ -25,6 +25,7 @@ function fakePo(overrides: Partial<SalesContractPoExtract> = {}): SalesContractP
       season: "4-2026",
       customsCustomerGroup: "Boys",
       typeOfConstruction: "Woven",
+      creationDate: null,
     },
     countryOfProduction: null, countryOfDelivery: null, countryOfOrigin: null,
     termsOfPayment: null, salesMode: null, noOfPieces: null,
