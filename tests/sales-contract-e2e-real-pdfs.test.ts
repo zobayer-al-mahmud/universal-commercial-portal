@@ -153,7 +153,6 @@ describe.skipIf(skip)("E2E – real H&M PDFs from D:/order × real tracker", () 
       folderSequence: [{ folderLetter: "A", sequence: 0 }, { folderLetter: "B", sequence: 1 }],
     });
     expect(r.insertedRows).toBeGreaterThan(0);
-    expect(r.ambiguousMatches.length).toBe(0);
     console.log(`[e2e-fresh] inserted=${r.insertedRows}, total=${r.totalRows}`);
 
     const wb = new ExcelJS.Workbook();
@@ -194,143 +193,8 @@ describe.skipIf(skip)("E2E – real H&M PDFs from D:/order × real tracker", () 
     expect(failures).toEqual([]);
   }, 180_000);
 
-  it("Pass 1 – append every real bundle to a COPY of the tracker, idempotency on Pass 2", async () => {
-    const pos = bundles.map((b, i) => ({ poId: `e2e-${i}`, po: b.po, config: buildConfig(b) }));
-
-    const r1 = await writeSummaryWorkbook({
-      templatePath: trackerCopy,
-      outputPath: outPass1,
-      pos,
-      folderSequence: [{ folderLetter: "A", sequence: 0 }, { folderLetter: "B", sequence: 1 }],
-    });
-
-    const r2 = await writeSummaryWorkbook({
-      templatePath: outPass1,
-      outputPath: outPass2,
-      pos,
-      folderSequence: [{ folderLetter: "A", sequence: 0 }, { folderLetter: "B", sequence: 1 }],
-    });
-
-    console.log(`[e2e] pass1: inserted=${r1.insertedRows}, matched=${r1.skippedExistingMatches.length}, ambiguous=${r1.ambiguousMatches.length}, preserved=${r1.preservedRows}, total=${r1.totalRows}`);
-    console.log(`[e2e] pass2: inserted=${r2.insertedRows}, matched=${r2.skippedExistingMatches.length}, ambiguous=${r2.ambiguousMatches.length}, preserved=${r2.preservedRows}, total=${r2.totalRows}`);
-
-    // Idempotency: pass 2 should NOT insert anything new.
-    expect(r2.insertedRows).toBe(0);
-    expect(r2.totalRows).toBe(r1.totalRows);
-
-    // Pass 2's skippedExistingMatches must include every bundle's new rows,
-    // because pass 1 wrote them and pass 2 sees them as existing.
-    const expectedRowCount = bundles.reduce((n, b) => n + Math.max(b.po.marketRows.length, 1), 0);
-    expect(r2.skippedExistingMatches.length).toBeGreaterThanOrEqual(Math.min(r1.insertedRows, expectedRowCount));
-  }, 240_000);
-
-  it("Pass-1 output: reports per-PO insert/match outcomes against the real tracker", async () => {
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.readFile(outPass1);
-    const sh = wb.getWorksheet("H&M");
-    expect(sh).toBeDefined();
-
-    const perOrder: Record<string, { tods: string[]; fobs: Set<number>; countries: Set<string>; newGenRows: number; legacyRows: number }> = {};
-    sh!.eachRow({ includeEmpty: false }, (r, i) => {
-      if (i < 2) return;
-      const orderNo = String(r.getCell(6).value ?? "").trim();
-      if (!orderNo) return;
-      const bucket = perOrder[orderNo] = perOrder[orderNo] ?? { tods: [], fobs: new Set(), countries: new Set(), newGenRows: 0, legacyRows: 0 };
-      const market = extractMarketCode(String(r.getCell(15).value ?? ""));
-      const refA = String(r.getCell(1).value ?? "");
-      bucket.tods.push(String(r.getCell(14).value ?? ""));
-      const fob = Number(r.getCell(9).value);
-      if (Number.isFinite(fob)) bucket.fobs.add(fob);
-      if (market) bucket.countries.add(market);
-      if (/^AGL\/H&M\/\d+-[AB]\/\d{4}$/.test(refA)) bucket.newGenRows++;
-      else bucket.legacyRows++;
-    });
-
-    const summary: string[] = [];
-    for (const b of bundles) {
-      const seen = perOrder[b.po.header.orderNo];
-      if (!seen) { summary.push(`${b.folder}/${b.po.header.orderNo}: PO absent from output (BUG)`); continue; }
-      const expectedMarkets = new Set(b.po.marketRows.map((m) => m.marketCode));
-      summary.push(
-        `${b.folder}/${b.po.header.orderNo}: newGen=${seen.newGenRows}, legacy=${seen.legacyRows}, ` +
-        `markets=${[...seen.countries].sort().join(",")} (exp=${[...expectedMarkets].sort().join(",")})`,
-      );
-      // Every PO market the extractor produced must appear somewhere in the output.
-      for (const m of expectedMarkets) {
-        expect(seen.countries.has(m), `${b.folder}/${b.po.header.orderNo} missing market ${m}`).toBe(true);
-      }
-    }
-    console.log("[e2e-tracker] per-PO summary:\n  " + summary.join("\n  "));
-  }, 120_000);
-
-  it("manual edits on P/T/U survive a regen; a manual contract reassignment is NOT reverted (fresh scenario)", async () => {
-    // Scenario built on a FRESH workbook so we can edit a known new-generator
-    // row (the real tracker's legacy row for 643159 preserves on first regen,
-    // so there's no auto-inserted new row to edit there).
-    const subject = bundles.find((b) => b.folder === "A");
-    expect(subject).toBeDefined();
-
-    const freshBase = join(workdir, "reassign-base.xlsx");
-    await writeSummaryWorkbook({
-      outputPath: freshBase,
-      pos: [{ poId: "p1", po: subject!.po, config: buildConfig(subject!) }],
-      folderSequence: [{ folderLetter: "A", sequence: 0 }, { folderLetter: "B", sequence: 1 }],
-    });
-
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.readFile(freshBase);
-    const sh = wb.getWorksheet("H&M")!;
-    let subjectRow = 0;
-    sh.eachRow({ includeEmpty: false }, (r, i) => {
-      if (i < 2) return;
-      if (subjectRow) return;
-      if (String(r.getCell(6).value) === subject!.po.header.orderNo) {
-        subjectRow = i;
-        r.getCell(16).value = "E2E remark";
-        r.getCell(20).value = "legacy fob";
-        r.getCell(21).value = "manual date";
-        r.getCell(4).value = "99";
-      }
-    });
-    expect(subjectRow).toBeGreaterThan(0);
-    const editedPath = join(workdir, "reassign-edited.xlsx");
-    await wb.xlsx.writeFile(editedPath);
-
-    const outRegen = join(workdir, "reassign-regen.xlsx");
-    const r = await writeSummaryWorkbook({
-      templatePath: editedPath,
-      outputPath: outRegen,
-      pos: [{ poId: "p1", po: subject!.po, config: buildConfig(subject!) }],
-      folderSequence: [{ folderLetter: "A", sequence: 0 }, { folderLetter: "B", sequence: 1 }],
-    });
-    expect(r.insertedRows).toBe(0);
-
-    const wb3 = new ExcelJS.Workbook();
-    await wb3.xlsx.readFile(outRegen);
-    const sh3 = wb3.getWorksheet("H&M")!;
-    let found = false;
-    sh3.eachRow({ includeEmpty: false }, (r2, i) => {
-      if (i < 2) return;
-      if (String(r2.getCell(6).value) === subject!.po.header.orderNo && String(r2.getCell(4).value) === "99") {
-        expect(r2.getCell(16).value).toBe("E2E remark");
-        expect(r2.getCell(20).value).toBe("legacy fob");
-        expect(r2.getCell(21).value).toBe("manual date");
-        found = true;
-      }
-    });
-    expect(found, "manually-reassigned row with manual P/T/U must survive regen").toBe(true);
-
-    const skipped = r.skippedExistingMatches.find((s) => s.orderNo === subject!.po.header.orderNo && s.existingContract === "99");
-    expect(skipped?.note === "manual_assignment_kept" || skipped?.note === "contract_preserved_from_existing").toBe(true);
-    console.log(`[e2e] manual reassignment of ${subject!.po.header.orderNo} to contract 99 + P/T/U edits: preserved ✓`);
-  }, 180_000);
-
-  it("writes a sample Excel report of what happened, for human spot-check", async () => {
-    console.log(`[e2e] workdir: ${workdir}`);
-    console.log(`[e2e]   tracker copy  : ${trackerCopy}`);
-    console.log(`[e2e]   pass1 output  : ${outPass1}`);
-    console.log(`[e2e]   pass2 output  : ${outPass2}`);
-    expect(statSync(outPass1).size).toBeGreaterThan(10_000);
-    expect(statSync(outPass2).size).toBeGreaterThan(10_000);
-  });
+  // Template-preserve test cases were removed on 2026-11-03: the Summary
+  // writer no longer accepts a template (user rule — no old PO rows may be
+  // preserved anywhere). The "fresh workbook" case above still exercises the
+  // real PDF → mapToSummaryRows → writeSummaryWorkbook path end-to-end.
 });

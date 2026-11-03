@@ -403,6 +403,8 @@ model ShipmentScheduleRow {
   expectedDelivery String @default("")
 
   invoiceNo String @default("") // allocated per row; manually set or auto-numbered. Globally unique when non-empty (enforced in intake/edit services; across every schedule + cut-off).
+  expNo     String @default("") // EXP number allocated per row; same uniqueness/skip-if-set rules as invoiceNo. Flows into Customs Invoice.
+  expDate   String @default("") // EXP date — manual entry only (no auto-allocation).
 
   // Source PDF file reference (file stored under STORAGE_ROOT/shipment-schedule/<scheduleId>/)
   pdfFileName String @default("")

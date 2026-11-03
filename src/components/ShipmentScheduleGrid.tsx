@@ -34,6 +34,8 @@ export interface GridRow {
   cartons: number | null;
   measurementCbm: number | null;
   invoiceNo: string;
+  expNo: string;
+  expDate: string;
   pdfFileName: string;
   matched: boolean;
   matchReason: string;
@@ -87,6 +89,8 @@ export function ShipmentScheduleGrid({
             <th className="th">HTS</th>
             <th className="th">Value</th>
             <th className="th">INVOICE</th>
+            <th className="th">EXP</th>
+            <th className="th">EXP Date</th>
             <th className="th">Country+Sub</th>
             <th className="th">Country</th>
             <th className="th">Mode</th>
@@ -135,7 +139,7 @@ function GridSection({
   return (
     <>
       <tr className="bg-sky-50">
-        <td colSpan={16} className="px-3 py-2 text-xs font-semibold text-sky-900">
+        <td colSpan={18} className="px-3 py-2 text-xs font-semibold text-sky-900">
           <div className="flex items-center justify-between">
             <span>{cutoff.label}{cutoff.date ? ` — ${cutoff.date}` : ""} · {rows.length} row(s)</span>
             {rows.length > 0 ? (
@@ -151,7 +155,7 @@ function GridSection({
       </tr>
       {rows.length === 0 ? (
         <tr>
-          <td colSpan={16} className="td text-slate-400">
+          <td colSpan={18} className="td text-slate-400">
             No PDFs uploaded against this cut-off yet.
           </td>
         </tr>
@@ -213,6 +217,8 @@ function GridDataRow({
         <td className="td">{row.hts || "—"}</td>
         <td className="td">{value || "—"}</td>
         <td className="td font-mono">{row.invoiceNo || "—"}</td>
+        <td className="td font-mono">{row.expNo || "—"}</td>
+        <td className="td text-slate-500">{row.expDate || "—"}</td>
         <td className="td font-mono text-xs">{row.marketSubCode || "—"}</td>
         <td className="td font-mono">{row.marketCode || "—"}</td>
         <td className="td">{row.transportMode || "—"}</td>
@@ -227,7 +233,7 @@ function GridDataRow({
       </tr>
       {expanded ? (
         <tr className="bg-slate-50">
-          <td colSpan={16} className="p-3">
+          <td colSpan={18} className="p-3">
             <div className="grid gap-3 text-xs sm:grid-cols-3">
               <div>
                 <div className="font-medium text-slate-500">Booking</div>

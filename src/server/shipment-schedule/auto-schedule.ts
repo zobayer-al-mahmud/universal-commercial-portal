@@ -10,7 +10,7 @@
  */
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
-import { resolveRouteForSummaryRow } from "./cutoff-router";
+import { resolveRouteForSummaryRow, type DbClient } from "./cutoff-router";
 import { resolveSummarySource } from "./summary-source";
 
 export interface AutoScheduleInput {
@@ -36,7 +36,30 @@ export interface AutoScheduleInput {
   composition?: string;
   cat?: string;
   hts?: string;
+  /**
+   * Transport mode taken from the PO's "Terms of Delivery" line, normalised to
+   * "Sea" or "Air" (user rule 2026-11-03). Lands in the Mode column of the
+   * cut-off grid at create time, and only overwrites an existing row's blank
+   * value — so a user edit or a booking-PDF value (e.g. "CFS/CY", "AIR") is
+   * never clobbered on a re-route.
+   */
+  transportMode?: string;
   actor: string;
+}
+
+/**
+ * Pull "Sea" or "Air" out of a PO's `termsOfDeliveryText` ("Transport by Sea,
+ * Packing Mode Flat, FCA according to ..."). Returns "" when neither word is
+ * present so the caller can leave the Mode column blank on a PO that doesn't
+ * declare one — never guess.
+ */
+export function extractPoTransportMode(termsText: string | null | undefined): string {
+  const s = String(termsText || "");
+  if (!s) return "";
+  const m = s.match(/Transport\s+by\s+(Sea|Air)/i);
+  if (!m) return "";
+  const w = m[1].toLowerCase();
+  return w === "sea" ? "Sea" : "Air";
 }
 
 export type AutoScheduleResult =
@@ -56,7 +79,8 @@ export type AutoScheduleResult =
       detail?: string;
     };
 
-/** Find or create the ShipmentSchedule for (year, weekNo). */
+/** Find or create the ShipmentSchedule for (year, weekNo). Accepts an optional
+ *  Prisma transaction client so callers can tie it to a larger atomic unit. */
 async function findOrCreateWeekSchedule(opts: {
   year: number;
   weekNo: number;
@@ -64,13 +88,15 @@ async function findOrCreateWeekSchedule(opts: {
   mondayDate: string;
   fridayDate: string;
   actor: string;
+  db?: DbClient;
 }): Promise<{ id: string; created: boolean }> {
+  const db = opts.db ?? prisma;
   // Lookup: schema has no composite unique key for (year, weekNo), so we
   // match on weekNo + the week-title's year suffix. Historical schedules
   // created manually before year was tracked keep working: the user-made
   // title "Week 43 1st cut off 19.10.2026 ..." contains the year.
   const yearSuffix = `.${opts.year}`;
-  const existing = await prisma.shipmentSchedule.findFirst({
+  const existing = await db.shipmentSchedule.findFirst({
     where: { weekNo: opts.weekNo, weekTitle: { contains: yearSuffix } },
     include: { cutoffs: true },
   });
@@ -81,14 +107,14 @@ async function findOrCreateWeekSchedule(opts: {
       if (!c.date) {
         const want = c.label.toLowerCase().startsWith("1st") ? opts.mondayDate : c.label.toLowerCase().startsWith("2nd") ? opts.fridayDate : "";
         if (want) {
-          await prisma.shipmentScheduleCutoff.update({ where: { id: c.id }, data: { date: want } });
+          await db.shipmentScheduleCutoff.update({ where: { id: c.id }, data: { date: want } });
         }
       }
     }
     return { id: existing.id, created: false };
   }
 
-  const sched = await prisma.shipmentSchedule.create({
+  const sched = await db.shipmentSchedule.create({
     data: {
       weekTitle: opts.weekTitle,
       weekNo: opts.weekNo,
@@ -107,6 +133,7 @@ async function findOrCreateWeekSchedule(opts: {
     action: "schedule.auto_created",
     actor: opts.actor,
     data: { year: opts.year, weekNo: opts.weekNo, weekTitle: opts.weekTitle },
+    tx: opts.db,
   });
   return { id: sched.id, created: true };
 }
@@ -124,9 +151,15 @@ async function findOrCreateWeekSchedule(opts: {
 export async function autoScheduleFromPo(opts: {
   poId: string;
   actor: string;
+  /** Optional Prisma transaction client. When provided, the whole wipe-then-
+   *  rebuild runs through it, so the caller can tie it to a larger atomic
+   *  unit (user rule 2026-11-03: destruction + generation must happen inside
+   *  one transaction when replacing a PO with a newer-dated version). */
+  db?: DbClient;
 }): Promise<{ routed: AutoScheduleResult[]; failed: AutoScheduleResult[] }> {
   const { poId, actor } = opts;
-  const po = await prisma.salesContractPo.findUnique({
+  const db = opts.db ?? prisma;
+  const po = await db.salesContractPo.findUnique({
     where: { id: poId },
     include: { contract: true },
   });
@@ -137,10 +170,16 @@ export async function autoScheduleFromPo(opts: {
   // formatted string on the anchor row for legacy data.
   type Combo = { tod: string; marketCode: string; marketCodeB: string; qty: number };
   const combos: Combo[] = [];
+  // Transport mode from the PO's "Terms of Delivery" ("Transport by Sea" /
+  // "Transport by Air") — the same value applies to every (TOD × market)
+  // combo of this PO, since the Terms line is PO-wide (user rule 2026-11-03).
+  let poTransportMode = "";
   try {
     const poExtract = JSON.parse(po.poJson || "{}") as {
       marketRows?: { tod: string; marketCode: string; marketCodeB: string; quantity: number }[];
+      termsOfDeliveryText?: string | null;
     };
+    poTransportMode = extractPoTransportMode(poExtract.termsOfDeliveryText);
     if (poExtract.marketRows && poExtract.marketRows.length > 0) {
       for (const m of poExtract.marketRows) {
         if (m.marketCode && Number.isFinite(m.quantity)) {
@@ -182,7 +221,7 @@ export async function autoScheduleFromPo(opts: {
   // outcome as before. Replace → every stale row (including ones with
   // user-entered booking info from a prior version) is wiped so the newer
   // PO's TOD / country / qty is the single source of truth.
-  const existingRows = await prisma.shipmentScheduleRow.findMany({
+  const existingRows = await db.shipmentScheduleRow.findMany({
     where: { orderNo: po.orderNo },
     select: {
       id: true, marketCode: true, marketSubCode: true,
@@ -191,8 +230,8 @@ export async function autoScheduleFromPo(opts: {
   });
   if (existingRows.length > 0) {
     const ids = existingRows.map((r) => r.id);
-    await prisma.shipmentScheduleRowEdit.deleteMany({ where: { rowId: { in: ids } } });
-    await prisma.shipmentScheduleRow.deleteMany({ where: { id: { in: ids } } });
+    await db.shipmentScheduleRowEdit.deleteMany({ where: { rowId: { in: ids } } });
+    await db.shipmentScheduleRow.deleteMany({ where: { id: { in: ids } } });
     await audit({
       entityType: "shipment-schedule",
       entityId: po.id,
@@ -206,6 +245,7 @@ export async function autoScheduleFromPo(opts: {
           invoiceNo: r.invoiceNo, bookingRef: r.bookingRef, bcn: r.bcn,
         })),
       },
+      tx: opts.db,
     });
   }
 
@@ -225,31 +265,33 @@ export async function autoScheduleFromPo(opts: {
       pcs: c.qty,                   // per-(TOD × market) quantity, NOT full PO qty
       fob: anchorFob,
       composition: anchorComposition,
+      transportMode: poTransportMode, // "Sea" / "Air" from PO's Terms of Delivery (or "")
       actor,
-    });
+    }, opts.db);
     if (r.routed) routed.push(r);
     else failed.push(r);
   }
   return { routed, failed };
 }
 
-export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<AutoScheduleResult> {
+export async function autoScheduleSummaryRow(input: AutoScheduleInput, txDb?: DbClient): Promise<AutoScheduleResult> {
   if (!input.todRaw) return { routed: false, reason: "no_tod_date" };
   if (!input.marketCode) return { routed: false, reason: "unknown_market_code" };
+  const db = txDb ?? prisma;
 
   // Resolve summary-sourced columns when the caller gave us a poId. Explicit
   // input values always win (so callers coming from the Summary rows can pass
   // their values straight through).
   let resolved: ReturnType<typeof resolveSummarySource> | null = null;
   if (input.poId && (input.buyerCode === undefined || input.contractNo === undefined || input.contractDate === undefined || input.style === undefined)) {
-    const po = await prisma.salesContractPo.findUnique({
+    const po = await db.salesContractPo.findUnique({
       where: { id: input.poId },
       include: { contract: true },
     });
     if (po && po.contract) {
       const [buyerCodes, folderMappings] = await Promise.all([
-        prisma.salesContractBuyerCode.findMany({ where: { active: true } }),
-        prisma.salesContractFolderMapping.findMany(),
+        db.salesContractBuyerCode.findMany({ where: { active: true } }),
+        db.salesContractFolderMapping.findMany(),
       ]);
       resolved = resolveSummarySource({
         contract: po.contract,
@@ -268,12 +310,12 @@ export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<
     style: input.style ?? resolved?.style ?? "",
   };
 
-  const route = await resolveRouteForSummaryRow({ todRaw: effective.todRaw, marketCode: effective.marketCode });
+  const route = await resolveRouteForSummaryRow({ todRaw: effective.todRaw, marketCode: effective.marketCode }, db);
   if (!route) {
     // Figure out which input was the blocker so the review UI can show it.
     const { parseTodDate, resolveCutoffDayForMarket } = await import("./cutoff-router");
     if (!parseTodDate(input.todRaw)) return { routed: false, reason: "unparseable_tod", detail: input.todRaw };
-    const day = await resolveCutoffDayForMarket(input.marketCode);
+    const day = await resolveCutoffDayForMarket(input.marketCode, db);
     if (!day) return { routed: false, reason: "unmapped_cutoff", detail: input.marketCode };
     return { routed: false, reason: "unmapped_cutoff", detail: input.marketCode };
   }
@@ -285,15 +327,16 @@ export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<
     mondayDate: route.mondayCutoffDate,
     fridayDate: route.fridayCutoffDate,
     actor: input.actor,
+    db: txDb,
   });
 
   // Find the matching cut-off row.
-  const cutoff = await prisma.shipmentScheduleCutoff.findFirst({
+  const cutoff = await db.shipmentScheduleCutoff.findFirst({
     where: { scheduleId: sched.id, label: route.cutoffLabel },
   });
   if (!cutoff) {
     // Should not happen (both cut-offs are seeded on auto-create), but guard anyway.
-    const created = await prisma.shipmentScheduleCutoff.create({
+    const created = await db.shipmentScheduleCutoff.create({
       data: {
         scheduleId: sched.id,
         label: route.cutoffLabel,
@@ -301,12 +344,12 @@ export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<
         sortOrder: route.cutoffDay === "monday" ? 1 : 2,
       },
     });
-    return finalizeRow(sched.id, created.id, effective, route);
+    return finalizeRow(sched.id, created.id, effective, route, txDb);
   }
 
   // Idempotency: if this (schedule, orderNo, marketSubCode) is already present,
   // move it to the resolved cut-off and refresh the summary-sourced fields.
-  const existing = await prisma.shipmentScheduleRow.findFirst({
+  const existing = await db.shipmentScheduleRow.findFirst({
     where: {
       scheduleId: sched.id,
       orderNo: effective.orderNo,
@@ -338,8 +381,15 @@ export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<
     }
     if (effective.cat && existing.cat !== effective.cat) updates.cat = effective.cat;
     if (effective.hts && existing.hts !== effective.hts) updates.hts = effective.hts;
+    // transportMode (Mode column) — only fill when still blank, so a booking-
+    // PDF value ("CFS/CY" / "AIR") or a user edit is never clobbered by a
+    // re-route. Replace flow with a changed PO Transport line therefore does
+    // NOT overwrite a Mode the user already set.
+    if (effective.transportMode && !existing.transportMode) {
+      updates.transportMode = effective.transportMode;
+    }
     if (Object.keys(updates).length > 0) {
-      await prisma.shipmentScheduleRow.update({ where: { id: existing.id }, data: updates });
+      await db.shipmentScheduleRow.update({ where: { id: existing.id }, data: updates });
     }
     return {
       routed: true,
@@ -353,7 +403,7 @@ export async function autoScheduleSummaryRow(input: AutoScheduleInput): Promise<
     };
   }
 
-  return finalizeRow(sched.id, cutoff.id, effective, route);
+  return finalizeRow(sched.id, cutoff.id, effective, route, txDb);
 }
 
 async function finalizeRow(
@@ -361,8 +411,10 @@ async function finalizeRow(
   cutoffId: string,
   input: AutoScheduleInput,
   route: NonNullable<Awaited<ReturnType<typeof resolveRouteForSummaryRow>>>,
+  txDb?: DbClient,
 ): Promise<AutoScheduleResult> {
-  const row = await prisma.shipmentScheduleRow.create({
+  const db = txDb ?? prisma;
+  const row = await db.shipmentScheduleRow.create({
     data: {
       scheduleId,
       cutoffId,
@@ -378,6 +430,7 @@ async function finalizeRow(
       hts: input.hts ?? "",
       marketCode: input.marketCode,
       marketSubCode: input.marketSubCode ?? "",
+      transportMode: input.transportMode ?? "",
       matched: true,
       matchReason: "sales_contract_summary_auto_route",
     },
@@ -394,6 +447,7 @@ async function finalizeRow(
       weekNo: route.weekNo,
       cutoffLabel: route.cutoffLabel,
     },
+    tx: txDb,
   });
   return {
     routed: true,

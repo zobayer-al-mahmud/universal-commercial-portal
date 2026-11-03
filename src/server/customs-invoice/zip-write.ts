@@ -266,6 +266,52 @@ export interface ZipWriteResult {
   fieldsWritten: string[];
 }
 
+/** True when the template file is the "AZ Pack" multipack variant. The
+ *  packSize patch below only runs for this template; the plain "AZ" one
+ *  has no pack-size formulas to rewrite. */
+function isPackPath(p: string): boolean {
+  return /\bpack\b/i.test(p);
+}
+
+/**
+ * On the AZ Pack template the formulas on the "Order No." row embed the
+ * hard-coded sample pack size of 2 (e.g. `=G36*2`, `=I38*J38/2`) and the
+ * nearby label reads "1 Pack = 2Pcs". When the invoice's packSet differs we
+ * rewrite both the formulas and the label so the generated invoice shows
+ * the real pack size from the Sales Contract. If packSet is 1 / blank /
+ * unparsable the patch is skipped — the file is left as-is.
+ */
+function patchPackSize(sheetXml: string, ss: SharedStrings, packSet: string): string {
+  const n = Number(String(packSet ?? "").trim());
+  if (!Number.isFinite(n) || n <= 0 || n === 2) return sheetXml;
+  const pcs = String(n);
+  // Formulas: `G36*2` / `/2` / `*2)` etc. — only the exact hardcoded `2`
+  // that lives next to a `G36`/`I38`/`J38` reference is swapped; we don't
+  // touch any other 2 in the sheet to avoid blind replace of unrelated math.
+  let out = sheetXml;
+  out = out.replace(/<f([^>]*)>G36\*2<\/f>/g, (_m, a) => `<f${a}>G36*${pcs}</f>`);
+  out = out.replace(/<f([^>]*)>I38\*J38\/2<\/f>/g, (_m, a) => `<f${a}>I38*J38/${pcs}</f>`);
+  // Label "1 Pack = 2Pcs" lives in the shared-string table. Rewrite the
+  // matching entry so H36 reads "1 Pack = <n>Pcs" without changing other
+  // cells that reference the same shared string by accident.
+  const labelRe = /^1\s*Pack\s*=\s*2\s*Pcs?$/i;
+  const idx = ss.entries().findIndex((t) => labelRe.test((t ?? "").trim()));
+  if (idx >= 0) {
+    const replacement = `1 Pack = ${pcs}Pcs`;
+    // Point every cell that currently uses the old label at a (possibly
+    // new) shared-string entry carrying the new text. If replacement is
+    // already present, the lookup reuses it.
+    const newIdx = ss.indexOf(replacement);
+    if (newIdx !== idx) {
+      out = out.replace(
+        new RegExp(`(<c\\b[^>]*t="s"[^>]*><v>)${idx}(<\\/v><\\/c>)`, "g"),
+        `$1${newIdx}$2`,
+      );
+    }
+  }
+  return out;
+}
+
 /**
  * Patch a template xlsx with the invoice's values. Images, drawings, styles,
  * merged cells, formulas (column R) and all other sheets are preserved
@@ -283,6 +329,12 @@ export async function patchTemplate(templatePath: string, inv: InvoiceFields, pl
   if (!ssFile) return null;
   const ss = new SharedStrings(await ssFile.async("string"));
   let sheetXml = await zip.file(sheetPath)!.async("string");
+
+  // Pack-size patch runs BEFORE row writes so the shared-string index swaps
+  // happen against the untouched header area.
+  if (isPackPath(templatePath)) {
+    sheetXml = patchPackSize(sheetXml, ss, inv.packSet);
+  }
 
   const inputRow = findInputRow(sheetXml, ss);
   if (!inputRow) return null;

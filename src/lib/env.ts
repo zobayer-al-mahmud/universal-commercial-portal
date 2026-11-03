@@ -108,15 +108,15 @@ const schema = z.object({
   SALES_CONTRACT_MAX_FILE_MB: z.coerce.number().positive().default(20),
 
   // --- Customs Invoice Generation (module 3) --------------------------------
-  // Folder holding the country-wise `<invoiceNo> <countryCode>.xlsx` templates.
-  // The writer reads from here (never modifies the originals); fresh copies are
-  // produced per download.
-  // Default = the in-repo drop (resolved against the process cwd = repo root).
-  // Override in `.env` with an absolute path on deployments where the folder
-  // lives elsewhere.
+  // Folder holding the two bundled customs-invoice templates ("0000 AZ.xlsx"
+  // and "0000 AZ Pack.xlsx"). Bundled with the repo so deploys always have
+  // them; the writer reads them (never modifies) and emits a fresh copy per
+  // download. Resolver picks AZ Pack when the invoice's packSet > 1, plain AZ
+  // otherwise (user rule 2026-11-03) — the market/country code is no longer
+  // used to pick a template.
   CUSTOMS_INVOICE_TEMPLATE_DIR: z
     .string()
-    .default("./Customs Invoice templates and sample files"),
+    .default("./templates/customs-invoice"),
   CUSTOMS_INVOICE_MAX_FILE_MB: z.coerce.number().positive().default(20),
 
   // --- PDF Combiner -----------------------------------------------------------

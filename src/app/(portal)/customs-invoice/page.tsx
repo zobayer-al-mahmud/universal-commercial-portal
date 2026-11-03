@@ -18,9 +18,12 @@ export default async function CustomsInvoiceListPage() {
 
   const withInvoice = rows.filter((r) => r.hasInvoice).length;
 
-  // Resolve the per-row template on the server by (country, country+sub).
+  // Resolve the per-row template on the server. User rule 2026-11-03: the
+  // only inputs are the two bundled templates ("AZ" / "AZ Pack") and the
+  // decision is based on the sales-contract packSet; the country code is
+  // informational only.
   const listRows: InvoiceReadyListRow[] = rows.map((r) => {
-    const t = resolveTemplate(r.countryCode, r.countrySubCode, templates);
+    const t = resolveTemplate(r.countryCode, r.countrySubCode, templates, r.packSet);
     return {
       invoiceNo: r.invoiceNo,
       rowId: r.rowId,
@@ -50,7 +53,7 @@ export default async function CustomsInvoiceListPage() {
     <div>
       <PageHeader
         title="Customs Invoice Generation"
-        subtitle="One invoice per Invoice No. Rows appear here once their booking PDF is uploaded AND an invoice number is allocated. All invoice fields pull from the Shipment Schedule row; anything the PDFs don't carry is left blank for manual entry."
+        subtitle="One invoice per Invoice No. A row appears here as soon as the Shipment Schedule row has an Invoice No. allocated — the booking-confirmation PDF is optional. All invoice fields pull from the Shipment Schedule row; booking fields are blank until the PDF is uploaded, and anything the PDFs don't carry is left for manual entry."
         actions={
           <div className="flex items-center gap-2">
             <Link href="/customs-invoice/templates" className="btn-ghost text-xs">🔎 Template health</Link>

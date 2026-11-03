@@ -5,6 +5,7 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import {
   createSalesContract,
+  deleteSalesContractWithCascade,
   recordSalesContractRowEdit,
   updateSalesContractHeader,
   type SalesContractHeaderPatch,
@@ -91,4 +92,29 @@ export async function deleteSalesContractPoAction(formData: FormData): Promise<v
   await prisma.salesContractPo.delete({ where: { id: poId } });
   await audit({ entityType: "document", entityId: poId, action: "hm.po.deleted", actor: user.email, data: { contractId } });
   revalidatePath(`/sales-contract/${contractId}`);
+}
+
+/**
+ * Delete an entire Sales Contract and EVERY row downstream of it (user rule
+ * 2026-11-03): all its POs, their PDFs on disk, append-only row-edits, every
+ * ShipmentScheduleRow derived from any of its POs, every CustomsInvoice tied
+ * to any of its orderNos (cascading invoice PDFs + edits on disk too). After
+ * this returns, nothing in any other module can trace back to this contract.
+ */
+export async function deleteSalesContractAction(formData: FormData): Promise<{ error?: string; ok?: true }> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "Forbidden." };
+  const contractId = String(formData.get("contractId") ?? "");
+  if (!contractId) return { error: "Missing contractId." };
+  try {
+    await deleteSalesContractWithCascade(contractId, { actor: user.email });
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Delete failed." };
+  }
+  revalidatePath("/sales-contract");
+  revalidatePath("/sales-contract/summary");
+  revalidatePath("/shipment-schedule");
+  revalidatePath("/customs-invoice");
+  return { ok: true };
 }

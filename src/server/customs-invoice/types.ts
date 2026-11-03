@@ -34,6 +34,17 @@ export interface InvoicePrefill {
   // Unique across every week (shipment-schedule enforces it). Blank until the
   // user assigns a number on the schedule row.
   invoiceNo: string;
+  // EXP No. allocated on the shipment-schedule row (same rules as invoiceNo:
+  // unique across every week, blank until a user allocates). Flows into the
+  // Customs Invoice's EXP No. field.
+  expNo: string;
+  // Manually entered EXP date from the shipment-schedule row.
+  expDate: string;
+  // Pack/set from the Sales Contract. Drives which bundled template the
+  // writer uses: "1" (or blank) → "0000 AZ.xlsx"; anything > 1 → "0000 AZ Pack.xlsx".
+  // Also written into the invoice's packSet field so a later open resolves
+  // the same template without re-reading the Sales Contract.
+  packSet: string;
   // "Expected Delivery" date read off the booking PDF. Used as the invoice
   // date prefill for the Customs Invoice header.
   expectedDelivery: string;

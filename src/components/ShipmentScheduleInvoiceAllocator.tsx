@@ -30,7 +30,7 @@ export function ShipmentScheduleInvoiceAllocator({
       <div className="mb-2">
         <h3 className="text-sm font-semibold text-slate-800">② Allocate invoice numbers for this week</h3>
         <p className="text-xs text-slate-500">
-          Enter the first invoice number (e.g. <span className="font-mono">2000</span>). The system numbers the 1st cut-off&apos;s rows first, then the 2nd — so if the 1st cut-off has 6 rows, those get 2000–2005 and the 2nd cut-off starts at 2006. Existing invoice numbers are overwritten; previous values stay in the row&apos;s edit history. These numbers drive invoice creation downstream.
+          Enter the first invoice number (e.g. <span className="font-mono">2000</span>). The system fills blank rows cut-off by cut-off (1st, then 2nd, …); rows that already have an Invoice No. are left alone — a manual edit is required to change one. Each Invoice No. is unique across every week. These numbers drive invoice creation downstream.
         </p>
       </div>
       <input type="hidden" name="scheduleId" value={scheduleId} />

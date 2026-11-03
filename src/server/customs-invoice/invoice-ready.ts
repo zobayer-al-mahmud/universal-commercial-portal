@@ -1,15 +1,17 @@
 /**
  * Invoice-centric view of the Shipment Schedule — the data source for the
- * Customs Invoice Generation page (user rule 2026-10-28).
+ * Customs Invoice Generation page.
  *
- * The unique key is INVOICE NO. A row only appears here when the Shipment
- * Schedule row has BOTH:
- *   1. A booking-confirmation PDF already extracted (`pdfSha256 != ""`), AND
- *   2. An invoice number allocated (`invoiceNo != ""`).
+ * The unique key is INVOICE NO. A row appears here as soon as the Shipment
+ * Schedule row has an invoice number allocated (`invoiceNo != ""`). The
+ * booking-confirmation PDF is OPTIONAL (user rule 2026-11-03): when it is
+ * present the booking fields (BCN, BRef, ports, mode, gross weight, cartons,
+ * cbm) flow through; when it is missing those fields are blank and the
+ * operator fills them in on the invoice itself.
  *
- * Everything the invoice needs (buyer, country+sub, FOB, qty, booking info,
- * ports, mode, gross weight, cartons, cbm) flows through from that one row.
- * Fields the PDFs don't carry are left blank for manual entry downstream.
+ * Everything else (buyer, country+sub, FOB, qty, PO Mode) comes from the
+ * Sales Contract + PO and is available whether or not the booking PDF has
+ * been scanned yet.
  */
 import { prisma } from "@/lib/db";
 import { shortOrderKey } from "./pull-data";
@@ -47,6 +49,9 @@ export interface InvoiceReadyRow {
   totalCartons: number | null;
   measurementCbm: number | null;
 
+  // Pack/set from the sales contract — drives AZ vs AZ Pack template choice.
+  packSet: string;
+
   // Downstream linkage
   hasInvoice: boolean;
   invoiceId: string | null;
@@ -57,21 +62,33 @@ export interface InvoiceReadyRow {
 }
 
 export async function listInvoiceReadyRows(): Promise<InvoiceReadyRow[]> {
-  const [rows, invoices] = await Promise.all([
+  const [rows, invoices, pos] = await Promise.all([
     prisma.shipmentScheduleRow.findMany({
-      where: {
-        AND: [
-          { invoiceNo: { not: "" } },
-          { pdfSha256: { not: "" } },
-        ],
-      },
+      // Invoice-ready = any shipment row with an Invoice No. allocated.
+      // Booking-PDF upload is OPTIONAL (user rule 2026-11-03) — rows without
+      // one still appear here with blank booking fields, which the operator
+      // fills in on the invoice.
+      where: { invoiceNo: { not: "" } },
       include: {
         schedule: { select: { weekNo: true, weekTitle: true } },
       },
       orderBy: [{ invoiceNo: "asc" }],
     }),
     prisma.customsInvoice.findMany({ select: { id: true, orderNo: true, invoiceNumber: true } }),
+    prisma.salesContractPo.findMany({
+      where: { orderNo: { not: "" } },
+      select: { orderNo: true, contract: { select: { packSet: true } } },
+    }),
   ]);
+  // Order-No short-key → packSet lookup. Many POs can share the same short
+  // key but all live under the same Sales Contract, so the packSet is the
+  // same across them; the first one wins.
+  const packSetByOrder = new Map<string, string>();
+  for (const po of pos) {
+    const short = shortOrderKey(po.orderNo);
+    if (!short || packSetByOrder.has(short)) continue;
+    packSetByOrder.set(short, po.contract?.packSet ?? "");
+  }
 
   // Each (Order No., Invoice No.) pair is one invoice. We also keep an
   // Order-No-only fallback for invoices that were created before an Invoice
@@ -117,6 +134,7 @@ export async function listInvoiceReadyRows(): Promise<InvoiceReadyRow[]> {
       grossWeightKg: r.grossWeightKg,
       totalCartons: r.cartons,
       measurementCbm: r.measurementCbm,
+      packSet: packSetByOrder.get(short) ?? "",
       hasInvoice: !!existing,
       invoiceId: existing,
       scheduleId: r.scheduleId,

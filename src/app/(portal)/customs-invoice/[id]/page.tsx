@@ -64,8 +64,9 @@ export default async function CustomsInvoiceDetail({ params }: { params: { id: s
     }
   }
   if (srcMarketCode) {
-    const resolved = resolveTemplate(srcMarketCode, srcMarketSubCode, templates);
-    const nextCountryCode = resolved?.countryCode ?? srcMarketCode;
+    // Template is picked by packSet (not by country) — the destination
+    // country code stays whatever the shipment resolved (MY / AU / NL …).
+    const nextCountryCode = srcMarketCode;
     const patch: Partial<InvoiceFields> = {};
     if (srcMarketCode !== inv.marketCode) patch.marketCode = srcMarketCode;
     if (srcMarketSubCode !== inv.marketSubCode) patch.marketSubCode = srcMarketSubCode;
@@ -88,7 +89,7 @@ export default async function CustomsInvoiceDetail({ params }: { params: { id: s
     }
   }
 
-  const template = resolveTemplate(inv.marketCode, inv.marketSubCode || inv.countryCode, templates);
+  const template = resolveTemplate(inv.marketCode, inv.marketSubCode || inv.countryCode, templates, inv.packSet);
   const fields: InvoiceFields = {
     invoiceNumber: inv.invoiceNumber,
     invoiceDate: inv.invoiceDate,

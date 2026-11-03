@@ -18,6 +18,15 @@
  *    "Week 43 1st cut off" and 2026-10-23 (Fri) is "Week 43 2nd cut off".
  */
 import { prisma } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
+
+/**
+ * Minimal DB client surface this module needs. Either the regular PrismaClient
+ * (via `prisma`) or a Prisma transaction client passed from a `$transaction`
+ * callback. Threading the tx client in lets the caller tie the cut-off lookup
+ * to a larger atomic unit (e.g. the newer-PO total-wipe in intake.ts).
+ */
+export type DbClient = typeof prisma | Prisma.TransactionClient;
 
 export type CutoffDay = "monday" | "friday";
 
@@ -116,11 +125,11 @@ export function formatCutoffDate(d: Date): string {
  * Returns `null` when BOTH sources fail — the caller then leaves the
  * shipment unrouted (fail-closed, never guess).
  */
-export async function resolveCutoffDayForMarket(marketCode: string): Promise<CutoffDay | null> {
+export async function resolveCutoffDayForMarket(marketCode: string, db: DbClient = prisma): Promise<CutoffDay | null> {
   const code = String(marketCode || "").trim().toUpperCase();
   if (!code) return null;
   try {
-    const row = await prisma.referenceData.findUnique({
+    const row = await db.referenceData.findUnique({
       where: { type_code: { type: "cfs-cutoff-day", code } },
     });
     if (row && row.active) {
@@ -177,10 +186,10 @@ export interface ResolvedRoute {
 export async function resolveRouteForSummaryRow(opts: {
   todRaw: string;
   marketCode: string;
-}): Promise<ResolvedRoute | null> {
+}, db: DbClient = prisma): Promise<ResolvedRoute | null> {
   const tod = parseTodDate(opts.todRaw);
   if (!tod) return null;
-  const day = await resolveCutoffDayForMarket(opts.marketCode);
+  const day = await resolveCutoffDayForMarket(opts.marketCode, db);
   if (!day) return null;
 
   const week = computeWeekFromDate(tod);

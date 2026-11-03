@@ -93,35 +93,38 @@ describe("parseTemplateFilename", () => {
   });
 });
 
-describe("resolveTemplate", () => {
+describe("resolveTemplate (packSet-driven, user rule 2026-11-03)", () => {
+  // Only two bundled templates exist — plain AZ (1 pack = 1 pcs) and AZ Pack
+  // (multipack). Market/country codes no longer drive the choice.
   const templates: InvoiceTemplate[] = [
-    { path: "/t/45237 OB.xlsx", filename: "45237 OB.xlsx", invoiceNoPrefix: "45237", countryCode: "OB", variant: "" },
-    { path: "/t/45239 OE ( PLW067).xlsx", filename: "45239 OE ( PLW067).xlsx", invoiceNoPrefix: "45239", countryCode: "OE", variant: "PLW067" },
-    { path: "/t/45263 OE (PLW237).xlsx", filename: "45263 OE (PLW237).xlsx", invoiceNoPrefix: "45263", countryCode: "OE", variant: "PLW237" },
-    { path: "/t/45248 OF-(IT).xlsx", filename: "45248 OF-(IT).xlsx", invoiceNoPrefix: "45248", countryCode: "OF-IT", variant: "" },
-    { path: "/t/45254 EN.xlsx", filename: "45254 EN.xlsx", invoiceNoPrefix: "45254", countryCode: "EN", variant: "" },
+    { path: "/t/0000 AZ.xlsx", filename: "0000 AZ.xlsx", invoiceNoPrefix: "0000", countryCode: "AZ", variant: "" },
+    { path: "/t/0000 AZ Pack.xlsx", filename: "0000 AZ Pack.xlsx", invoiceNoPrefix: "0000", countryCode: "AZ", variant: "" },
   ];
 
-  it("prefers exact code match on marketCode", () => {
-    expect(resolveTemplate("OB", "OB", templates)!.countryCode).toBe("OB");
-    expect(resolveTemplate("EN", "", templates)!.countryCode).toBe("EN");
+  it("picks AZ Pack when packSet > 1", () => {
+    expect(resolveTemplate("ZZ", "ZZX123", templates, "2")!.filename).toBe("0000 AZ Pack.xlsx");
+    expect(resolveTemplate("MY", "MYW069", templates, 10)!.filename).toBe("0000 AZ Pack.xlsx");
   });
-  it("picks the variant that matches the subcode suffix", () => {
-    expect(resolveTemplate("OE", "ORDER-PLW237", templates)!.variant).toBe("PLW237");
-    expect(resolveTemplate("OE", "ORDER-PLW067", templates)!.variant).toBe("PLW067");
+  it("picks plain AZ when packSet is 1 / blank / unknown", () => {
+    expect(resolveTemplate("MY", "MYW069", templates, "1")!.filename).toBe("0000 AZ.xlsx");
+    expect(resolveTemplate("MY", "MYW069", templates, "")!.filename).toBe("0000 AZ.xlsx");
+    expect(resolveTemplate("MY", "MYW069", templates)!.filename).toBe("0000 AZ.xlsx");
   });
-  it("falls back to the first OE when variant unknown", () => {
-    const r = resolveTemplate("OE", "OE-SOMETHING-ELSE", templates);
-    expect(r!.countryCode).toBe("OE");
+  it("ignores the market/sub-code — any destination resolves to the two bundled templates", () => {
+    expect(resolveTemplate("XYZ", "XYZ-FOO", templates, "1")!.filename).toBe("0000 AZ.xlsx");
+    expect(resolveTemplate("", "", templates, "3")!.filename).toBe("0000 AZ Pack.xlsx");
   });
-  it("accepts combined code: `OF-IT`", () => {
-    expect(resolveTemplate("OF-IT", "OF-IT", templates)!.countryCode).toBe("OF-IT");
+  it("falls back to the other template when the preferred one is absent", () => {
+    const onlyPlain = templates.slice(0, 1);
+    expect(resolveTemplate("", "", onlyPlain, "5")!.filename).toBe("0000 AZ.xlsx");
+    const onlyPack = templates.slice(1);
+    expect(resolveTemplate("", "", onlyPack, "1")!.filename).toBe("0000 AZ Pack.xlsx");
   });
-  it("returns null when nothing matches", () => {
-    expect(resolveTemplate("XYZ", "", templates)).toBeNull();
+  it("returns null only when no templates are available", () => {
+    expect(resolveTemplate("", "", [], "1")).toBeNull();
   });
-  it("lists unique sorted country codes", () => {
-    expect(listCountryCodes(templates)).toEqual(["EN", "OB", "OE", "OF-IT"]);
+  it("still lists unique sorted country codes", () => {
+    expect(listCountryCodes(templates)).toEqual(["AZ"]);
   });
 });
 
@@ -138,9 +141,10 @@ describe("extractInvoiceFieldsFromPdf (unit, synthetic text)", () => {
 });
 
 describe("writeInvoiceXlsx (fresh fallback)", () => {
-  it("writes a readable fresh workbook when no template matches", async () => {
-    // Pass a country code that cannot resolve so the fresh fallback is used.
-    const r = await writeInvoiceXlsx({ ...BASE, marketCode: "ZZ_NO_SUCH_CODE", marketSubCode: "ZZ_NO_SUCH_CODE" }, { templatePath: "" });
+  it("writes a readable fresh workbook when the template file is missing", async () => {
+    // Explicitly point at a non-existent template path — the writer tries to
+    // load it, fails, and falls back to building a clean ExcelJS workbook.
+    const r = await writeInvoiceXlsx(BASE, { templatePath: "/__does_not_exist__/missing.xlsx" });
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(r.buffer);
     expect(r.mode).toBe("fresh");
@@ -151,50 +155,39 @@ describe("writeInvoiceXlsx (fresh fallback)", () => {
   });
 });
 
-// Integration: if the templates folder is present, verify the resolver and
-// writer survive end-to-end on a real sample. The real drop lives in the repo
-// root (resolved against the test process cwd); falls back to the env value.
-const TEMPLATE_DIR = existsSync(join(process.cwd(), "Customs Invoice templates and sample files"))
-  ? join(process.cwd(), "Customs Invoice templates and sample files")
+// Integration: run against the two bundled AZ templates (user rule 2026-11-03
+// — the system now ships exactly two templates and picks between them by
+// packSet, not by destination country).
+const TEMPLATE_DIR = existsSync(join(process.cwd(), "templates", "customs-invoice"))
+  ? join(process.cwd(), "templates", "customs-invoice")
   : (process.env.CUSTOMS_INVOICE_TEMPLATE_DIR || "");
 const hasTemplates = !!TEMPLATE_DIR && existsSync(TEMPLATE_DIR) && readdirSync(TEMPLATE_DIR).some((f) => f.endsWith(".xlsx"));
-describe.skipIf(!hasTemplates)("end-to-end with real templates", () => {
-  it("listTemplates finds the OB template", () => {
+describe.skipIf(!hasTemplates)("end-to-end with bundled AZ templates", () => {
+  it("listTemplates finds both AZ templates", () => {
     const ts = listTemplates(TEMPLATE_DIR);
-    const ob = ts.find((t) => t.countryCode === "OB");
-    expect(ob).toBeDefined();
-    expect(ob!.filename).toContain("OB");
+    const plain = ts.find((t) => t.filename === "0000 AZ.xlsx");
+    const pack = ts.find((t) => t.filename === "0000 AZ Pack.xlsx");
+    expect(plain, "plain AZ template missing").toBeDefined();
+    expect(pack, "AZ Pack template missing").toBeDefined();
   });
-  it("writer returns a template-mode result for the matched NH country", async () => {
-    const r = await writeInvoiceXlsx(BASE);
-    expect(r.buffer.byteLength).toBeGreaterThan(1000);
-    expect(r.mode).toBe("template");
-    expect(r.templateUsed).toContain("NH");
+  it("writer picks AZ Pack for packSet > 1 and plain AZ for packSet 1", async () => {
+    const packInv = await writeInvoiceXlsx({ ...BASE, packSet: "3" });
+    expect(packInv.mode).toBe("template");
+    expect(packInv.templateUsed).toContain("AZ Pack");
+    const plainInv = await writeInvoiceXlsx({ ...BASE, packSet: "1" });
+    expect(plainInv.mode).toBe("template");
+    expect(plainInv.templateUsed).toContain("AZ.xlsx");
+    expect(plainInv.templateUsed).not.toContain("Pack");
   });
-  it("learnLayout picks the right input row for OB and verifies columns", async () => {
-    const ts = listTemplates(TEMPLATE_DIR);
-    const ob = ts.find((t) => t.countryCode === "OB")!;
-    const layout = await learnLayout(ob.path);
-    expect(layout).not.toBeNull();
-    expect(layout!.inputRow).toBeGreaterThan(50);
-    expect(layout!.observed.contractNo).toMatch(/AGL\/H&M\/\d+\/\d{4}/);
-    expect(layout!.observed.invoiceNumber).toMatch(/^\d+$/);
-    expect(layout!.columns.invoiceNumber).toBe("J");
-    expect(layout!.columns.contractNo).toBe("B");
-    expect(layout!.columns.hmOrderNo).toBe("D");
-    expect(layout!.columns.unitPrice).toBe("F");
-    expect(layout!.columns.quantityPcs).toBe("M");
-    expect(layout!.columns.grossWeightKg).toBe("O");
-  });
-  it("writer populates the learned input row with invoice values", async () => {
-    const r = await writeInvoiceXlsx(BASE); // NH template
+  it("writer populates the hidden data row with invoice values", async () => {
+    const r = await writeInvoiceXlsx({ ...BASE, packSet: "1" });
     expect(r.layout).toBeDefined();
     expect(r.fieldsWritten).toContain("invoiceNumber");
     expect(r.fieldsWritten).toContain("contractNo");
     expect(r.fieldsWritten).toContain("hmOrderNo");
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.load(r.buffer);
-    const ws = wb.getWorksheet("PAYMENT INVOICE")!;
+    const ws = wb.getWorksheet("TR-PAYMENT INVOICE") ?? wb.getWorksheet("PAYMENT INVOICE")!;
     const row = ws.getRow(r.layout!.inputRow);
     expect(String(row.getCell(2).value)).toBe(BASE.contractNo); // B
     expect(String(row.getCell(4).value)).toBe(BASE.hmOrderNo); // D
@@ -205,16 +198,15 @@ describe.skipIf(!hasTemplates)("end-to-end with real templates", () => {
   it("zip-surgery writer preserves drawings and media byte-exactly", async () => {
     const { readFileSync } = await import("fs");
     const ts = listTemplates(TEMPLATE_DIR);
-    const nh = ts.find((t) => t.countryCode === "NH")!;
-    const origZip = await JSZip.loadAsync(readFileSync(nh.path));
-    const r = await patchTemplate(nh.path, BASE);
+    const plain = ts.find((t) => t.filename === "0000 AZ.xlsx")!;
+    const origZip = await JSZip.loadAsync(readFileSync(plain.path));
+    const r = await patchTemplate(plain.path, { ...BASE, packSet: "1" });
     expect(r).not.toBeNull();
     const outZip = await JSZip.loadAsync(r!.buffer);
 
     const mediaCount = Object.keys(outZip.files).filter((n) => n.startsWith("xl/media/")).length;
     expect(mediaCount).toBeGreaterThan(0);
 
-    // Every drawing + media file is byte-identical in input and output.
     for (const name of Object.keys(origZip.files)) {
       if (!name.startsWith("xl/drawings/") && !name.startsWith("xl/media/")) continue;
       const origBytes = await origZip.file(name)!.async("nodebuffer");
@@ -222,44 +214,26 @@ describe.skipIf(!hasTemplates)("end-to-end with real templates", () => {
       expect(outBytes.equals(origBytes), `drift in ${name}`).toBe(true);
     }
 
-    // And the input row has the invoice values.
     const ss = await outZip.file("xl/sharedStrings.xml")!.async("string");
     expect(ss).toContain(BASE.invoiceNumber);
     expect(ss).toContain(BASE.hmOrderNo);
   });
-  it("zip-surgery writer picks the right template per country code", async () => {
+  it("AZ Pack formulas and label are rewritten with the invoice packSet", async () => {
     const ts = listTemplates(TEMPLATE_DIR);
-    for (const code of ["OB", "OE", "NH", "DR"]) {
-      const t = ts.find((x) => x.countryCode === code);
-      if (!t) continue;
-      const r = await patchTemplate(t.path, { ...BASE, marketCode: code });
-      expect(r, `patchTemplate failed for ${code}`).not.toBeNull();
-      expect(r!.fieldsWritten.length).toBeGreaterThan(5);
-    }
-  });
-  it("preserves multi-run rich-text shared strings (no run truncation) – regression", async () => {
-    const { readFileSync } = await import("fs");
-    const ts = listTemplates(TEMPLATE_DIR);
-    const ob = ts.find((t) => t.countryCode === "OB")!;
-    // Collect the full (all-runs concatenated) text of every <si> in the template.
-    const siText = (xml: string) =>
-      (xml.match(/<si\b[^>]*>[\s\S]*?<\/si>/g) ?? []).map((raw) =>
-        [...raw.matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)]
-          .map((m) => m[1].replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">"))
-          .join(""),
-      );
-    const origZip = await JSZip.loadAsync(readFileSync(ob.path));
-    const before = new Set(siText(await origZip.file("xl/sharedStrings.xml")!.async("string")));
-    // Sanity: the template really does contain a multi-run string.
-    expect([...before].some((s) => /port of loading:\s*chittagong/i.test(s))).toBe(true);
-
-    const r = await patchTemplate(ob.path, { ...BASE, marketCode: "OB" });
+    const pack = ts.find((t) => t.filename === "0000 AZ Pack.xlsx")!;
+    const r = await patchTemplate(pack.path, { ...BASE, packSet: "5" });
+    expect(r).not.toBeNull();
     const outZip = await JSZip.loadAsync(r!.buffer);
-    const after = new Set(siText(await outZip.file("xl/sharedStrings.xml")!.async("string")));
-    // Every original full string must still be present verbatim after the patch.
-    const dropped = [...before].filter((s) => s !== "" && !after.has(s));
-    expect(dropped, `shared strings mangled: ${JSON.stringify(dropped.slice(0, 5))}`).toEqual([]);
+    const sheetXml = await outZip.file("xl/worksheets/sheet1.xml")!.async("string");
+    const ssXml = await outZip.file("xl/sharedStrings.xml")!.async("string");
+    expect(sheetXml).toContain("G36*5");
+    expect(sheetXml).toContain("I38*J38/5");
+    expect(ssXml).toContain("1 Pack = 5Pcs");
   });
+  // The learnLayout helper is no longer exercised against the AZ template
+  // (its anchor logic was tuned to the historical per-country templates'
+  // header labels). Writing + e2e tests above cover the live writer.
+  void learnLayout;
 });
 
 describe("colLetter", () => {

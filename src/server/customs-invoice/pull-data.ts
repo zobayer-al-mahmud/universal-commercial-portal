@@ -1,5 +1,4 @@
 import { prisma } from "@/lib/db";
-import { listTemplates, resolveTemplate } from "./templates";
 import type { InvoicePrefill } from "./types";
 
 /**
@@ -36,6 +35,9 @@ export interface OrderNoRow {
   totalCartons: number | null;
   measurementCbm: number | null;
   invoiceNo: string;          // from ShipmentScheduleRow.invoiceNo (unique per week+week)
+  expNo: string;              // from ShipmentScheduleRow.expNo (unique per week+week)
+  expDate: string;            // from ShipmentScheduleRow.expDate (manual entry)
+  packSet: string;            // from SalesContract.packSet (drives AZ vs AZ Pack template)
   expectedDelivery: string;   // from ShipmentScheduleRow.expectedDelivery (booking PDF)
   foundInSalesContract: boolean;
   foundInShipmentSchedule: boolean;
@@ -55,7 +57,7 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
     prisma.salesContractPo.findMany({
       where: { orderNo: { not: "" } },
       include: {
-        contract: { select: { marchentContNo: true, contractDate: true, buyerCode: true } },
+        contract: { select: { marchentContNo: true, contractDate: true, buyerCode: true, packSet: true } },
       },
     }),
     prisma.shipmentScheduleRow.findMany({ where: { orderNo: { not: "" } } }),
@@ -90,6 +92,9 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
         totalCartons: null,
         measurementCbm: null,
         invoiceNo: "",
+        expNo: "",
+        expDate: "",
+        packSet: "",
         expectedDelivery: "",
         foundInSalesContract: false,
         foundInShipmentSchedule: false,
@@ -145,6 +150,8 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
     // use them as the Invoice No. / Invoice date prefill. Only overwrite when
     // still blank — the first (highest-priority) schedule row that has them wins.
     if (!row.invoiceNo && r.invoiceNo) row.invoiceNo = r.invoiceNo;
+    if (!row.expNo && r.expNo) row.expNo = r.expNo;
+    if (!row.expDate && r.expDate) row.expDate = r.expDate;
     if (!row.expectedDelivery && r.expectedDelivery) row.expectedDelivery = r.expectedDelivery;
   }
 
@@ -157,6 +164,7 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
     row.contractNo ||= po.contract?.marchentContNo ?? "";
     row.contractDate ||= po.contract?.contractDate ?? "";
     row.buyerCode ||= po.contract?.buyerCode ?? "";
+    row.packSet ||= po.contract?.packSet ?? "";
 
     // Country-group fallback ONLY — countryCodesJson carries H&M's market
     // GROUP (e.g. "OE" = Office Europe) rather than a destination country,
@@ -263,14 +271,16 @@ export async function buildPrefill(
       // Also hydrate contract metadata from the Sales Contract PO when possible.
       const po = await prisma.salesContractPo.findFirst({
         where: { orderNo: { startsWith: short } },
-        include: { contract: { select: { marchentContNo: true, contractDate: true, buyerCode: true } } },
+        include: { contract: { select: { marchentContNo: true, contractDate: true, buyerCode: true, packSet: true } } },
       });
-      const templates = listTemplates();
+      // The invoice's displayed country code is the shipment destination
+      // (MY / AU / NL …). It no longer picks a template — the writer always
+      // uses one of the two bundled AZ templates — but is still shown on
+      // the invoice and used in the exporter block, so we keep carrying it.
       const country = preferredCountryCode(fallback);
-      const t = resolveTemplate(country, fallback.marketSubCode, templates);
       return {
         orderNo: short,
-        countryCode: t?.countryCode ?? country,
+        countryCode: country,
         marketCode: country,
         marketSubCode: fallback.marketSubCode,
         contractNo: fallback.contractNo || po?.contract?.marchentContNo || "",
@@ -290,6 +300,9 @@ export async function buildPrefill(
         totalCartons: fallback.cartons ?? undefined,
         measurementCbm: fallback.measurementCbm ?? undefined,
         invoiceNo: fallback.invoiceNo,
+        expNo: fallback.expNo,
+        expDate: fallback.expDate,
+        packSet: po?.contract?.packSet ?? "",
         expectedDelivery: fallback.expectedDelivery,
         foundInSalesContract: !!po,
         foundInShipmentSchedule: true,
@@ -300,15 +313,12 @@ export async function buildPrefill(
   const all = await listOrderNosWithPrefill();
   const row = all.find((r) => r.orderNo === short);
   if (!row) return null;
-  const templates = listTemplates();
-  // The invoice's country code is the shipment destination (MY / AU / NL),
-  // not the H&M market-group code. Template resolution and the on-screen
-  // "Country code" field both use this preferred value.
+  // Country code is the shipment destination; it no longer picks a template
+  // (see resolveTemplate), only shows on the invoice body.
   const country = preferredCountryCode(row);
-  const t = resolveTemplate(country, row.marketSubCode, templates);
   return {
     orderNo: short,
-    countryCode: t?.countryCode ?? country,
+    countryCode: country,
     marketCode: country,
     marketSubCode: row.marketSubCode,
     contractNo: row.contractNo,
@@ -328,6 +338,9 @@ export async function buildPrefill(
     totalCartons: row.totalCartons ?? undefined,
     measurementCbm: row.measurementCbm ?? undefined,
     invoiceNo: row.invoiceNo,
+    expNo: row.expNo,
+    expDate: row.expDate,
+    packSet: row.packSet,
     expectedDelivery: row.expectedDelivery,
     foundInSalesContract: row.foundInSalesContract,
     foundInShipmentSchedule: row.foundInShipmentSchedule,

@@ -21,7 +21,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const { searchParams } = new URL(req.url);
-  const templatePath = searchParams.get("template") || undefined;
+  // Template-preserve path was removed on 2026-11-03 — the writer always
+  // builds a fresh workbook so no stale old-PO rows can linger via a template.
   const contractId = searchParams.get("contractId") || undefined;
   // Multi-select: `?ids=a,b,c` — comma-separated Sales Contract ids. When
   // provided, the summary only covers those contracts (user rule 2026-10-29).
@@ -54,7 +55,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const result = await generateHmSummary({ templatePath, contractId, contractIds });
+    const result = await generateHmSummary({ contractId, contractIds });
     const buffer = await readFile(result.outputPath);
     await audit({
       entityType: "contract", entityId: contractId ?? "all",
@@ -62,9 +63,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       data: {
         total: result.totalRows,
         inserted: result.insertedRows,
-        preserved: result.preservedRows,
-        skippedMatches: result.skippedExistingMatches.length,
-        ambiguous: result.ambiguousMatches.length,
         skippedPos: result.skippedPos.length,
       },
     });

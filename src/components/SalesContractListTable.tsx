@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { BulkDownloadBar } from "@/components/BulkDownloadBar";
 import { setCurrentContractAction } from "@/app/actions/sales-contract-config";
+import { deleteSalesContractAction } from "@/app/actions/sales-contract";
 import { useRouter } from "next/navigation";
 
 /** Row shape pre-flattened by the server page — keeps this component free of
@@ -161,14 +162,66 @@ export function SalesContractListTable({ rows }: { rows: SalesContractListRow[] 
                   <span className="badge bg-slate-100 text-slate-600">{c.status}</span>
                 </td>
                 <td className="td text-slate-400">{c.createdAt}</td>
-                <td className="td">
+                <td className="td flex items-center gap-2">
                   <Link href={`/sales-contract/${c.id}`} className="text-ananta hover:underline">Open →</Link>
+                  <DeleteContractButton id={c.id} label={c.label} posCount={c.posCount} />
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+    </>
+  );
+}
+
+/**
+ * Delete-contract button with a confirm dialog that lists what will be wiped.
+ * Hits the server action, which also removes every downstream Shipment /
+ * Customs Invoice row + their PDFs on disk (hm.contract.deleted audit event).
+ */
+function DeleteContractButton({ id, label, posCount }: { id: string; label: string; posCount: number }) {
+  const router = useRouter();
+  const [pending, startTransition] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+
+  const onClick = () => {
+    const msg =
+      posCount > 0
+        ? `Delete Sales Contract "${label}"?\n\nThis will permanently remove ${posCount} PO${posCount === 1 ? "" : "s"}, every linked Shipment Schedule row, every Customs Invoice for the same order numbers, and every PDF on disk.\n\nType the contract name to confirm — this cannot be undone.`
+        : `Delete empty Sales Contract "${label}"? This cannot be undone.`;
+    if (posCount > 0) {
+      const typed = window.prompt(msg, "");
+      if (typed === null) return;
+      if (typed.trim() !== label.trim()) {
+        setError("Name did not match — nothing deleted.");
+        return;
+      }
+    } else {
+      if (!window.confirm(msg)) return;
+    }
+    setError(null);
+    const fd = new FormData();
+    fd.append("contractId", id);
+    startTransition(async () => {
+      const res = await deleteSalesContractAction(fd);
+      if (res?.error) setError(res.error);
+      else router.refresh();
+    });
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={pending}
+        className="text-xs text-rose-700 hover:underline disabled:opacity-50"
+        title="Delete this contract and every row downstream of it"
+      >
+        {pending ? "Deleting…" : "Delete"}
+      </button>
+      {error ? <span className="text-[10px] text-rose-600">{error}</span> : null}
     </>
   );
 }

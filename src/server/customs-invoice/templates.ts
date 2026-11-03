@@ -8,6 +8,13 @@ import { env } from "@/lib/env";
  *  win on filename collisions so the user can override a bundled template. */
 export const UPLOADED_TEMPLATE_DIR = join(env.STORAGE_ROOT, "customs-invoice-templates");
 
+/** Repo-bundled template folder (relative to the process cwd = repo root).
+ *  ALWAYS scanned, regardless of env.CUSTOMS_INVOICE_TEMPLATE_DIR, so a stale
+ *  env or a dev server started before the switchover still finds the two
+ *  bundled AZ / AZ Pack templates. The env dir is still scanned too for
+ *  installations that override the location. */
+const BUNDLED_TEMPLATE_DIR = join(process.cwd(), "templates", "customs-invoice");
+
 function ensureUploadDir(): void {
   if (!existsSync(UPLOADED_TEMPLATE_DIR)) {
     mkdirSync(UPLOADED_TEMPLATE_DIR, { recursive: true });
@@ -123,7 +130,14 @@ export function listTemplates(dir?: string): (InvoiceTemplate & { source: "uploa
   if (dir) return scanDir(dir, "bundled");
 
   const uploaded = scanDir(UPLOADED_TEMPLATE_DIR, "uploaded");
-  const bundled = scanDir(env.CUSTOMS_INVOICE_TEMPLATE_DIR, "bundled");
+  // Always scan the repo-bundled folder first (it ships with the deploy and
+  // must survive a stale env). Then the env-configured folder, if different.
+  const bundledPrimary = scanDir(BUNDLED_TEMPLATE_DIR, "bundled");
+  const bundledEnv = env.CUSTOMS_INVOICE_TEMPLATE_DIR && env.CUSTOMS_INVOICE_TEMPLATE_DIR !== BUNDLED_TEMPLATE_DIR
+    ? scanDir(env.CUSTOMS_INVOICE_TEMPLATE_DIR, "bundled")
+    : [];
+  const bundled = [...bundledPrimary, ...bundledEnv.filter((t) =>
+    !bundledPrimary.some((b) => b.filename.toLowerCase() === t.filename.toLowerCase()))];
   const seen = new Set<string>(uploaded.map((t) => t.filename.toLowerCase()));
   const merged = [...uploaded, ...bundled.filter((t) => !seen.has(t.filename.toLowerCase()))];
   // Within the same country code, show invoice templates (no variant, no "PACK"
@@ -191,65 +205,31 @@ export async function deleteUploadedTemplate(filename: string): Promise<{ ok: bo
 }
 
 /**
- * Pick the best template for a (marketCode, marketSubCode) pair.
+ * Pick which of the two bundled templates applies.
  *
- * Strategy:
- *   1. Exact countryCode == marketSubCode (highest priority).
- *   2. Match countryCode starts with marketCode AND variant matches marketSubCode suffix.
- *   3. Exact countryCode == marketCode (ignore variant).
- *   4. First template whose code shares the market prefix.
- *   5. null when nothing matches.
+ * User rule 2026-11-03: country code no longer drives template selection.
+ * The system ships exactly two templates, both named "0000 AZ…" historically
+ * but used for every destination country:
+ *   - "0000 AZ Pack.xlsx"  when the sales-contract packSet > 1
+ *     (multipack orders, e.g. "10 Pack · 1 Pack = 2 Pcs")
+ *   - "0000 AZ.xlsx"        when packSet is 1 (or blank/unknown)
+ *
+ * The pack size itself (how many pieces per pack) is also sourced from the
+ * sales-contract packSet; the writer patches it into the AZ Pack template's
+ * formulas at write time. See `patchTemplate`.
  */
 export function resolveTemplate(
-  marketCode: string,
-  marketSubCode: string,
+  _marketCode: string,
+  _marketSubCode: string,
   templates: InvoiceTemplate[],
+  packSet?: string | number | null,
 ): InvoiceTemplate | null {
-  const m = marketCode.trim().toUpperCase();
-  const sub = marketSubCode.trim().toUpperCase();
-  if (!m && !sub) return null;
-
-  // Invoice generation never picks a packing-list template. PACK files stay
-  // visible on the health page (they still need to be managed) — they are
-  // simply not candidates here.
-  const invoiceOnly = templates.filter((t) => !isPackTemplate(t));
-
-  // 1. exact code match on full sub-code.
-  if (sub) {
-    const exact = invoiceOnly.find((t) => t.countryCode === sub);
-    if (exact) return exact;
-  }
-
-  // 1b. composite `${m}-${sub}` exact match — the folder uses this convention
-  // for country+sub-market templates whose parser folds the sub into the code
-  // (e.g. market "OF" + sub "IT" → template filename "0000 OF-(IT).xlsx" whose
-  // parsed countryCode is "OF-IT"). Without this step, resolver would fall
-  // through to the first OF-* prefix match and silently pick the wrong market.
-  if (m && sub) {
-    const composite = `${m}-${sub}`;
-    const comp = invoiceOnly.find((t) => t.countryCode === composite);
-    if (comp) return comp;
-  }
-
-  // 2. code prefix + variant suffix (both halves usable).
-  if (m && sub) {
-    const prefixVariant = invoiceOnly.find((t) => t.countryCode === m && sub.endsWith(t.variant) && t.variant);
-    if (prefixVariant) return prefixVariant;
-  }
-
-  // 3. exact market code (any variant).
-  if (m) {
-    const codeOnly = invoiceOnly.filter((t) => t.countryCode === m);
-    if (codeOnly.length) return codeOnly[0];
-  }
-
-  // 4. partial prefix match (e.g. market "OE" but template "OE-NL-NLW174").
-  if (m) {
-    const prefix = invoiceOnly.find((t) => t.countryCode.startsWith(m + "-") || t.countryCode.startsWith(m));
-    if (prefix) return prefix;
-  }
-
-  return null;
+  const n = typeof packSet === "number" ? packSet : Number(String(packSet ?? "").trim());
+  const multipack = Number.isFinite(n) && n > 1;
+  const pack = templates.find(isPackTemplate);
+  const plain = templates.find((t) => !isPackTemplate(t));
+  if (multipack) return pack ?? plain ?? null;
+  return plain ?? pack ?? null;
 }
 
 /**
@@ -262,6 +242,7 @@ export function resolveTemplateWithOverrides(
   marketSubCode: string,
   templates: InvoiceTemplate[],
   overrides: Record<string, string>,
+  packSet?: string | number | null,
 ): InvoiceTemplate | null {
   const sub = (marketSubCode || "").trim().toUpperCase();
   const mkt = (marketCode || "").trim().toUpperCase();
@@ -270,7 +251,9 @@ export function resolveTemplateWithOverrides(
     const t = templates.find((x) => x.filename === forced);
     if (t) return t;
   }
-  return resolveTemplate(marketCode, marketSubCode, templates);
+  // Default path: packSet-driven (user rule 2026-11-03) — the market/sub are
+  // ignored and the two bundled AZ templates handle every destination.
+  return resolveTemplate(marketCode, marketSubCode, templates, packSet);
 }
 
 /** Unique country codes available as templates (for a UI dropdown). */

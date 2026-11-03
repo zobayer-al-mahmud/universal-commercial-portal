@@ -32,7 +32,7 @@ export function ShipmentScheduleRowEditor({
 
   return (
     <tr className="bg-sky-50">
-      <td colSpan={16} className="p-3">
+      <td colSpan={18} className="p-3">
         <form action={action} className="space-y-3">
           <input type="hidden" name="rowId" value={row.id} />
           <input type="hidden" name="scheduleId" value={scheduleId} />
@@ -50,6 +50,8 @@ export function ShipmentScheduleRowEditor({
             <Field label="CAT" name="cat" defaultValue={row.cat} />
             <Field label="HTS" name="hts" defaultValue={row.hts} />
             <Field label="INVOICE" name="invoiceNo" defaultValue={row.invoiceNo} />
+            <Field label="EXP" name="expNo" defaultValue={row.expNo} />
+            <Field label="EXP Date" name="expDate" defaultValue={row.expDate} />
             <Field label="Mode" name="transportMode" defaultValue={row.transportMode} />
 
             <div className="sm:col-span-3 lg:col-span-4 mt-2 border-t border-slate-200 pt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-500">

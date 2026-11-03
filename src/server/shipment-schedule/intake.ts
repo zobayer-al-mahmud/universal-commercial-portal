@@ -322,22 +322,160 @@ export async function findRowOwningInvoiceNo(
 }
 
 /**
- * Allocate sequential invoice numbers across every row of this week's
+ * Lookup a row that already owns a given expNo. Mirrors findRowOwningInvoiceNo:
+ * EXP numbers are globally unique across every schedule + cut-off when
+ * non-empty (user spec 2026-11-03). Blank values are never considered a dup.
+ */
+export async function findRowOwningExpNo(
+  expNo: string,
+  excludeRowId?: string,
+): Promise<
+  | {
+      rowId: string;
+      scheduleId: string;
+      weekTitle: string;
+      cutoffLabel: string;
+      orderNo: string;
+    }
+  | null
+> {
+  const trimmed = (expNo ?? "").trim();
+  if (!trimmed) return null;
+  const owner = await prisma.shipmentScheduleRow.findFirst({
+    where: {
+      expNo: trimmed,
+      ...(excludeRowId ? { NOT: { id: excludeRowId } } : {}),
+    },
+    include: {
+      schedule: { select: { weekTitle: true } },
+      cutoff: { select: { label: true } },
+    },
+  });
+  if (!owner) return null;
+  return {
+    rowId: owner.id,
+    scheduleId: owner.scheduleId,
+    weekTitle: owner.schedule.weekTitle,
+    cutoffLabel: owner.cutoff.label,
+    orderNo: owner.orderNo,
+  };
+}
+
+/**
+ * Shared allocator for a numeric field on ShipmentScheduleRow (invoiceNo /
+ * expNo). Walks every cut-off of the week in sortOrder, then every row in
+ * createdAt order, and assigns sequential numbers starting from `startNumber`.
+ *
+ * Skip-if-set (user spec 2026-11-03): rows that already carry a non-empty
+ * value are LEFT ALONE. Only rows whose field is blank receive a number. This
+ * replaces the previous "overwrite everything" behaviour so an already
+ * allocated number is never silently replaced — a manual edit is required to
+ * change one.
+ *
+ * No duplicates: the pool of candidate numbers is grown from `startNumber`
+ * upward, skipping any value already present on a row in this schedule OR in
+ * another schedule (global uniqueness). Allocation fails fast if the pool
+ * cannot be filled.
+ */
+async function allocateFieldNumbers(opts: {
+  scheduleId: string;
+  startNumber: number;
+  field: "invoiceNo" | "expNo";
+  reasonLabel: string;
+  actor: string;
+}): Promise<{
+  updated: number;
+  firstAssigned: string;
+  lastAssigned: string;
+  skipped: number;
+}> {
+  const { scheduleId, field, reasonLabel, actor } = opts;
+  const start = Math.floor(opts.startNumber);
+  if (!Number.isFinite(start) || start < 0) {
+    throw new Error(`Starting ${reasonLabel} number must be a non-negative integer.`);
+  }
+  const cutoffs = await prisma.shipmentScheduleCutoff.findMany({
+    where: { scheduleId },
+    orderBy: { sortOrder: "asc" },
+    include: { rows: { orderBy: { createdAt: "asc" } } },
+  });
+  const flat = cutoffs.flatMap((c) => c.rows);
+  if (flat.length === 0) {
+    return { updated: 0, firstAssigned: "", lastAssigned: "", skipped: 0 };
+  }
+
+  // Rows that already carry a value — skip them.
+  const targets = flat.filter((r) => ((r as unknown as Record<string, string>)[field] ?? "").trim() === "");
+  const skipped = flat.length - targets.length;
+  if (targets.length === 0) {
+    return { updated: 0, firstAssigned: "", lastAssigned: "", skipped };
+  }
+
+  // Build the pool of candidate numbers starting from `start`, skipping any
+  // number already present on a row anywhere in the system (same schedule OR
+  // another one). This way the allocator never produces a duplicate even if
+  // the user previously allocated against the same range by hand.
+  const used = await prisma.shipmentScheduleRow.findMany({
+    where: { [field]: { not: "" } },
+    select: { [field]: true },
+  });
+  const usedSet = new Set<string>(
+    used
+      .map((r) => String((r as unknown as Record<string, string>)[field] ?? "").trim())
+      .filter((v) => v !== ""),
+  );
+  const assignments: string[] = [];
+  let candidate = start;
+  while (assignments.length < targets.length) {
+    const next = String(candidate);
+    if (!usedSet.has(next)) {
+      assignments.push(next);
+      usedSet.add(next);
+    }
+    candidate++;
+    if (candidate > start + 1_000_000) {
+      throw new Error(`Could not find enough free ${reasonLabel} numbers starting from ${start}.`);
+    }
+  }
+
+  for (let i = 0; i < targets.length; i++) {
+    const row = targets[i];
+    const next = assignments[i];
+    await prisma.shipmentScheduleRow.update({ where: { id: row.id }, data: { [field]: next } });
+    await prisma.shipmentScheduleRowEdit.create({
+      data: {
+        rowId: row.id,
+        field,
+        oldValue: "",
+        newValue: next,
+        reason: `Auto-allocated from ${start}`,
+        editor: actor,
+      },
+    });
+  }
+  const first = assignments[0];
+  const last = assignments[assignments.length - 1];
+  await audit({
+    entityType: "shipment-schedule",
+    entityId: scheduleId,
+    action: `${reasonLabel}.allocated`,
+    actor,
+    data: { start: String(start), first, last, updated: targets.length, skipped },
+  });
+  return { updated: targets.length, firstAssigned: first, lastAssigned: last, skipped };
+}
+
+/**
+ * Allocate sequential invoice numbers across every blank row of this week's
  * schedule. Numbering runs cut-off by cut-off (sortOrder ascending), then row
  * by row (createdAt ascending). Example: start=2000 with a week whose 1st
- * cut-off has 6 rows and 2nd cut-off has 4 rows produces 2000..2005 on the
- * 1st cut-off, 2006..2009 on the 2nd.
+ * cut-off has 6 rows (2 already numbered) and 2nd cut-off has 4 (all blank)
+ * produces 2000..2003 on the 1st cut-off's four blanks, 2004..2007 on the 2nd.
  *
- * Every row is OVERWRITTEN (no "skip when already set"), because the user's
- * flow is "I'm numbering this week from X" — if they want to protect one row
- * they can edit it afterwards. Change history is recorded in
- * ShipmentScheduleRowEdit so the previous value stays auditable.
- *
- * Globally-unique precheck: before writing anything, the full target range
- * [start .. start+N-1] is checked against every OTHER schedule. If any number
- * in the range already lives on a row outside this schedule, the whole
- * allocation aborts (no partial writes). This upholds the invariant that one
- * invoice number appears on at most one row across every week + cut-off.
+ * Skip-if-set (user spec 2026-11-03): rows that already carry an invoice
+ * number are NEVER overwritten. A manual edit is required to change one.
+ * Globally unique: the candidate pool skips any number already in use on any
+ * row in any schedule, so re-running the allocator never produces a duplicate.
  */
 export async function allocateInvoiceNumbers(opts: {
   scheduleId: string;
@@ -347,69 +485,35 @@ export async function allocateInvoiceNumbers(opts: {
   updated: number;
   firstAssigned: string;
   lastAssigned: string;
+  skipped: number;
 }> {
-  const { scheduleId, actor } = opts;
-  const start = Math.floor(opts.startNumber);
-  if (!Number.isFinite(start) || start < 0) {
-    throw new Error("Starting invoice number must be a non-negative integer.");
-  }
-  const cutoffs = await prisma.shipmentScheduleCutoff.findMany({
-    where: { scheduleId },
-    orderBy: { sortOrder: "asc" },
-    include: { rows: { orderBy: { createdAt: "asc" } } },
+  return allocateFieldNumbers({
+    scheduleId: opts.scheduleId,
+    startNumber: opts.startNumber,
+    field: "invoiceNo",
+    reasonLabel: "invoice",
+    actor: opts.actor,
   });
-  // Flatten to [row, row, …] in the exact order the user asked for.
-  const flat = cutoffs.flatMap((c) => c.rows);
-  if (flat.length === 0) {
-    return { updated: 0, firstAssigned: "", lastAssigned: "" };
-  }
+}
 
-  // Pre-check: no number in the target range may already live on a row of
-  // ANOTHER schedule. Doing this before any write keeps the allocation atomic
-  // from the user's point of view (either every row updates, or none do).
-  const range: string[] = [];
-  for (let i = 0; i < flat.length; i++) range.push(String(start + i));
-  const clashes = await prisma.shipmentScheduleRow.findMany({
-    where: { invoiceNo: { in: range }, scheduleId: { not: scheduleId } },
-    select: { invoiceNo: true, scheduleId: true, schedule: { select: { weekTitle: true } } },
-    take: 10,
+/** Allocate sequential EXP numbers — same rules as `allocateInvoiceNumbers`. */
+export async function allocateExpNumbers(opts: {
+  scheduleId: string;
+  startNumber: number;
+  actor: string;
+}): Promise<{
+  updated: number;
+  firstAssigned: string;
+  lastAssigned: string;
+  skipped: number;
+}> {
+  return allocateFieldNumbers({
+    scheduleId: opts.scheduleId,
+    startNumber: opts.startNumber,
+    field: "expNo",
+    reasonLabel: "exp",
+    actor: opts.actor,
   });
-  if (clashes.length > 0) {
-    const sample = clashes
-      .map((c) => `${c.invoiceNo} (already in “${c.schedule.weekTitle}”)`)
-      .join(", ");
-    throw new Error(
-      `Invoice numbers must be unique across every week. These numbers are already in use: ${sample}.`,
-    );
-  }
-
-  let n = start;
-  for (const row of flat) {
-    const next = String(n);
-    if (row.invoiceNo !== next) {
-      await prisma.shipmentScheduleRow.update({ where: { id: row.id }, data: { invoiceNo: next } });
-      await prisma.shipmentScheduleRowEdit.create({
-        data: {
-          rowId: row.id,
-          field: "invoiceNo",
-          oldValue: row.invoiceNo,
-          newValue: next,
-          reason: `Auto-allocated from ${start}`,
-          editor: actor,
-        },
-      });
-    }
-    n++;
-  }
-  const last = String(n - 1);
-  await audit({
-    entityType: "shipment-schedule",
-    entityId: scheduleId,
-    action: "invoice.allocated",
-    actor,
-    data: { start: String(start), end: last, rows: flat.length },
-  });
-  return { updated: flat.length, firstAssigned: String(start), lastAssigned: last };
 }
 
 /** Delete a row (and its edit history). The PDF file stays on disk for audit. */

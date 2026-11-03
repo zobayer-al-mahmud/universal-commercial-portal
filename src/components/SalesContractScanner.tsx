@@ -23,7 +23,7 @@ interface ImportSummary {
   importedCount: number;      // brand-new POs added
   replacedCount: number;      // existing POs updated by a NEWER Creation date
   duplicateCount: number;     // same Creation date re-scan — idempotent no-op
-  rejectedCount: number;      // older Creation date — placeholder BLOCKED
+  rejectedCount: number;      // older Creation date — placeholder deleted outright
   missingCount: number;       // folders missing one of the three PDFs
   errorCount: number;
   sampleIssues: string[];

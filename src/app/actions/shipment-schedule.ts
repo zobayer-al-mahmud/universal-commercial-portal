@@ -15,9 +15,10 @@ import {
   moveRowToCutoff,
   deleteRow,
   allocateInvoiceNumbers,
+  allocateExpNumbers,
 } from "@/server/shipment-schedule/intake";
 import { isEditableField, validateField, type EditableField } from "@/server/shipment-schedule/edit";
-import { findRowOwningInvoiceNo } from "@/server/shipment-schedule/intake";
+import { findRowOwningInvoiceNo, findRowOwningExpNo } from "@/server/shipment-schedule/intake";
 
 export interface CreateScheduleState {
   error?: string;
@@ -118,10 +119,52 @@ export async function allocateInvoiceNumbersAction(
   try {
     const r = await allocateInvoiceNumbers({ scheduleId, startNumber: Number(startRaw), actor: user.email });
     revalidatePath(`/shipment-schedule/${scheduleId}`);
-    if (r.updated === 0) return { ok: true, message: "No rows in this week yet — nothing to number." };
+    if (r.updated === 0) {
+      if (r.skipped > 0) {
+        return { ok: true, message: `No blank rows — all ${r.skipped} row(s) already carry an invoice number.` };
+      }
+      return { ok: true, message: "No rows in this week yet — nothing to number." };
+    }
+    const skipNote = r.skipped > 0 ? ` (${r.skipped} row(s) left untouched — already had a number)` : "";
     return {
       ok: true,
-      message: `Allocated ${r.updated} invoice number(s): ${r.firstAssigned} → ${r.lastAssigned}.`,
+      message: `Allocated ${r.updated} invoice number(s): ${r.firstAssigned} → ${r.lastAssigned}${skipNote}.`,
+    };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Allocation failed." };
+  }
+}
+
+export interface AllocateExpState {
+  ok?: boolean;
+  error?: string;
+  message?: string;
+}
+
+export async function allocateExpNumbersAction(
+  _prev: AllocateExpState,
+  formData: FormData,
+): Promise<AllocateExpState> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.JOB_CREATE)) return { error: "Forbidden." };
+  const scheduleId = String(formData.get("scheduleId") ?? "").trim();
+  const startRaw = String(formData.get("startNumber") ?? "").trim();
+  if (!scheduleId) return { error: "Missing scheduleId." };
+  if (!/^\d+$/.test(startRaw)) return { error: "Starting EXP number must be a whole number." };
+  try {
+    const r = await allocateExpNumbers({ scheduleId, startNumber: Number(startRaw), actor: user.email });
+    revalidatePath(`/shipment-schedule/${scheduleId}`);
+    if (r.updated === 0) {
+      if (r.skipped > 0) {
+        return { ok: true, message: `No blank rows — all ${r.skipped} row(s) already carry an EXP number.` };
+      }
+      return { ok: true, message: "No rows in this week yet — nothing to number." };
+    }
+    const skipNote = r.skipped > 0 ? ` (${r.skipped} row(s) left untouched — already had a number)` : "";
+    return {
+      ok: true,
+      message: `Allocated ${r.updated} EXP number(s): ${r.firstAssigned} → ${r.lastAssigned}${skipNote}.`,
     };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Allocation failed." };
@@ -195,6 +238,18 @@ export async function editRowAction(_prev: EditRowState, formData: FormData): Pr
       return {
         errors: [
           `Invoice No. "${invoiceEdit.newValue}" is already used on Order ${owner.orderNo} in “${owner.weekTitle} · ${owner.cutoffLabel}”. Each invoice number must be unique across every week.`,
+        ],
+      };
+    }
+  }
+
+  const expEdit = changes.find((c) => c.field === "expNo");
+  if (expEdit && expEdit.newValue.trim() !== "") {
+    const owner = await findRowOwningExpNo(expEdit.newValue, rowId);
+    if (owner) {
+      return {
+        errors: [
+          `EXP No. "${expEdit.newValue}" is already used on Order ${owner.orderNo} in “${owner.weekTitle} · ${owner.cutoffLabel}”. Each EXP number must be unique across every week.`,
         ],
       };
     }

@@ -582,8 +582,8 @@ export async function commitScannedOrders(input: ScanInput & { orderNos?: string
     if (missing.length > 0) { result.skipped.push({ orderNo: b.orderNo, reason: `missing ${missing.join(",")}` }); continue; }
     // NOTE: no "already imported" early skip. Intake now handles re-scans by
     // comparing the incoming PO PDF's Creation date against the stored copy:
-    // newer wins (updates in place), same is idempotent, older is rejected
-    // with a BLOCKED placeholder. See processSalesContractPoSet (user rule
+    // newer wins (updates in place), same is idempotent, older is deleted
+    // outright (no BLOCKED residue). See processSalesContractPoSet (user rule
     // 2026-11-01).
     // The uploader validates filename extension — our PDFs may have come
     // from a .msg container; rename them to `<orderNo>_<kind>.pdf` so the
@@ -802,7 +802,8 @@ export async function commitScannedFromUploads(opts: {
       return { name, buffer: f.buffer, kind: k };
     });
     try {
-      const res = await uploadSalesContractPdfSet(opts.contractId, files, { actor, folderLetter: opts.folderLetter });
+      // Browser-upload path never persists bytes to the server's filesystem.
+      const res = await uploadSalesContractPdfSet(opts.contractId, files, { actor, folderLetter: opts.folderLetter, persistToDisk: false });
       if (res.outcome === "inserted") {
         result.imported.push({ orderNo: b.orderNo, poId: res.poId });
       } else if (res.outcome === "failed") {

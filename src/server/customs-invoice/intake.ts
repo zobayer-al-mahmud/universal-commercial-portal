@@ -56,6 +56,9 @@ export async function createInvoiceForOrder(
       // the row carries).
       invoiceNumber: invoiceNo || prefill.invoiceNo,
       invoiceDate: prefill.expectedDelivery,
+      expNo: prefill.expNo,
+      expDate: prefill.expDate,
+      packSet: prefill.packSet,
       contractNo: prefill.contractNo,
       contractDate: prefill.contractDate,
       hmOrderNo: prefill.hmOrderNo,

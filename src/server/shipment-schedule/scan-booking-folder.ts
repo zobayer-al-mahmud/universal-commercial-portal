@@ -18,7 +18,12 @@
  * Already-extracted PDFs (sha256 collision) are reported as "skipped" and
  * left alone, so re-scanning the same folder is cheap and idempotent.
  */
-import { readFile, readdir, stat, mkdir, writeFile } from "node:fs/promises";
+// Note: the server-side `scanBookingFolder({ folderPath })` entry point was
+// removed on 2026-11-03 (user rule: nothing stays on the server except
+// extracted data + generated Excels; every source folder lives on the user's
+// PC and is streamed up through the browser folder picker). Keep only
+// `scanBookingUploads`, which takes in-memory PDF buffers from that upload.
+import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { prisma } from "@/lib/db";
@@ -99,61 +104,6 @@ export async function scanBookingUploads(opts: {
     await processOneBookingPdf(result, pdf.fileName, pdf.buffer, opts.actor);
   }
   await auditScan(result, opts.actor);
-  return result;
-}
-
-/** Entry point used by the typed path flow: server reads files from disk. */
-export async function scanBookingFolder(opts: {
-  folderPath: string;
-  actor: string;
-}): Promise<BookingFolderScanResult> {
-  const { folderPath, actor } = opts;
-  const result: BookingFolderScanResult = {
-    folderPath,
-    pdfsFound: 0,
-    skippedAlreadyExtracted: 0,
-    matchedAndHydrated: 0,
-    unmatched: 0,
-    parseFailed: 0,
-    items: [],
-  };
-
-  let entries: string[] = [];
-  try {
-    entries = await readdir(folderPath);
-  } catch (e) {
-    throw new Error(`Could not read folder "${folderPath}": ${e instanceof Error ? e.message : "unknown"}`);
-  }
-
-  const pdfPaths: string[] = [];
-  for (const name of entries) {
-    const full = join(folderPath, name);
-    try {
-      const s = await stat(full);
-      if (s.isFile() && name.toLowerCase().endsWith(".pdf")) pdfPaths.push(full);
-    } catch { /* skip unreadable entries */ }
-  }
-  result.pdfsFound = pdfPaths.length;
-
-  for (const path of pdfPaths) {
-    const fileName = path.split(/[\\/]/).pop() || path;
-    let buf: Buffer;
-    try {
-      buf = await readFile(path);
-    } catch (e) {
-      result.parseFailed++;
-      result.items.push({
-        fileName, action: "parse_failed",
-        reason: `read failed: ${e instanceof Error ? e.message : "unknown"}`,
-        orderNoPrefix: "", marketCode: "", marketSubCode: "", pdfFob: null, rowFob: null,
-        fobMatches: null, bcn: "", bookingRef: "", bookingStatus: "",
-      });
-      continue;
-    }
-    await processOneBookingPdf(result, fileName, buf, actor);
-  }
-
-  await auditScan(result, actor);
   return result;
 }
 

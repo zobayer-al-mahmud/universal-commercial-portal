@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/ui";
 import { ShipmentScheduleHeaderEditor } from "@/components/ShipmentScheduleHeaderEditor";
 import { ShipmentScheduleCutoffs } from "@/components/ShipmentScheduleCutoffs";
 import { ShipmentScheduleInvoiceAllocator } from "@/components/ShipmentScheduleInvoiceAllocator";
+import { ShipmentScheduleExpAllocator } from "@/components/ShipmentScheduleExpAllocator";
 import { ShipmentScheduleGrid } from "@/components/ShipmentScheduleGrid";
 
 export const dynamic = "force-dynamic";
@@ -51,6 +52,8 @@ export default async function ShipmentScheduleDetailPage({ params }: { params: {
     cartons: r.cartons,
     measurementCbm: r.measurementCbm,
     invoiceNo: r.invoiceNo,
+    expNo: r.expNo,
+    expDate: r.expDate,
     pdfFileName: r.pdfFileName,
     matched: r.matched,
     matchReason: r.matchReason,
@@ -80,8 +83,12 @@ export default async function ShipmentScheduleDetailPage({ params }: { params: {
         <ShipmentScheduleCutoffs scheduleId={schedule.id} cutoffs={cutoffOptions} rowCounts={rowCountsByCutoff} />
       </div>
 
-      <div className="mb-6">
+      <div className="mb-4">
         <ShipmentScheduleInvoiceAllocator scheduleId={schedule.id} rowCount={schedule.rows.length} />
+      </div>
+
+      <div className="mb-6">
+        <ShipmentScheduleExpAllocator scheduleId={schedule.id} rowCount={schedule.rows.length} />
       </div>
 
       <ShipmentScheduleGrid

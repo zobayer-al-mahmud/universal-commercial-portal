@@ -40,7 +40,18 @@ export async function writeInvoiceXlsx(inv: InvoiceFields, opts: WriteInvoiceOpt
   const templates = listTemplates();
   let templatePath = opts.templatePath ?? "";
   if (!templatePath) {
-    const resolved = resolveTemplateWithOverrides(inv.marketCode, inv.marketSubCode || inv.countryCode, templates, opts.templateOverrides ?? {});
+    // Market/country no longer drives the choice — packSet does (user rule
+    // 2026-11-03). The two bundled templates handle every destination. An
+    // explicit `templateOverrides` map still wins (bulk-generation path uses
+    // it to force a specific file for a code) and falls back to the AZ /
+    // AZ Pack pick based on `inv.packSet`.
+    const resolved = resolveTemplateWithOverrides(
+      inv.marketCode,
+      inv.marketSubCode || inv.countryCode,
+      templates,
+      opts.templateOverrides ?? {},
+      inv.packSet,
+    );
     if (resolved) templatePath = resolved.path;
   }
 

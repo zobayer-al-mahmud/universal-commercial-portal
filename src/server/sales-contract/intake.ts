@@ -83,6 +83,103 @@ export async function updateSalesContractHeader(
   await audit({ entityType: "contract", entityId: contractId, action: "hm.contract.header.updated", actor, data: { ...patch } });
 }
 
+export interface DeleteSalesContractResult {
+  pos: number;
+  poPdfs: number;
+  customsInvoices: number;
+  invoicePdfs: number;
+  shipmentRows: number;
+  shortOrderNos: number;
+}
+
+/**
+ * Delete a Sales Contract and EVERY row downstream of it (user rule
+ * 2026-11-03). Removes:
+ *   - the SalesContract row (→ cascades SalesContractPo, SalesContractPdf,
+ *     SalesContractRowEdit)
+ *   - every CustomsInvoice whose short orderNo matches one of this contract's
+ *     POs (→ cascades CustomsInvoicePdf + CustomsInvoiceEdit)
+ *   - every ShipmentScheduleRow whose orderNo matches one of this contract's
+ *     POs (→ cascades ShipmentScheduleRowEdit)
+ *   - every PDF file on disk belonging to this contract's POs or to the
+ *     deleted customs invoices
+ * Audit event `hm.contract.deleted` carries counts.
+ */
+export async function deleteSalesContractWithCascade(
+  contractId: string,
+  opts: { actor?: string } = {},
+): Promise<DeleteSalesContractResult> {
+  const actor = opts.actor ?? "system";
+  const contract = await prisma.salesContract.findUnique({
+    where: { id: contractId },
+    select: { id: true, contractNo: true, marchentContNo: true, isCurrent: true },
+  });
+  if (!contract) throw new Error(`Sales Contract ${contractId} not found.`);
+
+  const pos = await prisma.salesContractPo.findMany({
+    where: { contractId },
+    select: {
+      id: true,
+      orderNo: true,
+      pdfs: { select: { storagePath: true } },
+    },
+  });
+  const longOrderNos = pos.map((p) => p.orderNo);
+  const shortOrderNos = Array.from(
+    new Set(longOrderNos.map((o) => (o.match(/\d{6,}/) ?? [o])[0]).filter(Boolean)),
+  );
+  const invoices = shortOrderNos.length
+    ? await prisma.customsInvoice.findMany({
+        where: { orderNo: { in: shortOrderNos } },
+        select: { id: true, orderNo: true, pdfs: { select: { storagePath: true } } },
+      })
+    : [];
+
+  const poPdfPaths = pos.flatMap((p) => p.pdfs.map((f) => f.storagePath));
+  const invoicePdfPaths = invoices.flatMap((inv) => inv.pdfs.map((f) => f.storagePath));
+
+  const shipmentRows = longOrderNos.length
+    ? await prisma.shipmentScheduleRow.count({ where: { orderNo: { in: longOrderNos } } })
+    : 0;
+
+  await prisma.$transaction(async (tx) => {
+    if (shortOrderNos.length) {
+      await tx.customsInvoice.deleteMany({ where: { orderNo: { in: shortOrderNos } } });
+    }
+    if (longOrderNos.length) {
+      await tx.shipmentScheduleRow.deleteMany({ where: { orderNo: { in: longOrderNos } } });
+    }
+    await tx.salesContract.delete({ where: { id: contractId } });
+  });
+
+  const { rm } = await import("fs/promises");
+  for (const path of [...poPdfPaths, ...invoicePdfPaths]) {
+    try { await rm(path, { force: true }); } catch { /* best-effort */ }
+  }
+
+  const result: DeleteSalesContractResult = {
+    pos: pos.length,
+    poPdfs: poPdfPaths.length,
+    customsInvoices: invoices.length,
+    invoicePdfs: invoicePdfPaths.length,
+    shipmentRows,
+    shortOrderNos: shortOrderNos.length,
+  };
+  await audit({
+    entityType: "contract",
+    entityId: contractId,
+    action: "hm.contract.deleted",
+    actor,
+    data: {
+      contractNo: contract.contractNo,
+      marchentContNo: contract.marchentContNo,
+      wasCurrent: contract.isCurrent,
+      wiped: result,
+    },
+  });
+  return result;
+}
+
 /** The directory the three PDFs for a single PO live in. */
 function poDir(contractId: string, poId: string): string {
   return join(env.STORAGE_ROOT, "sales-contract", contractId, poId);
@@ -114,8 +211,19 @@ export interface UploadResult {
 export async function uploadSalesContractPdfSet(
   contractId: string,
   files: SalesContractUploadFile[],
-  opts: { actor?: string; folderLetter?: string } = {},
+  /**
+   * `persistToDisk` (user rule 2026-11-03): browser-upload flow sets this to
+   * false so no raw PDF bytes ever land on the server's filesystem — only
+   * the extracted structured data (poJson, rowsJson, sizeJson, …) stays
+   * in the DB. Legacy flows (direct POST to the per-PO upload route)
+   * default to true to preserve current behaviour. When false, the
+   * SalesContractPdf DB record is still created so UI can show "a Size
+   * breakdown PDF was uploaded", but with an empty storagePath — the file
+   * itself is not retained anywhere server-side.
+   */
+  opts: { actor?: string; folderLetter?: string; persistToDisk?: boolean } = {},
 ): Promise<UploadResult> {
+  const persistToDisk = opts.persistToDisk ?? true;
   const actor = opts.actor ?? "system";
   const maxBytes = env.SALES_CONTRACT_MAX_FILE_MB * 1024 * 1024;
   const rejected: { name: string; reason: string }[] = [];
@@ -163,23 +271,42 @@ export async function uploadSalesContractPdfSet(
     }
   }
 
-  // Persist files to immutable storage. The orderNo is backfilled below.
-  const dir = poDir(contractId, po.id);
-  await mkdir(dir, { recursive: true });
-  for (const { file, sha256 } of valid) {
-    const storagePath = join(dir, `${file.kind}__${sha256.slice(0, 12)}.pdf`);
-    await writeFile(storagePath, file.buffer);
-    await prisma.salesContractPdf.upsert({
-      where: { poId_kind: { poId: po.id, kind: file.kind } },
-      update: { originalName: file.name, sha256, sizeBytes: file.buffer.length, storagePath },
-      create: { poId: po.id, kind: file.kind, originalName: file.name, sha256, sizeBytes: file.buffer.length, storagePath },
-    });
+  // Persist files to immutable storage ONLY when the caller asks for it.
+  // Browser-upload flow passes persistToDisk=false — no bytes land on disk;
+  // the SalesContractPdf DB record is still written (with empty storagePath)
+  // so the PO's "which PDFs were uploaded" trail stays intact.
+  if (persistToDisk) {
+    const dir = poDir(contractId, po.id);
+    await mkdir(dir, { recursive: true });
+    for (const { file, sha256 } of valid) {
+      const storagePath = join(dir, `${file.kind}__${sha256.slice(0, 12)}.pdf`);
+      await writeFile(storagePath, file.buffer);
+      await prisma.salesContractPdf.upsert({
+        where: { poId_kind: { poId: po.id, kind: file.kind } },
+        update: { originalName: file.name, sha256, sizeBytes: file.buffer.length, storagePath },
+        create: { poId: po.id, kind: file.kind, originalName: file.name, sha256, sizeBytes: file.buffer.length, storagePath },
+      });
+    }
+  } else {
+    for (const { file, sha256 } of valid) {
+      await prisma.salesContractPdf.upsert({
+        where: { poId_kind: { poId: po.id, kind: file.kind } },
+        update: { originalName: file.name, sha256, sizeBytes: file.buffer.length, storagePath: "" },
+        create: { poId: po.id, kind: file.kind, originalName: file.name, sha256, sizeBytes: file.buffer.length, storagePath: "" },
+      });
+    }
   }
 
   await audit({ entityType: "document", entityId: po.id, action: "hm.pdf.uploaded", actor, data: { contractId, accepted: valid.length, rejected: rejected.length } });
 
   // Process immediately so the preview is ready when the UI reloads.
-  await processSalesContractPoSet(po.id, { actor });
+  // When persistToDisk=false, pass the raw buffers through so extraction
+  // doesn't need storagePath (which is empty under the browser-upload rule).
+  const bufferMap: Partial<Record<SalesContractPdfKind, Buffer>> = {};
+  if (!persistToDisk) {
+    for (const { file } of valid) bufferMap[file.kind] = file.buffer;
+  }
+  await processSalesContractPoSet(po.id, { actor, buffers: persistToDisk ? undefined : bufferMap });
 
   // Figure out what processing decided (creation-date arbitration can delete
   // the placeholder when it replaces an existing PO, so the placeholder id
@@ -258,7 +385,16 @@ export async function uploadSalesContractPdfSet(
  */
 export async function processSalesContractPoSet(
   poId: string,
-  opts: { actor?: string } = {},
+  opts: {
+    actor?: string;
+    /**
+     * In-memory buffers keyed by PDF kind. When provided (browser-upload
+     * flow, where nothing is written to disk), extraction reads from these
+     * instead of re-reading pdf.storagePath. Legacy disk-persist callers
+     * pass nothing and the function falls back to reading `storagePath`.
+     */
+    buffers?: Partial<Record<SalesContractPdfKind, Buffer>>;
+  } = {},
 ): Promise<void> {
   const actor = opts.actor ?? "system";
   const po = await prisma.salesContractPo.findUnique({ where: { id: poId }, include: { pdfs: true } });
@@ -267,8 +403,16 @@ export async function processSalesContractPoSet(
   await prisma.salesContractPo.update({ where: { id: poId }, data: { attempts: { increment: 1 }, state: "EXTRACTING", error: "", warning: "" } });
 
   const readText = async (kind: SalesContractPdfKind): Promise<string> => {
+    // Prefer the in-memory buffer when the caller supplied one.
+    const inMem = opts.buffers?.[kind];
+    if (inMem && inMem.length > 0) {
+      try {
+        const parsed = await parsePdfText(inMem);
+        return parsed.text ?? "";
+      } catch { return ""; }
+    }
     const pdf = po.pdfs.find((p) => p.kind === kind);
-    if (!pdf) return "";
+    if (!pdf || !pdf.storagePath) return "";
     try {
       const buf = await readFile(pdf.storagePath);
       const parsed = await parsePdfText(buf);
@@ -352,10 +496,16 @@ export async function processSalesContractPoSet(
       : { outcome: "no_existing" as const };
 
     if (verdict.outcome === "newer") {
-      await replacePoWithNewerScan({
+      // One atomic transaction: destruction (Sales Contract rows, Summary
+      // data via PO JSON overwrite, Customs Invoice cascade, Shipment rows +
+      // their edits) + rebuild (shipment rows for the new PO version). After
+      // this returns, no trace of the previous PO version remains in the DB
+      // and the Shipment Schedule reflects only the current markets.
+      const wipeStats = await replacePoWithNewerScan({
         placeholderPoId: poId,
         existingPoId: verdict.existing.poId,
         extractionPayload,
+        actor,
       });
       await audit({
         entityType: "document",
@@ -369,11 +519,24 @@ export async function processSalesContractPoSet(
           replacedCreationDate: verdict.existing.creationDate,
           newCreationDate: creationDate,
           message: verdict.message,
+          wiped: wipeStats,
         },
       });
-      // Fresh propagation to Shipment Schedule using the updated PO.
+      // Surface unroutable markets on the PO's warning field (manual-placement
+      // hint for operators). The failure list was collected inside the txn, so
+      // we reuse it here without re-running the router.
       if (extractionPayload.state === "READY" && !result.blockWrite) {
-        await repropagateToShipment(verdict.existing.poId, actor);
+        try {
+          await surfaceUnroutedMarkets(verdict.existing.poId, orderNo, wipeStats.shipmentFailures, actor);
+        } catch (e) {
+          await audit({
+            entityType: "document",
+            entityId: verdict.existing.poId,
+            action: "hm.set.surface_unrouted_failed",
+            actor,
+            data: { message: e instanceof Error ? e.message : "unknown" },
+          });
+        }
       }
       return;
     }
@@ -391,38 +554,26 @@ export async function processSalesContractPoSet(
     }
 
     if (verdict.outcome === "older") {
-      // Leave orderNo as the pending-<ts> placeholder so the composite
-      // `@@unique([contractId, orderNo])` can't collide when the existing
-      // copy lives in the SAME contract. The warning/reasons text names the
-      // real order no and the existing contract so the review UI shows it.
-      await prisma.salesContractPo.update({
-        where: { id: poId },
-        data: {
-          state: "BLOCKED",
-          blockWrite: true,
-          creationDate,
-          error: verdict.message,
-          reasons: verdict.message,
-          warning: verdict.message,
-          processedAt: new Date(),
-          poJson: JSON.stringify(poExtract),
-          sizeJson: JSON.stringify(sizeExtract),
-          countryJson: JSON.stringify(countryExtract),
-        },
-      });
+      // User rule 2026-11-03: an older PO must not leave any trace in the DB —
+      // fully delete the placeholder PO row AND its uploaded PDFs from disk.
+      // Record the rejection in the audit log (which carries orderNo + both
+      // creation dates + the message) so operators can still see what was
+      // dropped and why.
       await audit({
         entityType: "document",
-        entityId: poId,
+        entityId: verdict.existing.poId,
         action: "hm.set.rejected_older_creation_date",
         actor,
         data: {
           orderNo,
+          placeholderPoId: poId,
           existingContract: verdict.existing.contractId,
           existingCreationDate: verdict.existing.creationDate,
           incomingCreationDate: creationDate,
           message: verdict.message,
         },
       });
+      await discardPlaceholder(poId);
       return;
     }
 
@@ -565,69 +716,193 @@ export async function loadContractSets(contractId: string) {
 
 /**
  * Replace an EXISTING SalesContractPo with the newer extraction carried by a
- * placeholder PO row. The existing row keeps its id (so sheet edits + shipment
- * / customs-invoice links by orderNo remain valid) and stays in its original
- * contract — only its data and attached PDFs are swapped out.
+ * placeholder PO row (user rule 2026-11-03). The entire operation runs inside
+ * ONE Prisma `$transaction`: the old PO's downstream data is DELETED, the PO
+ * row's data is overwritten in-place, and the Shipment Schedule is rebuilt
+ * from the new PO — all atomically. A server crash mid-swap either leaves the
+ * old state intact or leaves the new state intact; the system is never in
+ * a half-replaced state.
  *
- * Side effects:
- *  1. Delete the existing PO's SalesContractPdf rows AND their files on disk.
- *  2. Reparent the placeholder's SalesContractPdf rows (and physical files
- *     stay in the placeholder's dir — the reparented rows still point at
- *     their original absolute paths, which keeps the "View PDF" link valid).
- *  3. Overwrite the existing PO's extraction JSON + creationDate + folder /
- *     season / poYear with the incoming values.
- *  4. Delete the placeholder PO row (no PDFs attached by now).
+ * What the transaction wipes (for this one orderNo only — never affects
+ * another Order No.):
+ *  (a) SalesContractPdf rows for the existing PO + the placeholder's PDFs
+ *      are reparented onto the existing PO id so the uploaded PDFs point at
+ *      the right PO.
+ *  (b) SalesContractRowEdit history for the existing PO (per-row overrides
+ *      from the previous version lose their meaning once the row grid changes).
+ *  (c) Existing PO row's `sheetEditsJson` is force-reset to "{}" (old cell
+ *      edits don't carry over to the new version).
+ *  (d) Every CustomsInvoice whose short `orderNo` matches this PO's — this
+ *      cascades CustomsInvoicePdf + CustomsInvoiceEdit via the schema.
+ *  (e) Every ShipmentScheduleRow whose `orderNo` matches — cascading
+ *      ShipmentScheduleRowEdit via the schema's onDelete rule.
+ *  (f) The existing PO row's data columns are OVERWRITTEN with the new
+ *      extraction (poJson / sizeJson / countryJson / rowsJson / creationDate /
+ *      warning / season / poYear + folderLetter from the placeholder).
+ *  (g) The placeholder PO row itself is deleted.
+ *  (h) The new PO version's ShipmentScheduleRow set is rebuilt from the
+ *      current TOD × market breakdown via `autoScheduleFromPo({ db: tx })`.
  *
- * The whole thing runs in one Prisma transaction so a crash mid-swap can't
- * leave the DB with two rows for the same orderNo.
+ * After the transaction commits, best-effort disk cleanup removes the old
+ * PO PDFs + the old invoice PDFs. Those files sit outside the DB so they
+ * can safely drift from the DB without breaking any invariant.
  */
+// Exported for the newer-wins wipe test — not part of the public API.
+// Internal tooling should keep using processSalesContractPoSet, which is the
+// right entry point.
+export { replacePoWithNewerScan as _replacePoWithNewerScan };
+
+type ReplacePoResult = {
+  rowEdits: number;
+  invoices: number;
+  invoicePdfs: number;
+  hadSheetEdits: boolean;
+  shipmentRowsWiped: number;
+  shipmentRowsRouted: number;
+  shipmentRowsFailed: number;
+  shipmentFailures: Array<Record<string, unknown>>;
+};
+
 async function replacePoWithNewerScan(opts: {
   placeholderPoId: string;
   existingPoId: string;
   extractionPayload: Record<string, unknown>;
-}): Promise<void> {
-  const { placeholderPoId, existingPoId, extractionPayload } = opts;
+  actor: string;
+}): Promise<ReplacePoResult> {
+  const { placeholderPoId, existingPoId, extractionPayload, actor } = opts;
 
-  // Snapshot the existing PO's PDF files BEFORE the txn so we can delete
-  // them on disk after the DB swap commits.
+  // --- Pre-flight reads (OUTSIDE txn, snapshots used for post-commit cleanup) ---
   const existingPdfs = await prisma.salesContractPdf.findMany({
     where: { poId: existingPoId },
     select: { storagePath: true },
   });
 
-  // Grab the placeholder's folderLetter so the existing PO carries the
-  // most-recent-source metadata too.
-  const placeholder = await prisma.salesContractPo.findUnique({
-    where: { id: placeholderPoId },
-    select: { folderLetter: true },
-  });
+  // Resolve the short order key — CustomsInvoice.orderNo stores the short form
+  // (first 6+ digits) regardless of what SalesContractPo stores, so we match
+  // on that to catch every invoice tied to this PO.
+  const newOrderNoRaw = String(extractionPayload.orderNo || "");
+  const shortMatch = newOrderNoRaw.match(/\d{6,}/);
+  const shortOrder = shortMatch ? shortMatch[0] : newOrderNoRaw;
+  const invoices = shortOrder
+    ? await prisma.customsInvoice.findMany({
+        where: { orderNo: shortOrder },
+        include: { pdfs: { select: { storagePath: true } } },
+      })
+    : [];
+
+  // Grab the placeholder's folderLetter + the existing row's current sheet-
+  // edits + row-edit count so the audit can report what was wiped.
+  const [placeholder, existingPo, rowEditCount] = await Promise.all([
+    prisma.salesContractPo.findUnique({
+      where: { id: placeholderPoId },
+      select: { folderLetter: true },
+    }),
+    prisma.salesContractPo.findUnique({
+      where: { id: existingPoId },
+      select: { sheetEditsJson: true },
+    }),
+    prisma.salesContractRowEdit.count({ where: { poId: existingPoId } }),
+  ]);
+  const hadSheetEdits = Boolean(
+    existingPo?.sheetEditsJson && existingPo.sheetEditsJson.trim() && existingPo.sheetEditsJson.trim() !== "{}",
+  );
+  const invoicePdfCount = invoices.reduce((n, inv) => n + inv.pdfs.length, 0);
+
+  // --- Atomic destruction + overwrite + shipment rebuild ---
+  // Timeout bumped to 30 s + 10 s maxWait because the shipment rebuild inside
+  // the same transaction can touch 10–30 markets × (findOrCreate week schedule,
+  // create row) each — well under 30 s on SQLite + Postgres, but above the
+  // default 5 s guard.
+  let routedCount = 0;
+  let failedCount = 0;
+  let wipedShipmentRows = 0;
+  let shipmentFailures: Array<Record<string, unknown>> = [];
 
   await prisma.$transaction(async (tx) => {
+    // (e) ShipmentScheduleRow for this orderNo — delete FIRST so the rebuild
+    // below only ever inserts. Fetch minimal snapshot for the count.
+    const existingShipmentIds = await tx.shipmentScheduleRow.findMany({
+      where: { orderNo: newOrderNoRaw },
+      select: { id: true },
+    });
+    if (existingShipmentIds.length > 0) {
+      const ids = existingShipmentIds.map((r) => r.id);
+      await tx.shipmentScheduleRowEdit.deleteMany({ where: { rowId: { in: ids } } });
+      await tx.shipmentScheduleRow.deleteMany({ where: { id: { in: ids } } });
+      wipedShipmentRows = ids.length;
+    }
+
+    // (a) Old PDFs: remove DB rows + reparent new ones.
     await tx.salesContractPdf.deleteMany({ where: { poId: existingPoId } });
     await tx.salesContractPdf.updateMany({
       where: { poId: placeholderPoId },
       data: { poId: existingPoId },
     });
+
+    // (b) Old per-row overrides.
+    await tx.salesContractRowEdit.deleteMany({ where: { poId: existingPoId } });
+
+    // (d) Old customs invoices (cascades delete CustomsInvoicePdf + CustomsInvoiceEdit).
+    if (shortOrder) {
+      await tx.customsInvoice.deleteMany({ where: { orderNo: shortOrder } });
+    }
+
+    // (f) Overwrite the PO row in place; sheetEditsJson is force-reset to "{}"
+    // so no stale cell edits from the previous version are rendered.
     await tx.salesContractPo.update({
       where: { id: existingPoId },
       data: {
         ...extractionPayload,
         folderLetter: placeholder?.folderLetter || undefined,
+        sheetEditsJson: "{}",
         updatedAt: new Date(),
       },
     });
-    // Placeholder's PDFs have been reparented, so the cascade on delete is
-    // a no-op; its folder on disk is orphaned (small leak, acceptable).
-    await tx.salesContractPo.delete({ where: { id: placeholderPoId } });
-  });
 
-  // Delete the existing PO's old PDF files from disk (post-commit).
+    // (g) Placeholder's PDFs have been reparented, so cascade-delete of the
+    // placeholder is a no-op for DB child rows; its scratch folder on disk is
+    // orphaned (small leak, tolerable).
+    await tx.salesContractPo.delete({ where: { id: placeholderPoId } });
+
+    // (h) Rebuild Shipment Schedule from the current (just-overwritten) PO,
+    // reusing the same tx client so the inserts commit atomically with the
+    // destruction above. autoScheduleFromPo also wipes rows for this orderNo
+    // internally — those are already gone (step e), so it skips that path.
+    const { autoScheduleFromPo } = await import("@/server/shipment-schedule/auto-schedule");
+    const scheduleResult = await autoScheduleFromPo({ poId: existingPoId, actor, db: tx });
+    routedCount = scheduleResult.routed.length;
+    failedCount = scheduleResult.failed.length;
+    // Snapshot the failure list so the post-txn step can write the
+    // [SHIP-UNROUTED] note on the PO without re-running the router.
+    shipmentFailures = scheduleResult.failed as unknown as Array<Record<string, unknown>>;
+  }, { timeout: 30_000, maxWait: 10_000 });
+
+  // --- Post-commit, best-effort disk cleanup ---
   for (const pdf of existingPdfs) {
     try {
       const { rm } = await import("fs/promises");
       await rm(pdf.storagePath, { force: true });
     } catch { /* best-effort; orphaning the file is tolerable */ }
   }
+  for (const inv of invoices) {
+    for (const pdf of inv.pdfs) {
+      try {
+        const { rm } = await import("fs/promises");
+        await rm(pdf.storagePath, { force: true });
+      } catch { /* best-effort */ }
+    }
+  }
+
+  return {
+    rowEdits: rowEditCount,
+    invoices: invoices.length,
+    invoicePdfs: invoicePdfCount,
+    hadSheetEdits,
+    shipmentRowsWiped: wipedShipmentRows,
+    shipmentRowsRouted: routedCount,
+    shipmentRowsFailed: failedCount,
+    shipmentFailures,
+  };
 }
 
 /** Delete a placeholder PO + its uploaded PDFs when the scan is idempotent
@@ -709,36 +984,12 @@ async function surfaceUnroutedMarkets(
   }
 }
 
-async function repropagateToShipment(existingPoId: string, actor: string): Promise<void> {
-  try {
-    const { autoScheduleFromPo } = await import("@/server/shipment-schedule/auto-schedule");
-    const r = await autoScheduleFromPo({ poId: existingPoId, actor });
-    const refreshed = await prisma.salesContractPo.findUnique({
-      where: { id: existingPoId }, select: { orderNo: true },
-    });
-    await surfaceUnroutedMarkets(existingPoId, refreshed?.orderNo ?? "", r.failed, actor);
-    await audit({
-      entityType: "document",
-      entityId: existingPoId,
-      action: "hm.set.auto_scheduled",
-      actor,
-      data: { routed: r.routed.length, failed: r.failed.length, reason: "updated_newer_creation_date" },
-    });
-  } catch (e) {
-    await audit({
-      entityType: "document",
-      entityId: existingPoId,
-      action: "hm.set.auto_schedule_failed",
-      actor,
-      data: { message: e instanceof Error ? e.message : "unknown", reason: "updated_newer_creation_date" },
-    });
-  }
-  // Customs invoices already pull fresh data on page load (auto-sync in
-  // customs-invoice/[id]/page.tsx) via buildPrefill, so updated PO fields
-  // (country code, descriptionOfGoods, buyerCode, …) flow in automatically
-  // the next time the user opens an affected invoice; the manual columns
-  // (invoiceNumber, cartons, truckNo, pallet) stay untouched because the
-  // auto-sync is a NON-OVERWRITING fill. Nothing to do here.
-}
+// `repropagateToShipment` was removed on 2026-11-03: the newer-wins path now
+// rebuilds Shipment Schedule rows inside the same `$transaction` as the PO
+// JSON swap (via `autoScheduleFromPo({ db: tx })` inside replacePoWithNewerScan),
+// so a separate post-txn re-propagation would just insert duplicate rows.
+// Customs Invoice re-sync still relies on the invoice-page auto-fill — the
+// invoices were cascade-deleted in the same txn, so the operator regenerates
+// them from the new PO version.
 
 export { MODULE as SALES_CONTRACT_MODULE_KEY };

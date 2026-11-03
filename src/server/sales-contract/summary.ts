@@ -18,7 +18,6 @@ import type { SalesContractCountryBreakdownExtract, SalesContractPoExtract } fro
 import type { SalesContractSummaryConfig } from "./summary-rows";
 
 export interface GenerateSummaryOptions {
-  templatePath?: string;      // existing Summary file to merge against; preserved
   outputPath?: string;        // defaults to STORAGE_ROOT/sales-contract/summary/<ts>.xlsx
   /** Restrict to one Sales Contract (by SalesContract.id). Default: all. */
   contractId?: string;
@@ -29,6 +28,9 @@ export interface GenerateSummaryOptions {
    *  copy. Default true — a PO scanned into several contracts (e.g. because
    *  the folder was re-scanned) only appears once in the Summary. */
   dedupByOrderNo?: boolean;
+  // NOTE: `templatePath` was removed on 2026-11-03. The writer always builds
+  // a fresh workbook from the current DB state so no stale rows from an older
+  // PO version can ever leak into the Summary via a template.
 }
 
 export interface GenerateSummaryResult extends SalesContractSummaryWriteResult {
@@ -149,7 +151,6 @@ export async function generateHmSummary(opts: GenerateSummaryOptions = {}): Prom
     `HM_Summary_${timestamp()}.xlsx`,
   );
   const result = await writeSummaryWorkbook({
-    templatePath: opts.templatePath,
     outputPath,
     pos: payload,
     folderSequence,

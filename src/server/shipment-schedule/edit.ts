@@ -15,7 +15,8 @@ export type EditableField =
   | "portOfLoading" | "portOfDischarge" | "placeOfDelivery" | "transportMode"
   | "pdfPcs" | "grossWeightKg" | "cartons" | "measurementCbm"
   | "expectedDelivery"
-  | "invoiceNo";
+  | "invoiceNo"
+  | "expNo" | "expDate";
 
 const EDITABLE_FIELDS: readonly EditableField[] = [
   "buyerCode", "contractNo", "contractDate", "orderNo",
@@ -26,6 +27,7 @@ const EDITABLE_FIELDS: readonly EditableField[] = [
   "pdfPcs", "grossWeightKg", "cartons", "measurementCbm",
   "expectedDelivery",
   "invoiceNo",
+  "expNo", "expDate",
 ] as const;
 
 const INT_FIELDS = new Set<EditableField>(["pcs", "pdfPcs", "cartons"]);
@@ -67,7 +69,8 @@ export function validateField(field: EditableField, raw: string): FieldValidatio
   const stringField = field; // narrowed by exhaustion below
   if (
     stringField === "bcn" || stringField === "bookingRef" || stringField === "orderNo" ||
-    stringField === "marketCode" || stringField === "marketSubCode" || stringField === "invoiceNo"
+    stringField === "marketCode" || stringField === "marketSubCode" || stringField === "invoiceNo" ||
+    stringField === "expNo" || stringField === "expDate"
   ) {
     if (/[\r\n\t]/.test(trimmed)) return { ok: false, normalized: null, error: `${field} must not contain line breaks or tabs.` };
   }
