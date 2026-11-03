@@ -30,7 +30,13 @@ export async function POST(req: Request) {
 
   const buffer = Buffer.from(ab);
   try {
-    const a = await analyzePdf(buffer, { minConfidence: env.PDF_RENAME_MIN_CONFIDENCE });
+    // Hard backstop: analyzePdf must settle well within maxDuration so the
+    // client never waits on a request that will never respond. OCR already has
+    // its own internal timeouts; this guards any other unexpected stall.
+    const a = await Promise.race([
+      analyzePdf(buffer, { minConfidence: env.PDF_RENAME_MIN_CONFIDENCE }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Analysis timed out")), 100_000)),
+    ]);
     const v = a.validation;
     // Filename key = the leading NUMBER only (e.g. "64408"), dropping any country
     // suffix like "TW"/"GB" so the renamed file matches the source naming (just

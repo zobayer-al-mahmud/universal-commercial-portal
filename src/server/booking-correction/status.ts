@@ -12,9 +12,12 @@ import type { BookingStatus, StatusValidation } from "./batch-types";
 
 export function normalizeStatus(raw: string): BookingStatus {
   const s = (raw ?? "").trim().toUpperCase();
-  if (/\bCONFIRMED\b/.test(s) || s === "CONFIRM") return "CONFIRMED";
-  if (/\bDELIVERED\b/.test(s)) return "DELIVERED";
-  if (/\bREQUESTED\b/.test(s) || s === "REQUEST") return "REQUESTED";
+  // DELIVERED first: the portal's detail field uses the code "CONF_DELV"
+  // (confirmed-and-delivered), which also contains "CONF" — a delivered booking
+  // must map to DELIVERED, not CONFIRMED.
+  if (/\bDELIVERED\b/.test(s) || s === "CONF_DELV" || /\bDELV\b/.test(s)) return "DELIVERED";
+  if (/\bCONFIRMED\b/.test(s) || s === "CONFIRM" || s === "CONF") return "CONFIRMED";
+  if (/\bREQUESTED\b/.test(s) || s === "REQUEST" || s === "REQ") return "REQUESTED";
   return "UNKNOWN";
 }
 

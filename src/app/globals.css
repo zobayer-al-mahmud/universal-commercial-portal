@@ -223,3 +223,85 @@ body {
 .dark .input::placeholder,
 .dark .textarea::placeholder { color: #64748b; }
 .dark .chip { border-color: #334155; background-color: #1e293b; color: #cbd5e1; }
+
+/* ---------- Status tints (badges, chips, alerts) ----------
+ * The light UI uses pastel-50/100 fills with -700 text. On dark those read as
+ * glaring light pills, so remap each family to a translucent tint of its own
+ * hue and lighten the paired text for contrast. Scoped to .dark only. */
+.dark .bg-emerald-50,
+.dark .bg-green-50 { background-color: rgba(16, 185, 129, 0.14) !important; }
+.dark .bg-emerald-100,
+.dark .bg-green-100 { background-color: rgba(16, 185, 129, 0.22) !important; }
+.dark .bg-sky-50 { background-color: rgba(14, 165, 233, 0.14) !important; }
+.dark .bg-sky-100 { background-color: rgba(14, 165, 233, 0.22) !important; }
+.dark .bg-amber-50 { background-color: rgba(245, 158, 11, 0.14) !important; }
+.dark .bg-amber-100 { background-color: rgba(245, 158, 11, 0.22) !important; }
+.dark .bg-rose-50,
+.dark .bg-red-50 { background-color: rgba(244, 63, 94, 0.14) !important; }
+.dark .bg-rose-100,
+.dark .bg-red-100 { background-color: rgba(244, 63, 94, 0.22) !important; }
+.dark .bg-indigo-50,
+.dark .bg-violet-50 { background-color: rgba(99, 102, 241, 0.14) !important; }
+.dark .bg-indigo-100,
+.dark .bg-violet-100 { background-color: rgba(99, 102, 241, 0.22) !important; }
+.dark .bg-teal-50 { background-color: rgba(20, 184, 166, 0.14) !important; }
+.dark .bg-teal-100 { background-color: rgba(20, 184, 166, 0.22) !important; }
+
+.dark .text-emerald-800,
+.dark .text-emerald-700,
+.dark .text-emerald-600,
+.dark .text-green-800,
+.dark .text-green-700 { color: #6ee7b7 !important; }
+.dark .text-sky-800,
+.dark .text-sky-700,
+.dark .text-sky-600 { color: #7dd3fc !important; }
+.dark .text-amber-800,
+.dark .text-amber-700,
+.dark .text-amber-600 { color: #fcd34d !important; }
+.dark .text-rose-800,
+.dark .text-rose-700,
+.dark .text-rose-600,
+.dark .text-red-700,
+.dark .text-red-600 { color: #fda4af !important; }
+.dark .text-indigo-800,
+.dark .text-indigo-700,
+.dark .text-violet-700 { color: #a5b4fc !important; }
+.dark .text-ananta-800 { color: #86a9d4 !important; }
+
+/* Colored alert / badge borders */
+.dark .border-emerald-100,
+.dark .border-emerald-200,
+.dark .border-green-200 { border-color: rgba(16, 185, 129, 0.30) !important; }
+.dark .border-sky-100,
+.dark .border-sky-200 { border-color: rgba(14, 165, 233, 0.30) !important; }
+.dark .border-amber-100,
+.dark .border-amber-200 { border-color: rgba(245, 158, 11, 0.30) !important; }
+.dark .border-rose-100,
+.dark .border-rose-200,
+.dark .border-red-200 { border-color: rgba(244, 63, 94, 0.30) !important; }
+.dark .border-ananta-100,
+.dark .border-ananta-200 { border-color: rgba(60, 109, 165, 0.45) !important; }
+
+/* Extra surfaces (progress tracks, etc.) */
+.dark .bg-slate-200 { background-color: #334155 !important; }
+.dark .bg-slate-300 { background-color: #475569 !important; }
+.dark .bg-white\/95 { background-color: rgba(30, 41, 59, 0.95) !important; }
+.dark .bg-white\/70 { background-color: rgba(30, 41, 59, 0.7) !important; }
+
+/* List / table dividers (Tailwind `divide-*` applies border-color to children) */
+.dark .divide-slate-100 > :not([hidden]) ~ :not([hidden]),
+.dark .divide-slate-200 > :not([hidden]) ~ :not([hidden]) { border-color: #334155 !important; }
+
+/* Rings on cards / inputs / pills */
+.dark .ring-slate-200 { --tw-ring-color: #334155 !important; }
+.dark .ring-slate-300 { --tw-ring-color: #475569 !important; }
+
+/* Browser autofill paints its own light background over inputs; keep it dark. */
+.dark input:-webkit-autofill,
+.dark input:-webkit-autofill:hover,
+.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #f1f5f9;
+  caret-color: #f1f5f9;
+  -webkit-box-shadow: 0 0 0 1000px #1e293b inset;
+  box-shadow: 0 0 0 1000px #1e293b inset;
+}

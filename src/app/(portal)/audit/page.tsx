@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/db";
-import { getSessionUser, userHasPermission } from "@/lib/auth";
+import { userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
+import { requireSection } from "@/lib/access";
 import { PageHeader, Empty } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
 
 export default async function AuditPage() {
-  const user = await getSessionUser();
+  const user = await requireSection("audit");
   if (!userHasPermission(user, PERMISSIONS.AUDIT_READ)) {
     return (
       <div>

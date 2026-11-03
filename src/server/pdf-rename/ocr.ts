@@ -15,7 +15,30 @@
  * routes the file to manual review — it is never marked successfully renamed.
  */
 
+import { promises as fsp } from "fs";
 import { env } from "@/lib/env";
+
+/**
+ * OCR safety timeouts. These guarantee OCR can NEVER hang the scan: a stuck
+ * engine init or a stuck page recognition rejects after the bound, the caller
+ * returns an honest error, and the file is routed to review instead of freezing
+ * the whole batch at 0% (the real failure we hit when the traineddata was
+ * missing — tesseract.js spawned a worker that emitted an uncaught ENOENT and
+ * never settled `createWorker`).
+ */
+const OCR_INIT_TIMEOUT_MS = 25_000;
+const OCR_RECOGNIZE_TIMEOUT_MS = 60_000;
+
+/** Reject if `p` does not settle within `ms` (so a hung worker can't stall us). */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`${label} (timed out after ${ms}ms)`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
 
 /** Build a minimal single-strip CCITT Group-4 TIFF around raw G4 fax bytes. */
 export function buildG4Tiff(raw: Buffer, width: number, height: number, photometric: 0 | 1 = 0): Buffer {
@@ -137,14 +160,25 @@ async function getWorker(): Promise<TessWorker> {
   if (!workerPromise) {
     workerPromise = (async () => {
       const path = await import("path");
-      const { createWorker } = await import("tesseract.js");
       const dir = path.resolve(env.OCR_TESSDATA_DIR);
+      const dataFile = path.join(dir, `${env.OCR_LANG}.traineddata`);
+      // Fail FAST and CLEARLY when the language data is absent. Without this,
+      // tesseract.js spawns a worker that emits an uncaught ENOENT and NEVER
+      // settles createWorker() — which hung every scan at 0%. A plain throw
+      // here is caught by ocrPdfPages and reported as an honest review reason.
+      try {
+        await fsp.access(dataFile);
+      } catch {
+        throw new Error(`OCR language data not found: ${dataFile}. Add ${env.OCR_LANG}.traineddata to OCR_TESSDATA_DIR, or set OCR_ENABLED=false.`);
+      }
+      const { createWorker } = await import("tesseract.js");
       // gzip:false → read an uncompressed `<lang>.traineddata` from the dir.
-      const worker = await createWorker(env.OCR_LANG, 1, {
-        langPath: dir,
-        cachePath: dir,
-        gzip: false,
-      });
+      // Bounded so a WASM/init stall can't hang the request indefinitely.
+      const worker = await withTimeout(
+        createWorker(env.OCR_LANG, 1, { langPath: dir, cachePath: dir, gzip: false }),
+        OCR_INIT_TIMEOUT_MS,
+        "OCR engine did not initialise",
+      );
       return worker as unknown as TessWorker;
     })().catch((e) => {
       workerPromise = null; // allow a retry on the next call
@@ -196,7 +230,7 @@ async function recognize(tiff: Buffer): Promise<{ text: string; confidence: numb
   return serialize(async () => {
     const worker = await getWorker();
     // v5: pass an output spec to get structured blocks (→ per-word confidence).
-    const { data } = await worker.recognize(tiff, {}, { blocks: true, text: true });
+    const { data } = await withTimeout(worker.recognize(tiff, {}, { blocks: true, text: true }), OCR_RECOGNIZE_TIMEOUT_MS, "OCR page recognition");
     const conf = typeof data.confidence === "number" ? Math.max(0, Math.min(1, data.confidence / 100)) : 0.85;
     return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf, words: wordsFromData(data) };
   });
@@ -211,7 +245,7 @@ async function recognize(tiff: Buffer): Promise<{ text: string; confidence: numb
 async function recognizeRect(tiff: Buffer, rect: { left: number; top: number; width: number; height: number }): Promise<RichWord[]> {
   return serialize(async () => {
     const worker = await getWorker();
-    const { data } = await worker.recognize(tiff, { rectangle: rect }, { blocks: true, text: true });
+    const { data } = await withTimeout(worker.recognize(tiff, { rectangle: rect }, { blocks: true, text: true }), OCR_RECOGNIZE_TIMEOUT_MS, "OCR region recognition");
     return wordsFromData(data);
   });
 }

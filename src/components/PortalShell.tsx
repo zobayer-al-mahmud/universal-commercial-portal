@@ -5,8 +5,10 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { logoutAction } from "@/app/actions/auth";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { AppFooter } from "@/components/AppFooter";
+import { roleCanAccessSection, type PortalSection } from "@/lib/permissions";
 
-type NavItem = { href: string; label: string; icon: ReactNode };
+type NavItem = { href: string; label: string; icon: ReactNode; section: PortalSection };
 
 function Icon({ path }: { path: ReactNode }) {
   return (
@@ -26,12 +28,12 @@ function Icon({ path }: { path: ReactNode }) {
 }
 
 const NAV: NavItem[] = [
-  { href: "/dashboard", label: "Dashboard", icon: <Icon path={<><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></>} /> },
-  { href: "/modules", label: "Processes", icon: <Icon path={<><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>} /> },
-  { href: "/jobs", label: "Jobs", icon: <Icon path={<><path d="M4 7h16M4 12h16M4 17h10" /></>} /> },
-  { href: "/review", label: "Review Queue", icon: <Icon path={<><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>} /> },
-  { href: "/audit", label: "Audit Trail", icon: <Icon path={<><path d="M12 8v4l3 2" /><circle cx="12" cy="12" r="9" /></>} /> },
-  { href: "/admin", label: "Administration", icon: <Icon path={<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4.5a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6.2 9.4l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 12 4.6V4.5a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 2.82 1.17l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 12v.09Z" /></>} /> },
+  { href: "/dashboard", label: "Dashboard", section: "dashboard", icon: <Icon path={<><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></>} /> },
+  { href: "/modules", label: "Processes", section: "processes", icon: <Icon path={<><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><rect x="14" y="14" width="7" height="7" rx="1.5" /></>} /> },
+  { href: "/jobs", label: "Jobs", section: "jobs", icon: <Icon path={<><path d="M4 7h16M4 12h16M4 17h10" /></>} /> },
+  { href: "/review", label: "Review Queue", section: "review", icon: <Icon path={<><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></>} /> },
+  { href: "/audit", label: "Audit Trail", section: "audit", icon: <Icon path={<><path d="M12 8v4l3 2" /><circle cx="12" cy="12" r="9" /></>} /> },
+  { href: "/admin", label: "Administration", section: "admin", icon: <Icon path={<><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-2.82 1.17V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 8 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15H4.5a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 6.2 9.4l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 12 4.6V4.5a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 2.82 1.17l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 12v.09Z" /></>} /> },
 ];
 
 function isActive(pathname: string, href: string): boolean {
@@ -77,9 +79,12 @@ export function PortalShell({
     setMobileOpen(false);
   }, [pathname]);
 
+  // Hide nav links for sections this role cannot open (Commercial → Processes only).
+  const visibleNav = NAV.filter((n) => roleCanAccessSection(user.role, n.section));
+
   const nav = (
     <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
-      {NAV.map((n) => {
+      {visibleNav.map((n) => {
         const active = isActive(pathname, n.href);
         return (
           <Link
@@ -180,6 +185,7 @@ export function PortalShell({
         </header>
 
         <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 sm:px-6 lg:px-8">{children}</main>
+        <AppFooter />
       </div>
     </div>
   );

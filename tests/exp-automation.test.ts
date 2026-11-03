@@ -24,6 +24,12 @@ describe("cell helpers", () => {
     expect(formatDate(new Date(Date.UTC(2026, 8, 10)))).toBe("10-Sep-2026");
     expect(formatDate(new Date(Date.UTC(2026, 2, 31)))).toBe("31-Mar-2026");
   });
+  it("formatDate returns blank for an invalid Date (never 'NaN--NaN')", () => {
+    // A broken workbook formula surfaces via ExcelJS as new Date(NaN); it must not
+    // become the literal "NaN--NaN" typed into the portal and written to the export.
+    expect(formatDate(new Date("not a date"))).toBe("");
+    expect(formatDate(new Date(NaN))).toBe("");
+  });
   it("normHeader strips * and punctuation", () => {
     expect(normHeader("*ADSCODE")).toBe("adscode");
     expect(normHeader("LC/Contract No.")).toBe("lc contract no");
@@ -135,6 +141,38 @@ describe("parseExpWorkbook — duplicate", () => {
     expect(row.values.transportDocType).toBe("FCR");
     expect(row.values.billOfExportDate).toBe("04-Sep-2026");
     expect(row.notes.join(" ")).toMatch(/APPLY/i);
+  });
+
+  it("a date cell with an invalid formula result is left blank, noted, and never written as NaN", async () => {
+    // Mirrors the real workbook: the Bill of Export Date formula evaluates to an
+    // invalid date on every row, while the other four date columns are valid.
+    const buf = await wbBuffer((wb) => {
+      const ws = wb.addWorksheet("DATA FOR DUP.");
+      ws.addRow(["SL.No", "EXP_NO", "*ADSCODE", "*EXP Serial", "*EXP Year", "*Custom Office", "*Bill of Export Number (Number Only)", "*Bill of Export Date", "*Shipment Date", "*Acknowledge/Duplicate Date", "*Transport Doc Type", "*Transport Doc No", "*Transport Document Date", "*Invoice No", "*Invoice Date", "Remarks"]);
+      const r = ws.addRow(["1", "00001558-020029-2026", "00001558", "020029", "2026", "306-Customs House, lCD, Chattogram", "403539", null, null, null, "FCR", "CTG3280066", null, "63516", null, ""]);
+      r.getCell(8).value = { formula: "DATE(0,0,0)", result: new Date("invalid") } as unknown as ExcelJS.CellValue;
+      r.getCell(9).value = { formula: "X", result: new Date(Date.UTC(2026, 8, 10)) } as unknown as ExcelJS.CellValue;
+      r.getCell(10).value = { formula: "X", result: new Date(Date.UTC(2026, 9, 18)) } as unknown as ExcelJS.CellValue;
+      r.getCell(13).value = { formula: "X", result: new Date(Date.UTC(2026, 8, 10)) } as unknown as ExcelJS.CellValue;
+      r.getCell(15).value = { formula: "X", result: new Date(Date.UTC(2026, 7, 25)) } as unknown as ExcelJS.CellValue;
+    });
+    const res = await parseExpWorkbook(buf, "duplicate");
+    const row = res.rows[0];
+    // valid formula dates extract correctly
+    expect(row.values.shipmentDate).toBe("10-Sep-2026");
+    expect(row.values.ackDuplicateDate).toBe("18-Oct-2026");
+    expect(row.values.transportDocDate).toBe("10-Sep-2026");
+    expect(row.values.invoiceDate).toBe("25-Aug-2026");
+    // invalid date -> blank + an operator-visible note, NOT "NaN--NaN"
+    expect(row.values.billOfExportDate ?? "").toBe("");
+    expect(row.notes.join(" ")).toMatch(/invalid date/i);
+    // the exported workbook carries no NaN pollution
+    const out = await buildEditedWorkbook("duplicate", [{ rowNo: row.rowNo, adscode: row.adscode, expSerial: row.expSerial, expYear: row.expYear, expNo: row.expNo, saveAs: row.saveAs, values: row.values }]);
+    const check = new ExcelJS.Workbook();
+    await check.xlsx.load(out as unknown as ArrayBuffer);
+    let allText = "";
+    check.worksheets[0].eachRow((rr) => rr.eachCell((c) => (allText += " " + String(c.value ?? ""))));
+    expect(allText).not.toMatch(/nan/i);
   });
 });
 

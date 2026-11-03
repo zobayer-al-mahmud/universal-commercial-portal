@@ -41,11 +41,31 @@ export function cellText(v: ExcelJS.CellValue): string {
   return String(v);
 }
 
-/** Render a JS Date as `DD-MMM-YYYY` (matches the operator's "04-Sep-2026"). */
+/**
+ * Render a JS Date as `DD-MMM-YYYY` (matches the operator's "04-Sep-2026").
+ * An invalid Date (e.g. a broken workbook formula that evaluates to `#VALUE!`,
+ * which ExcelJS surfaces as `new Date(NaN)`) yields "" — never the literal
+ * "NaN--NaN", which would otherwise be typed into the portal and written back
+ * into the exported workbook. A blank is then skipped by `skipIfBlank`.
+ */
 export function formatDate(d: Date): string {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
   const day = String(d.getUTCDate()).padStart(2, "0");
   const mon = MONTHS[d.getUTCMonth()] ?? "";
   return `${day}-${mon}-${d.getUTCFullYear()}`;
+}
+
+/**
+ * If the cell carries a Date (directly, or as a formula result) that is invalid,
+ * return that Date so the caller can flag it; otherwise null. Lets the parser add
+ * an honest "this date cell is broken in the workbook" note instead of silently
+ * emitting a blank.
+ */
+function invalidDateInCell(v: ExcelJS.CellValue): boolean {
+  const asDate = (x: unknown): Date | null => (x instanceof Date ? x : null);
+  let d = asDate(v);
+  if (!d && v && typeof v === "object" && "result" in v) d = asDate((v as { result: unknown }).result);
+  return d != null && Number.isNaN(d.getTime());
 }
 
 /** Strip IEEE float artifacts while keeping genuine decimals. */
@@ -195,8 +215,16 @@ function parseFormWorkbook(ws: ExcelJS.Worksheet, kind: ExpKind): ParseResult {
     for (const f of fields) {
       const c = colFor(headers, f.excelHeaders);
       if (c === undefined) continue;
-      const val = cellText(row.getCell(c).value).trim();
-      if (val) values[f.key] = val;
+      const cellVal = row.getCell(c).value;
+      const val = cellText(cellVal).trim();
+      if (val) {
+        values[f.key] = val;
+      } else if (f.control === "date" && invalidDateInCell(cellVal)) {
+        // The source cell holds a date that evaluates to an invalid value (a
+        // broken workbook formula). Leave the field blank (never guess) but tell
+        // the operator which column to fix.
+        notes.push(`"${f.portalLabel}" has an invalid date in the workbook — left blank (fix the source cell).`);
+      }
     }
 
     const remarks = remarksCol ? cellText(row.getCell(remarksCol).value).trim() : "";

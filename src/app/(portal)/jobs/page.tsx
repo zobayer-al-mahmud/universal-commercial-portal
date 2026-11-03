@@ -1,12 +1,14 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { PageHeader, StatusBadge, Empty } from "@/components/ui";
+import { requireSection } from "@/lib/access";
 
 export const dynamic = "force-dynamic";
 
 const STATUSES = ["all", "received", "draft", "queued", "verified", "failed", "duplicate"];
 
 export default async function JobsPage({ searchParams }: { searchParams: { status?: string } }) {
+  await requireSection("jobs");
   const status = searchParams.status ?? "all";
   const jobs = await prisma.job.findMany({
     where: status === "all" ? {} : { status },

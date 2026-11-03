@@ -1,13 +1,14 @@
 import { prisma } from "@/lib/db";
-import { getSessionUser, userHasPermission } from "@/lib/auth";
+import { userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
+import { requireSection } from "@/lib/access";
 import { PageHeader, StatusBadge, Empty } from "@/components/ui";
 import { AdminUserManager, type AdminUserRow } from "@/components/AdminUserManager";
 
 export const dynamic = "force-dynamic";
 
 export default async function AdminPage() {
-  const user = await getSessionUser();
+  const user = await requireSection("admin");
   const isAdmin = userHasPermission(user, PERMISSIONS.ADMIN_USERS);
   if (!isAdmin) {
     return (

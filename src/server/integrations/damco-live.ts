@@ -9,15 +9,28 @@ export type { BookingDetailValues } from "@/server/booking-correction/booking-de
 /**
  * Damco Shipper Portal — LIVE booking workflow driver (visible browser).
  *
- * All selectors below were verified against the production portal (2026-10-20).
- * The driver is READ-oriented: it searches bookings and reads them back. It
- * never confirms, submits, or mutates a booking. The one state-changing thing
- * the portal offers — Generate PDF — only produces a document; it does not
- * change booking status. REQUESTED bookings are never presented as confirmed.
+ * Selectors re-verified against the production portal (2026-11-02). The driver
+ * is READ-oriented: it searches bookings and reads them back. It never confirms,
+ * submits, or mutates a booking. The one state-changing thing the portal offers
+ * — Generate PDF — only produces a document; it does not change booking status.
+ * REQUESTED bookings are never presented as confirmed.
  *
- * Search keys (per the portal's real fields):
- *   - PO number  → #searchSO_PO_NO   (value + '*')
- *   - Country    → #searchSO_SKU     (the SKU/Item field; value + '*')
+ * Search flow (SearchAction.action is a tabbed page; PURCHASE ORDER is the
+ * active tab on load, BOOKING is the one we need):
+ *   1. Activate the BOOKING tab (#tab_treetab2 → panel #treetab2) FIRST, before
+ *      touching anything else. Its fields (#searchSO_PO_NO, #searchSO_SKU) are
+ *      in the DOM but display:none until the tab is active.
+ *   2. Fill the search keys and submit (#searchSObtn → searchSO()):
+ *        - PO number → #searchSO_PO_NO   (value + '*')
+ *        - Country   → #searchSO_SKU     (the SKU/Item field; value + '*')
+ *   3. Read the result grid and scope to the right trading entity in CODE
+ *      (grid rows carry shipper + consignee text).
+ *
+ * We deliberately DO NOT pre-select the shipper/consignee dropdowns: on the
+ * current portal `finalShipperList.onchange = getConsigneeList()` reloads the
+ * page, which raced the subsequent Booking-tab click and left #searchSO_PO_NO
+ * hidden ("Booking tab did not activate"). Scoping by shipper is now done by
+ * filtering the result grid, which is reload-free and more reliable.
  */
 
 const SEARCH_URL = "https://booking.damco.com/ShipperPortalWeb/SearchAction.action";
@@ -30,6 +43,13 @@ export interface LiveBooking {
   submissionDate: string;
   deliveryDate: string;
   bookingReference: string;
+  /** Result-grid shipper/consignee text (e.g. "ANANTA GARMENTS LIMITED
+   *  [BDANANTAGAVDR]" / "H&M HENNES & MAURITZ GBC AB [SEHENNESMAHQ]").
+   *  Captured from the grid row so the search can be scoped to the right
+   *  trading entity in CODE, instead of pre-selecting the shipper dropdown
+   *  (whose onchange reloads the page and raced the Booking-tab activation). */
+  shipper: string;
+  consignee: string;
 }
 
 export interface LiveSearchResult {
@@ -51,49 +71,88 @@ export interface LiveSearchInput {
   buyerMatch?: RegExp; // consignee option text
 }
 
-async function selectParties(page: Page, input: LiveSearchInput): Promise<void> {
-  const company = input.companyMatch ?? /ANANTA GARMENTS LIMITED/i;
-  const buyer = input.buyerMatch ?? /GBC AB|SEHENNESMAHQ/i;
-  await page.evaluate(
-    ({ companySrc, buyerSrc }) => {
-      const pick = (id: string, re: RegExp) => {
-        const s = document.getElementById(id) as HTMLSelectElement | null;
-        const opt = s ? [...s.options].find((o) => re.test(o.text)) : null;
-        if (s && opt) {
-          s.value = opt.value;
-          s.dispatchEvent(new Event("change", { bubbles: true }));
-        }
-      };
-      pick("finalShipperList", new RegExp(companySrc, "i"));
-    },
-    { companySrc: company.source, buyerSrc: buyer.source },
-  );
-  await page.waitForTimeout(1200); // shipper change repopulates consignee
-  await page.evaluate(
-    ({ buyerSrc }) => {
-      const s = document.getElementById("finalConsigneeList") as HTMLSelectElement | null;
-      const opt = s ? [...s.options].find((o) => new RegExp(buyerSrc, "i").test(o.text)) : null;
-      if (s && opt) {
-        s.value = opt.value;
-        s.dispatchEvent(new Event("change", { bubbles: true }));
-      }
-    },
-    { buyerSrc: buyer.source },
-  );
-  await page.waitForTimeout(600);
+/** Read the current activation state of the search tabs — used both to decide
+ *  whether the Booking tab is live and to build an informative error. */
+async function readTabState(page: Page): Promise<{ bookingFieldVisible: boolean; activeTab: string; bookingTabExists: boolean; panelDisplay: string }> {
+  return page.evaluate(() => {
+    const vis = (el: Element | null): boolean => {
+      if (!el) return false;
+      const r = (el as HTMLElement).getBoundingClientRect();
+      const s = getComputedStyle(el);
+      return r.width > 0 && r.height > 0 && s.visibility !== "hidden" && s.display !== "none";
+    };
+    const active = [...document.querySelectorAll("td.activetab")].map((e) => e.id).join(",") || "(none)";
+    const panel = document.getElementById("treetab2");
+    return {
+      bookingFieldVisible: vis(document.getElementById("searchSO_PO_NO")),
+      activeTab: active,
+      bookingTabExists: !!document.getElementById("tab_treetab2"),
+      panelDisplay: panel ? getComputedStyle(panel).display : "(no #treetab2)",
+    };
+  });
 }
 
+/**
+ * Activate the BOOKING tab and wait until its PO search field is really usable.
+ *
+ * The tab is a <td id=tab_treetab2 tab="#treetab2"> with NO inline onclick — tab
+ * switching is a delegated jQuery handler (`gui_tabclick`, reachable via the
+ * global `selectTab(index)`), so success is confirmed by STATE, not by the click
+ * returning: #searchSO_PO_NO must become visible AND the panel #treetab2 must be
+ * shown. We try a real click first, then fall back to calling the portal's own
+ * `selectTab(1)` (0-based: PO=0, BOOKING=1), re-settling the page between tries
+ * so a late reload/AJAX can't leave us on a stale PO tab. Never just a timeout
+ * bump: each attempt re-drives the activation and re-checks real DOM state.
+ */
 async function openBookingTab(page: Page): Promise<void> {
-  for (let i = 0; i < 4; i++) {
-    await page.click("#tab_treetab2").catch(() => undefined);
+  // The tab bar must exist before we can switch tabs. If the page is still
+  // settling (or mid-reload), give it a moment and let the load state finish.
+  await page.waitForSelector("#tab_treetab2", { state: "attached", timeout: env.DAMCO_NAV_TIMEOUT_MS }).catch(() => undefined);
+
+  const bookingReady = async (): Promise<boolean> => {
     try {
-      await page.waitForSelector("#searchSO_PO_NO", { state: "visible", timeout: 4000 });
-      return;
+      await page.waitForSelector("#searchSO_PO_NO", { state: "visible", timeout: 3500 });
+      return true;
     } catch {
-      await page.waitForTimeout(500);
+      return false;
     }
+  };
+
+  if (await bookingReady()) return;
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    // In case a shipper/consignee reload or slow first paint is in flight.
+    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+
+    if (attempt % 2 === 0) {
+      // Real user-style click on the tab cell (fires the delegated handler).
+      await page.click("#tab_treetab2", { timeout: 4000 }).catch(() => undefined);
+    } else {
+      // Fallback: drive the portal's own tab switch directly. Works even if the
+      // <td> is briefly covered or the click was swallowed mid-reflow.
+      await page
+        .evaluate(() => {
+          const w = window as unknown as { selectTab?: (i: number, a?: string) => void };
+          if (typeof w.selectTab === "function") {
+            w.selectTab(1); // BOOKING (0-based tab index)
+          } else {
+            (document.getElementById("tab_treetab2") as HTMLElement | null)?.click();
+          }
+        })
+        .catch(() => undefined);
+    }
+
+    if (await bookingReady()) return;
+    await page.waitForTimeout(600 + attempt * 400);
   }
-  throw new Error("Booking tab did not activate (searchSO_PO_NO not visible).");
+
+  const st = await readTabState(page).catch(() => null);
+  throw new Error(
+    `Booking tab did not activate (searchSO_PO_NO not visible). ` +
+      (st
+        ? `Observed: bookingTabExists=${st.bookingTabExists}, activeTab=${st.activeTab}, panel #treetab2 display=${st.panelDisplay}, url=${page.url().split("?")[0]}.`
+        : `Could not read the tab state; url=${page.url().split("?")[0]}.`),
+  );
 }
 
 function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[]; noResults: boolean; shipperId: string }> {
@@ -115,6 +174,11 @@ function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[];
       const status = cells.find((c) => /^(CONFIRMED|REQUESTED|DELIVERED|CANCELLED|AMENDED|REJECTED)$/i.test(c)) || "";
       const conf = cells.find((c) => /^[A-Z]{2,4}\d{5,}$/.test(c)) || "";
       const dates = cells.filter((c) => /^\d{4}-\d{2}-\d{2}$/.test(c));
+      // Trading parties: the grid shows the shipper with a vendor code
+      // ([...VDR]) and the consignee with an HQ code ([...HQ]). These let the
+      // caller scope results to the right entity without selecting dropdowns.
+      const shipper = cells.find((c) => /\[[A-Z0-9]*VDR\]/.test(c)) || "";
+      const consignee = cells.find((c) => /\[[A-Z0-9]*HQ\]/.test(c)) || "";
       bookings.push({
         bookingNumber: num,
         bookingStatus: status.toUpperCase(),
@@ -122,10 +186,106 @@ function readGrid(page: Page): Promise<{ count: number; bookings: LiveBooking[];
         submissionDate: dates[0] || "",
         deliveryDate: dates[1] || "",
         bookingReference: "",
+        shipper,
+        consignee,
       });
     }
     return { count, bookings, noResults, shipperId };
   });
+}
+
+/**
+ * Set a Booking-search text field reliably, including under HEADLESS Chromium.
+ *
+ * `page.fill` requires the element to be visible AND actionable; in a small
+ * headless viewport a field lower in the Booking panel (e.g. #searchSO_SKU) is
+ * resolved but never becomes "actionable", so fill() times out at 45s even
+ * though the field is perfectly usable. We first scroll it into view and try a
+ * short fill(); on any failure we set `.value` directly and dispatch
+ * input/change (what the portal's `searchSO()` reads), then confirm the value
+ * actually landed. Returns true when the field holds the intended value.
+ */
+async function setSearchField(page: Page, selector: string, value: string): Promise<boolean> {
+  try {
+    const loc = page.locator(selector);
+    await loc.scrollIntoViewIfNeeded({ timeout: 3000 }).catch(() => undefined);
+    await loc.fill(value, { timeout: 5000 });
+    return true;
+  } catch {
+    // Fallback: set the value via the DOM and fire the events the portal listens
+    // for. Avoids the visibility/actionability gate entirely.
+    const ok = await page
+      .evaluate(
+        ({ sel, val }) => {
+          const el = document.querySelector(sel) as HTMLInputElement | null;
+          if (!el) return false;
+          el.value = val;
+          el.dispatchEvent(new Event("input", { bubbles: true }));
+          el.dispatchEvent(new Event("change", { bubbles: true }));
+          return el.value === val;
+        },
+        { sel: selector, val: value },
+      )
+      .catch(() => false);
+    return ok;
+  }
+}
+
+/**
+ * Run one Booking-tab search (PO + optional SKU/country) and return the grid.
+ * Assumes the browser is authenticated and on SearchAction; activates the
+ * Booking tab defensively, fills the keys, submits, and waits for the result
+ * counter or the explicit "no booking found" message.
+ */
+async function submitBookingSearch(page: Page): Promise<void> {
+  // Submit. In headless the button may resolve but not be actionable, so fall
+  // back to invoking the portal's own search handler (the button's onclick).
+  try {
+    await page.click("#searchSObtn", { timeout: 5000 });
+  } catch {
+    await page
+      .evaluate(() => {
+        const btn = document.getElementById("searchSObtn") as HTMLElement | null;
+        if (btn) { btn.click(); return; }
+        const w = window as unknown as { searchSO?: () => void };
+        if (typeof w.searchSO === "function") w.searchSO();
+      })
+      .catch(() => undefined);
+  }
+  await page
+    .waitForFunction(
+      () =>
+        /Result\s+[\d-]+\s+out of\s+\d+/i.test(document.body.innerText) ||
+        /No Booking found matching the search criteria/i.test(document.body.innerText),
+      { timeout: env.DAMCO_NAV_TIMEOUT_MS },
+    )
+    .catch(() => undefined);
+  await page.waitForTimeout(1000);
+}
+
+async function runBookingSearch(page: Page, poNumber: string, countryCode: string): Promise<Awaited<ReturnType<typeof readGrid>>> {
+  await openBookingTab(page);
+  // Wait until the portal's search handler is actually bound before submitting —
+  // on the FIRST search of a fresh (e.g. headless) session the page can still be
+  // initialising, and a too-early submit reads the empty-grid placeholder ("No
+  // Booking found") as a false negative.
+  await page.waitForFunction(() => typeof (window as unknown as { searchSO?: unknown }).searchSO === "function", { timeout: 10_000 }).catch(() => undefined);
+  await setSearchField(page, "#searchSO_PO_NO", `${poNumber}*`);
+  await setSearchField(page, "#searchSO_SKU", countryCode ? `${countryCode}*` : "");
+  await submitBookingSearch(page);
+  let grid = await readGrid(page);
+  // Cold-start guard: a first-search race can surface the empty-grid placeholder
+  // (incl. its "No Booking found" text) before the AJAX result lands, so an empty
+  // read on the first interaction is not yet trustworthy. Re-set the keys and
+  // re-submit ONCE, then re-read. A genuinely empty result just costs one extra
+  // submit; a raced one now returns its real rows.
+  if (grid.bookings.length === 0) {
+    await setSearchField(page, "#searchSO_PO_NO", `${poNumber}*`);
+    await setSearchField(page, "#searchSO_SKU", countryCode ? `${countryCode}*` : "");
+    await submitBookingSearch(page);
+    grid = await readGrid(page);
+  }
+  return grid;
 }
 
 /** Authenticate (visible browser) and search live bookings by PO + country. */
@@ -136,26 +296,56 @@ export async function liveSearchBookings(input: LiveSearchInput): Promise<LiveSe
   }
   const page = await getDamcoPage();
   await page.goto(SEARCH_URL, { waitUntil: "domcontentloaded" });
+  await page.waitForLoadState("domcontentloaded").catch(() => undefined);
   await page.waitForTimeout(1200);
   await page.evaluate("globalThis.__name = globalThis.__name || ((f) => f)");
 
-  await selectParties(page, input);
-  await openBookingTab(page);
-  await page.fill("#searchSO_PO_NO", `${input.poNumber}*`);
-  await page.fill("#searchSO_SKU", input.countryCode ? `${input.countryCode}*` : "");
-  await page.click("#searchSObtn").catch(() => undefined);
-  await page
-    .waitForFunction(() => /Result\s+[\d-]+\s+out of\s+\d+/i.test(document.body.innerText) || /No Booking found matching the search criteria/i.test(document.body.innerText), { timeout: env.DAMCO_NAV_TIMEOUT_MS })
-    .catch(() => undefined);
-  await page.waitForTimeout(1000);
+  // Booking tab FIRST, then PO + SKU search. (No shipper/consignee dropdown
+  // selection — that onchange reloads the page and was the root cause of the
+  // "Booking tab did not activate" failure.)
+  let grid = await runBookingSearch(page, input.poNumber, input.countryCode);
 
-  const grid = await readGrid(page);
+  // Recovery: if the PO+country search returned nothing but the PO alone would,
+  // re-run with only the PO. The country goes into the SKU/Item field, which can
+  // legitimately over-filter (a booking line's SKU need not start with the
+  // country code). The correct record is still verified downstream by PO/SKU/FR
+  // + totals, so this only widens the candidate set, never forces a wrong pick.
+  let recoveredPoOnly = false;
+  if ((grid.noResults || grid.bookings.length === 0) && input.countryCode) {
+    const poOnly = await runBookingSearch(page, input.poNumber, "");
+    if (poOnly.bookings.length > 0) {
+      grid = poOnly;
+      recoveredPoOnly = true;
+    }
+  }
+
+  // Scope to the requested trading entity (shipper) / buyer (consignee) in code,
+  // using the per-row grid text. Fail-open: if the filter would remove every row
+  // we keep them all (and say so) rather than report a false "no booking".
+  const all = grid.bookings;
+  let scoped = all;
+  let scopeNote = "";
+  if (input.companyMatch || input.buyerMatch) {
+    const byCompany = input.companyMatch ? all.filter((b) => input.companyMatch!.test(b.shipper)) : all;
+    const byBoth = input.buyerMatch ? byCompany.filter((b) => input.buyerMatch!.test(b.consignee)) : byCompany;
+    if (byBoth.length > 0) {
+      scoped = byBoth;
+      if (byBoth.length < all.length) scopeNote = ` (scoped ${all.length}→${byBoth.length} by trading entity)`;
+    } else if (all.length > 0) {
+      scopeNote = ` (entity filter matched none of ${all.length}; kept all for downstream verification)`;
+    }
+  }
+
+  const noResults = scoped.length === 0;
+  const recoveryNote = recoveredPoOnly ? ` (country filter dropped; matched on PO only)` : "";
   return {
-    ok: !grid.noResults && grid.bookings.length > 0,
+    ok: !noResults,
     authRequired: false,
-    noResults: grid.noResults || grid.bookings.length === 0,
-    message: grid.noResults ? "No Booking found matching the search criteria." : `${grid.bookings.length} booking(s) found.`,
-    bookings: grid.bookings,
+    noResults,
+    message: noResults
+      ? "No Booking found matching the search criteria."
+      : `${scoped.length} booking(s) found${scopeNote}${recoveryNote}.`,
+    bookings: scoped,
     resultCount: grid.count,
     shipperId: grid.shipperId,
   };
@@ -164,18 +354,24 @@ export async function liveSearchBookings(input: LiveSearchInput): Promise<LiveSe
 /**
  * Open one booking's detail page (ViewSOAction).
  *
- * Preferred path: navigate STRAIGHT to the detail URL (needs `shipperId`). The
- * inspection loop opens several candidates in turn; after the first, the page is
- * on a detail view — not the results grid — so the old "click the result link"
- * approach could only ever open candidate[0]. Every later candidate came back
- * blank ("FR ?"), and a row whose correct booking was NOT first was wrongly sent
- * to review. A direct URL opens any candidate regardless of the current page.
- * Falls back to the results-grid click when no shipperId is available.
+ * Preferred path: navigate STRAIGHT to the detail URL. The inspection loop opens
+ * several candidates in turn; after the first, the page is on a detail view — not
+ * the results grid — so the old "click the result link" approach could only ever
+ * open candidate[0]. Every later candidate came back blank ("FR ?"), and a row
+ * whose correct booking was NOT first was wrongly sent to review. A direct URL
+ * opens any candidate regardless of the current page.
+ *
+ * The result grid's OWN booking links are `ViewSOAction.action?so_number=<n>&
+ * searchByShipper_id=<id>` where `<id>` is EMPTY unless a shipper was picked in
+ * the dropdown (we no longer pick one — it reloaded the page). The portal resolves
+ * the booking from `so_number` alone, so we always build the direct URL (empty
+ * shipper id included, exactly as the portal's links do) and only fall back to a
+ * results-grid click if the direct nav fails to land on ViewSOAction.
  */
 export async function openBookingDetail(bookingNumber: string, shipperId?: string): Promise<boolean> {
   const page = await getDamcoPage();
-  if (shipperId) {
-    const url = `${VIEW_SO_URL}?so_number=${encodeURIComponent(bookingNumber)}&searchByShipper_id=${encodeURIComponent(shipperId)}`;
+  {
+    const url = `${VIEW_SO_URL}?so_number=${encodeURIComponent(bookingNumber)}&searchByShipper_id=${encodeURIComponent(shipperId ?? "")}`;
     await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => undefined);
     await page.waitForTimeout(1500);
     if (/ViewSOAction/i.test(page.url())) return true;
@@ -232,12 +428,40 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
     return assembleBookingDetails(empty);
   }
 
-  // Click the DETAILS sub-tab so the SUMMARY + BOOKING LINES sections render.
+  // Define the esbuild/tsx `__name` shim in the PAGE realm. openBookingDetail
+  // navigated to a fresh document, so any shim set on the search page is gone;
+  // without it, the named helpers inside the read `page.evaluate` below throw a
+  // "__name is not defined" ReferenceError (and the read comes back empty).
+  await page.evaluate("globalThis.__name = globalThis.__name || ((f) => f)").catch(() => undefined);
+
+  // Activate the DETAILS sub-tab so the SUMMARY + BOOKING LINES sections render.
+  // On the booking-detail page the tabs are the same <td>-with-delegated-handler
+  // widget as the search page: Header is `#tab_treetab1` (active on load) and
+  // Details is `#tab_treetab3`. Click the tab cell directly (most reliable), with
+  // a text-matched fallback; the SUMMARY/Booking-lines inputs are display:none
+  // until Details is the active tab, which is why a too-early read came back
+  // empty before.
   const clickDetails = () =>
     page.evaluate(() => {
-      const tab = [...document.querySelectorAll("a, li, button, span")].find((e) => /^\s*details\s*$/i.test(e.textContent || ""));
-      if (tab) (tab as HTMLElement).click();
+      const el =
+        (document.getElementById("tab_treetab3") as HTMLElement | null) ||
+        ([...document.querySelectorAll("td[tab], a, li, button, span")].find((e) => /^\s*details\s*$/i.test(e.textContent || "")) as HTMLElement | null);
+      if (el) el.click();
     }).catch(() => undefined);
+
+  // True once the Details tab is the active one (its panel is then rendered).
+  const detailsActive = () =>
+    page
+      .waitForFunction(() => {
+        const t = document.getElementById("tab_treetab3");
+        if (t && /\bactivetab\b/.test(t.className)) return true;
+        // Fallback for layouts without the activetab class: the SUMMARY total
+        // field is visible only on the Details tab.
+        const q = [...document.querySelectorAll("label, td, th, b, strong, span, div")].find((n) => /^Quantity\s*summary$/i.test((n.textContent || "").trim()));
+        return !!q && (q as HTMLElement).offsetParent !== null;
+      }, { timeout: 4000 })
+      .then(() => true)
+      .catch(() => false);
 
   const readRaw = (): Promise<RawBookingDetails> => page.evaluate((): RawBookingDetails => {
     /** Read the *value* of a control: input/textarea value, or a select's chosen
@@ -391,20 +615,22 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
     };
   });
 
-  // The Details tab renders its SUMMARY + dynamic fields asynchronously, so a
-  // single fixed wait sometimes reads BEFORE the FR input is populated — the FR
-  // then comes back empty on an otherwise-valid booking and the row is wrongly
-  // sent to review (observed intermittently on large live batches, while the
-  // same booking reads fine in isolation). Click, wait, read; if FR is still
-  // empty, re-click Details and retry with a growing pause. This never invents a
-  // value: a genuinely FR-less booking still returns "" after the retries.
-  await clickDetails();
-  await page.waitForTimeout(1200);
-  let raw = await readRaw();
-  for (let attempt = 0; attempt < 3 && !assembleBookingDetails(raw).frCode; attempt++) {
+  // The Details tab must be the ACTIVE tab for its SUMMARY + booking-line inputs
+  // to exist in layout (they are display:none otherwise). We therefore activate
+  // it and confirm it is active BEFORE reading — a too-early read on the Header
+  // tab returns everything empty and wrongly sends the row to review. It also
+  // renders its dynamic fields asynchronously, so after activation we retry while
+  // nothing substantive has been read yet (no FR AND no totals). This never
+  // invents a value: a genuinely FR-less booking still returns "" after retries,
+  // but we no longer mistake "tab not open yet" for "no data".
+  let raw = empty;
+  for (let attempt = 0; attempt < 4; attempt++) {
     await clickDetails();
-    await page.waitForTimeout(1200 + attempt * 1200);
+    await detailsActive();
+    await page.waitForTimeout(900 + attempt * 700);
     raw = await readRaw();
+    const got = assembleBookingDetails(raw);
+    if (got.frCode || got.quantity || got.grossWeight || got.cartons) break;
   }
 
   return assembleBookingDetails(raw);

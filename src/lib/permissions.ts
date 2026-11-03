@@ -53,13 +53,17 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
 // Baseline least-privilege role → permission map.
 export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
   ADMIN: Object.values(PERMISSIONS),
+  // Commercial users are restricted to the Processes section only (see
+  // ROLE_SECTIONS below): nav, direct-URL and the backend actions for the other
+  // sections (Dashboard, Jobs list, Review Queue, Audit Trail, Administration)
+  // are all blocked. They keep every permission the process MODULES need to run
+  // (JOB_* is used by the modules' upload/status/retry paths), but NOT the
+  // permissions that only unlock those other sections (DASHBOARD_VIEW is unused,
+  // REVIEW_READ/RESOLVE gate the Review Queue, AUDIT_READ gates the Audit Trail).
   COMMERCIAL: [
-    PERMISSIONS.DASHBOARD_VIEW,
     PERMISSIONS.JOB_READ,
     PERMISSIONS.JOB_CREATE,
     PERMISSIONS.JOB_RETRY,
-    PERMISSIONS.REVIEW_READ,
-    PERMISSIONS.REVIEW_RESOLVE,
     PERMISSIONS.CONTRACT_APPROVE,
     PERMISSIONS.RENAME_APPLY,
     PERMISSIONS.SCHEDULE_EDIT,
@@ -69,7 +73,6 @@ export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
     PERMISSIONS.PDF_COMBINE,
     PERMISSIONS.CONTAINER_SEARCH,
     PERMISSIONS.EXP_RUN,
-    PERMISSIONS.AUDIT_READ,
   ],
   MERCHANDISER: [
     PERMISSIONS.DASHBOARD_VIEW,
@@ -91,8 +94,49 @@ export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
 
 export const ROLE_DESCRIPTIONS: Record<string, string> = {
   ADMIN: "Full administrative access",
-  COMMERCIAL: "Commercial section: owns contracts, approves submissions",
+  COMMERCIAL: "Processes only: runs the commercial automation modules",
   MERCHANDISER: "Forwards order packages, views progress",
   REVIEWER: "Disposes review-queue exceptions",
   VIEWER: "Read-only consumer of contract data",
 };
+
+/* ------------------------------------------------------------------ *
+ * Top-level portal sections (nav areas + their routes).
+ *
+ * Section access is enforced SEPARATELY from fine-grained permissions
+ * because the process modules share permissions with the standalone
+ * sections (e.g. a module's status polling needs JOB_READ, which also
+ * underlies the Jobs list). A role listed in ROLE_SECTIONS may open ONLY
+ * the sections named; a role that is absent may open every section.
+ * ------------------------------------------------------------------ */
+export type PortalSection = "dashboard" | "processes" | "jobs" | "review" | "audit" | "admin";
+
+export const PORTAL_SECTIONS: readonly PortalSection[] = [
+  "dashboard",
+  "processes",
+  "jobs",
+  "review",
+  "audit",
+  "admin",
+];
+
+/** Roles restricted to a subset of sections. Absent role = all sections. */
+export const ROLE_SECTIONS: Record<string, PortalSection[]> = {
+  COMMERCIAL: ["processes"],
+};
+
+/** Sections a role may open, or null when the role is unrestricted. */
+export function roleAllowedSections(role: string): PortalSection[] | null {
+  return ROLE_SECTIONS[(role ?? "").toUpperCase()] ?? null;
+}
+
+/** Whether a role may open a given top-level section. */
+export function roleCanAccessSection(role: string, section: PortalSection): boolean {
+  const allowed = roleAllowedSections(role);
+  return allowed === null || allowed.includes(section);
+}
+
+/** The landing route after login for a role: its first allowed section. */
+export function landingPathForRole(role: string): string {
+  return roleCanAccessSection(role, "dashboard") ? "/dashboard" : "/modules";
+}

@@ -2,6 +2,8 @@
 
 import { useFormState, useFormStatus } from "react-dom";
 import { loginAction, type LoginState } from "../actions/auth";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { AppFooter } from "@/components/AppFooter";
 
 function SubmitButton() {
   const { pending } = useFormStatus();
@@ -15,7 +17,10 @@ function SubmitButton() {
 export default function LoginPage() {
   const [state, action] = useFormState<LoginState, FormData>(loginAction, {});
   return (
-    <main className="flex min-h-screen items-center justify-center bg-gradient-to-br from-ananta-50 via-surface-muted to-slate-100 p-4">
+    <main className="relative flex min-h-screen items-center justify-center bg-gradient-to-br from-ananta-50 via-surface-muted to-slate-100 p-4 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
       <div className="card w-full max-w-sm p-8 shadow-pop">
         <div className="mb-6 flex flex-col items-center text-center">
           {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -36,6 +41,9 @@ export default function LoginPage() {
           <SubmitButton />
         </form>
         <p className="mt-6 text-center text-xs text-slate-400">Authorised personnel only.</p>
+      </div>
+      <div className="absolute inset-x-0 bottom-0">
+        <AppFooter className="border-transparent" />
       </div>
     </main>
   );

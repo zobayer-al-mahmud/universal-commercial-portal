@@ -45,8 +45,14 @@ export async function POST(req: Request) {
   for (const f of files) {
     if (f.size > maxBytes) continue; // skip oversized; client already warned
     const bytes = Buffer.from(await f.arrayBuffer());
-    const chosen = (names[f.name] || f.name).replace(/[\\/]/g, "_").trim() || f.name;
-    entries.push({ name: dedupe(chosen.toLowerCase().endsWith(".pdf") ? chosen : `${chosen}.pdf`), data: bytes });
+    // The client sends a RELATIVE output path (e.g. "UCP Renamed/sub/61753.pdf")
+    // so the archive mirrors the source folder structure. ZIP uses "/" as the
+    // separator; sanitise each segment (strip illegal chars) but keep the slashes.
+    const raw = (names[f.name] || f.name).replace(/\\/g, "/");
+    const segs = raw.split("/").map((s) => s.replace(/[<>:"|?*\u0000-\u001f]/g, "").trim()).filter(Boolean);
+    let rel = segs.join("/") || f.name;
+    if (!rel.toLowerCase().endsWith(".pdf")) rel = `${rel}.pdf`;
+    entries.push({ name: dedupe(rel), data: bytes });
   }
   if (entries.length === 0) return new Response(JSON.stringify({ error: "No files within the size limit." }), { status: 400 });
 

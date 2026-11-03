@@ -2,10 +2,12 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { PageHeader, Stat, StatusBadge, Panel } from "@/components/ui";
 import { visibleModules } from "@/server/modules/catalog";
+import { requireSection } from "@/lib/access";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
+  await requireSection("dashboard");
   const [jobs, openReviews, drafts, queued, verified, salesContractPos, modules, recent] = await Promise.all([
     prisma.job.count(),
     prisma.reviewTicket.count({ where: { status: "open" } }),

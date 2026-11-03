@@ -36,10 +36,15 @@ export async function createSessionToken(userId: string): Promise<string> {
 
 export async function setSessionCookie(userId: string) {
   const token = await createSessionToken(userId);
+  // AUTH_COOKIE_SECURE: "true" | "false" overrides the default (NODE_ENV===production).
+  // Set to "false" when serving over plain HTTP on a LAN so the cookie is sent back.
+  const forced = process.env.AUTH_COOKIE_SECURE;
+  const secureFlag =
+    forced === "false" ? false : forced === "true" ? true : process.env.NODE_ENV === "production";
   cookies().set(COOKIE_NAME, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureFlag,
     path: "/",
     maxAge: env.SESSION_TTL_HOURS * 3600,
   });

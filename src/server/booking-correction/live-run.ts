@@ -220,7 +220,25 @@ export async function runLivePortalForDoc(input: {
   return serializeLiveRun(async () => {
     // STEP: Searching Booking (auth → portal → PO* + SKU* search).
     await report("searching", `Searching PO ${poQuery} / SKU ${countryQuery}`);
-    const search = await liveSearchBookings({ poNumber: input.extraction.poNumber, countryCode: input.extraction.countryCode });
+    // Scope grid results to this batch's trading entity in code (grid rows carry
+    // shipper + consignee). We no longer pre-select the shipper dropdown, whose
+    // onchange reloads the page and broke Booking-tab activation. Match the FULL
+    // company/buyer name (whitespace-flexible) so the shipper filter still tells
+    // GARMENTS from SPORTSWEAR; liveSearchBookings fails open (keeps all rows) if
+    // a format difference means nothing matches, so a too-strict pattern never
+    // produces a false "no booking".
+    const nameMatch = (s: string): RegExp | undefined => {
+      const t = (s || "").trim();
+      if (!t) return undefined;
+      const pat = t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+      return new RegExp(pat, "i");
+    };
+    const search = await liveSearchBookings({
+      poNumber: input.extraction.poNumber,
+      countryCode: input.extraction.countryCode,
+      companyMatch: nameMatch(input.company),
+      buyerMatch: nameMatch(input.buyer),
+    });
     if (search.authRequired) {
       return { authRequired: true, ok: false, message: search.message, ...emptyNav };
     }

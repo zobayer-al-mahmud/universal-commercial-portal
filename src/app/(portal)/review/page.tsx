@@ -1,14 +1,15 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
-import { getSessionUser, userHasPermission } from "@/lib/auth";
+import { userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
+import { requireSection } from "@/lib/access";
 import { PageHeader, StatusBadge, Empty } from "@/components/ui";
 import { resolveReviewAction } from "@/app/actions/review";
 
 export const dynamic = "force-dynamic";
 
 export default async function ReviewPage() {
-  const user = await getSessionUser();
+  const user = await requireSection("review");
   const canResolve = userHasPermission(user, PERMISSIONS.REVIEW_RESOLVE);
   const tickets = await prisma.reviewTicket.findMany({
     orderBy: [{ status: "asc" }, { createdAt: "desc" }],

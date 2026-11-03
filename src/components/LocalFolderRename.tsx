@@ -4,12 +4,19 @@
  * PDF File Rename — LOCAL-folder workflow (the user's own computer).
  *
  * Browser security: a web server cannot reach a folder on the user's PC. So this
- * flow is CLIENT-SIDE. On Chromium (File System Access API) we open the native
- * folder picker, read each PDF locally, deep-analyze it on the server (bytes
- * only — same extraction/OCR/validation the server-folder job uses), then write
- * the renamed COPIES back into an "UCP Renamed" sub-folder of the chosen folder
- * (originals preserved, never overwritten). Where the API is unavailable we fall
- * back to a folder upload that returns a ZIP of the renamed copies to download.
+ * flow is CLIENT-SIDE, and the OUTPUT method is chosen from the browser's own
+ * capabilities (detected at mount — never by browser name):
+ *   • Chrome/Edge (File System Access API, secure context): the native folder
+ *     picker opens, each PDF is read locally and deep-analysed on the server
+ *     (bytes only — same extraction/OCR/validation the server-folder job uses),
+ *     then a renamed COPY is written directly into an "UCP Renamed" sub-folder of
+ *     the chosen folder, mirroring the source folder structure. No ZIP download.
+ *   • Firefox/Safari/other (or a non-secure context): a folder upload returns the
+ *     renamed copies as an "UCP Renamed.zip" download — the best method those
+ *     browsers support.
+ * In EVERY mode the original PDFs are only read, never modified or overwritten;
+ * invoice numbers are never invented (files that can't be read are left for manual
+ * rename). Any modern browser can use the module.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18,19 +25,51 @@ const OUTPUT_SUBDIR = "UCP Renamed";
 const SCAN_CONCURRENCY = 4;
 
 // --- Minimal File System Access API typings (not in all TS lib.dom versions) --
+type FsPermissionState = "granted" | "denied" | "prompt";
 interface FsWritable { write(data: BufferSource | Blob): Promise<void>; close(): Promise<void> }
-interface FsFileHandle { kind: "file"; name: string; getFile(): Promise<File>; createWritable(): Promise<FsWritable> }
+interface FsFileHandle {
+  kind: "file"; name: string; getFile(): Promise<File>; createWritable(): Promise<FsWritable>;
+}
 interface FsDirHandle {
   kind: "directory"; name: string;
   values(): AsyncIterableIterator<FsFileHandle | FsDirHandle>;
   getDirectoryHandle(name: string, opts?: { create?: boolean }): Promise<FsDirHandle>;
   getFileHandle(name: string, opts?: { create?: boolean }): Promise<FsFileHandle>;
   removeEntry(name: string, opts?: { recursive?: boolean }): Promise<void>;
+  // Permission API (Chromium): verify/request read-write access to the handle.
+  queryPermission?(opts?: { mode?: "read" | "readwrite" }): Promise<FsPermissionState>;
+  requestPermission?(opts?: { mode?: "read" | "readwrite" }): Promise<FsPermissionState>;
 }
 function getDirectoryPicker(): ((opts?: { mode?: "read" | "readwrite" }) => Promise<FsDirHandle>) | null {
   if (typeof window === "undefined") return null;
   const w = window as unknown as { showDirectoryPicker?: (opts?: { mode?: "read" | "readwrite" }) => Promise<FsDirHandle> };
   return typeof w.showDirectoryPicker === "function" ? w.showDirectoryPicker.bind(window) : null;
+}
+/** Why the native folder picker is unavailable, so the UI can say something true.
+ *  Chromium only exposes showDirectoryPicker in a SECURE CONTEXT (https:// or
+ *  localhost). Served over plain http:// on a LAN IP it is absent even in
+ *  Chrome/Edge — that is a connection issue, not a browser-support one. */
+function folderWriteUnavailableReason(): "" | "insecure-context" | "unsupported" {
+  if (typeof window === "undefined") return "";
+  if (getDirectoryPicker()) return "";
+  return window.isSecureContext ? "unsupported" : "insecure-context";
+}
+/** Verify (and if needed request) read-write permission on a directory handle
+ *  BEFORE writing. Returns false when the user denies — the caller then falls
+ *  back to the ZIP download. Older implementations without the permission API
+ *  are treated as granted (the readwrite picker already gated access). */
+async function ensureWritePermission(handle: FsDirHandle): Promise<boolean> {
+  try {
+    if (typeof handle.queryPermission === "function") {
+      if ((await handle.queryPermission({ mode: "readwrite" })) === "granted") return true;
+    }
+    if (typeof handle.requestPermission === "function") {
+      return (await handle.requestPermission({ mode: "readwrite" })) === "granted";
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface Analysis {
@@ -56,6 +95,7 @@ interface Row extends Partial<Analysis> {
   stateMsg?: string;
   corrected?: boolean; // final name was set/confirmed by a manual rename
   handle?: FsFileHandle; // FS Access mode
+  dir?: FsDirHandle; // the file's OWN parent directory (for in-place rename)
   file?: File; // upload fallback mode
 }
 interface HistoryEntry { at: string; folder: string; total: number; renamed: number; review: number; failed: number; mode: string }
@@ -88,7 +128,6 @@ function saveCorrLog(list: CorrectionEntry[]) {
   try { localStorage.setItem(CORRLOG_KEY, JSON.stringify(list.slice(0, 100))); } catch { /* storage may be unavailable */ }
 }
 
-function reviewName(): string { return `REVIEW_REQUIRED_${Math.random().toString(16).slice(2, 8)}.pdf`; }
 /** Sanitise a user-typed invoice number into a safe filename stem (no path/illegal chars, no extension). */
 function toStem(raw: string): string {
   return raw.trim().replace(/\.pdf$/i, "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, "").trim();
@@ -109,6 +148,7 @@ export function LocalFolderRename() {
   // (avoids a hydration mismatch). `mounted` gates the support-dependent UI.
   const [mounted, setMounted] = useState(false);
   const [fsaPicker, setFsaPicker] = useState<ReturnType<typeof getDirectoryPicker>>(null);
+  const [unavailableReason, setUnavailableReason] = useState<"" | "insecure-context" | "unsupported">("");
   const [dirHandle, setDirHandle] = useState<FsDirHandle | null>(null);
   const [folderName, setFolderName] = useState<string>("");
   const [rows, setRows] = useState<Row[]>([]);
@@ -127,6 +167,7 @@ export function LocalFolderRename() {
   useEffect(() => {
     setMounted(true);
     setFsaPicker(() => getDirectoryPicker());
+    setUnavailableReason(folderWriteUnavailableReason());
     setHistory(loadHistory());
     setCorrLog(loadCorrLog());
   }, []);
@@ -144,7 +185,7 @@ export function LocalFolderRename() {
       setDirHandle(handle);
       setFolderName(handle.name);
       const found = await collectHandles(handle);
-      setRows(found.map((f, i) => ({ key: `h${i}:${f.path}`, path: f.path, size: 0, selected: true, state: "pending", handle: f.handle })));
+      setRows(found.map((f, i) => ({ key: `h${i}:${f.path}`, path: f.path, size: 0, selected: true, state: "pending", handle: f.handle, dir: f.dir })));
       addLog(`Selected folder “${handle.name}” — ${found.length} PDF(s) found on your computer.`);
       setMsg({ tone: "ok", text: `“${handle.name}” selected: ${found.length} PDF(s). Click Scan & Preview.` });
     } catch (e) {
@@ -164,13 +205,15 @@ export function LocalFolderRename() {
     setMsg({ tone: "ok", text: `“${first}” selected: ${pdfs.length} PDF(s). Click Scan & Preview.` });
   };
 
-  async function collectHandles(dir: FsDirHandle, base = "", out: { handle: FsFileHandle; path: string }[] = []): Promise<{ handle: FsFileHandle; path: string }[]> {
+  async function collectHandles(dir: FsDirHandle, base = "", out: { handle: FsFileHandle; dir: FsDirHandle; path: string }[] = []): Promise<{ handle: FsFileHandle; dir: FsDirHandle; path: string }[]> {
     for await (const entry of dir.values()) {
       if (entry.kind === "directory") {
         if (entry.name === OUTPUT_SUBDIR || entry.name.startsWith(".")) continue;
         await collectHandles(entry, base ? `${base}/${entry.name}` : entry.name, out);
       } else if (entry.name.toLowerCase().endsWith(".pdf")) {
-        out.push({ handle: entry, path: base ? `${base}/${entry.name}` : entry.name });
+        // Track the file's OWN parent directory so we can rename it IN PLACE
+        // (a subfolder's file is renamed inside that subfolder).
+        out.push({ handle: entry, dir, path: base ? `${base}/${entry.name}` : entry.name });
       }
     }
     return out.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
@@ -178,12 +221,24 @@ export function LocalFolderRename() {
 
   // --- Scan & preview ----------------------------------------------------
   async function analyzeOne(bytes: Blob, name: string): Promise<Analysis> {
-    const res = await fetch("/api/pdf-rename/analyze", { method: "POST", headers: { "x-filename": encodeURIComponent(name).replace(/%20/g, " ") }, body: bytes });
-    if (!res.ok) {
-      const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-      throw new Error((j as { error?: string }).error || `HTTP ${res.status}`);
+    // Abort a stuck request so one slow/hung file can never freeze the scan
+    // indefinitely — it fails, is logged, and the batch continues. The bound is
+    // a little above the server's own 100s analysis backstop.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 115_000);
+    try {
+      const res = await fetch("/api/pdf-rename/analyze", { method: "POST", headers: { "x-filename": encodeURIComponent(name).replace(/%20/g, " ") }, body: bytes, signal: ctrl.signal });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error((j as { error?: string }).error || `HTTP ${res.status}`);
+      }
+      return (await res.json()) as Analysis;
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") throw new Error("Analysis timed out (the server did not respond in time).");
+      throw e;
+    } finally {
+      clearTimeout(timer);
     }
-    return (await res.json()) as Analysis;
   }
 
   const runScan = async () => {
@@ -208,12 +263,17 @@ export function LocalFolderRename() {
           // over from a previous run of these rows, so no stale "renamed"
           // name/flag survives into the newly-scanned state.
           next[i] = { ...r, ...a, state: "scanned", finalName: undefined, corrected: false, stateMsg: undefined };
+          if (a.decision === "RENAME" && a.proposedName) addLog(`✓ ${r.path} → ${a.proposedName} (${a.source}, ${Math.round((a.confidence || 0) * 100)}%)`);
+          else addLog(`⚠ ${r.path} needs review: ${a.reviewReason || a.reasonText || "no invoice number found"}`);
         } catch (e) {
           next[i] = { ...r, decision: "REVIEW", reviewReason: "PDF_UNREADABLE_OR_CORRUPTED", reasonText: (e as Error).message, state: "scanned", proposedName: null, invoiceNumber: null, confidence: 0, finalName: undefined, corrected: false, stateMsg: undefined };
+          addLog(`✗ FAILED ${r.path}: ${(e as Error).message}`);
         }
         done++;
         setProgress({ done, total });
-        if (done % 5 === 0 || done === total) setRows([...next]);
+        // Update the table frequently so progress + per-row status reflect reality
+        // after every file (small batches never wait for a 5-file flush).
+        if (done % 2 === 0 || done === total || total <= 10) setRows([...next]);
       }
     };
     await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, total) }, worker));
@@ -224,14 +284,18 @@ export function LocalFolderRename() {
     // a rename that isn't there — so a previous batch's status can't leak in.
     const corr = loadCorrections();
     let restored = 0;
-    let outDir: FsDirHandle | null = null;
-    if (dirHandle) { try { outDir = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR); } catch { outDir = null; } }
+    let outRoot: FsDirHandle | null = null;
+    if (dirHandle) { try { outRoot = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR); } catch { outRoot = null; } }
     for (let i = 0; i < next.length; i++) {
       const c = corr[corrKey(folderName, next[i].path)];
       if (!c) continue;
-      const verified = outDir ? await exists(outDir, c.finalName) : false;
+      // The corrected copy lives in the output folder under the file's own
+      // sub-path; verify it is actually present there before claiming "renamed".
+      const dirPart = next[i].path.includes("/") ? next[i].path.slice(0, next[i].path.lastIndexOf("/")) : "";
+      const outSub = outRoot ? await getDirByPath(outRoot, dirPart, false) : null;
+      const verified = outSub ? await exists(outSub, c.finalName) : false;
       if (verified) {
-        next[i] = { ...next[i], invoiceNumber: c.invoice, proposedName: `${c.invoice}.pdf`, finalName: c.finalName, decision: "RENAME", state: "renamed", corrected: true, stateMsg: `manual → ${c.finalName}` };
+        next[i] = { ...next[i], invoiceNumber: c.invoice, proposedName: `${c.invoice}.pdf`, finalName: c.finalName, decision: "RENAME", state: "renamed", corrected: true, stateMsg: `manual → ${OUTPUT_SUBDIR}/${dirPart ? dirPart + "/" : ""}${c.finalName}` };
         restored++;
       } else {
         next[i] = { ...next[i], invoiceNumber: c.invoice, proposedName: `${c.invoice}.pdf`, finalName: undefined, decision: "RENAME", state: "scanned", corrected: false, stateMsg: undefined };
@@ -252,69 +316,125 @@ export function LocalFolderRename() {
     setBusy("rename");
     setMsg(null);
 
+    // DIRECT FOLDER MODE (Chrome/Edge, secure context): write a renamed COPY of
+    // each PDF into an "UCP Renamed" sub-folder of the chosen folder, mirroring the
+    // source structure. Originals are never touched; no ZIP. Verify read-write
+    // permission on the folder FIRST; if denied we stop and ask (never silently
+    // download instead).
     if (dirHandle) {
-      // FS Access: write renamed copies into the output sub-folder on the user's disk.
+      const granted = await ensureWritePermission(dirHandle);
+      if (!granted) {
+        setBusy("");
+        addLog("Rename aborted — read/write permission to the folder was not granted.");
+        setMsg({ tone: "err", text: "The browser did not grant write access to the folder. Choose the folder again and click “Allow”/“Edit files”, then rename." });
+        return;
+      }
+      let outRoot: FsDirHandle;
+      try {
+        outRoot = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR, { create: true });
+      } catch (e) {
+        setBusy("");
+        setMsg({ tone: "err", text: `Could not create the “${OUTPUT_SUBDIR}” output folder: ${(e as Error).message}` });
+        return;
+      }
       setProgress({ done: 0, total: targets.length });
-      addLog(`Renaming ${targets.length} file(s) into “${folderName}/${OUTPUT_SUBDIR}/” (copies; originals preserved).`);
-      let out: FsDirHandle;
-      try { out = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR, { create: true }); }
-      catch (e) { setBusy(""); setMsg({ tone: "err", text: `Could not create the output folder: ${(e as Error).message}` }); return; }
-      const used = new Set<string>();
+      addLog(`Writing renamed copies into “${folderName}/${OUTPUT_SUBDIR}” (originals preserved; no ZIP).`);
+      // Dedupe is PER output sub-folder: the same invoice name in two different
+      // sub-folders must NOT be suffixed (they can't collide), only duplicates
+      // within one sub-folder are de-collided.
+      const claimedByDir = new Map<string, Set<string>>();
       const next = [...rows];
       let done = 0, renamed = 0, review = 0, failed = 0;
       for (const { r, i } of targets) {
+        const leaf = r.path.split("/").pop() || r.path;
         try {
-          const file = r.handle ? await r.handle.getFile() : r.file!;
-          const bytes = await file.arrayBuffer();
-          let finalName: string; let state: RowState;
-          if (r.decision === "RENAME" && r.proposedName) {
-            finalName = await dedupeName(out, r.proposedName, used);
-            state = "renamed"; renamed++;
+          if (!(r.decision === "RENAME" && r.proposedName) || !r.handle) {
+            // Never invent a number — a file whose invoice could not be read is
+            // left for manual rename and NOT copied automatically.
+            next[i] = { ...r, state: "review", finalName: undefined, stateMsg: `${r.reviewReason || "needs review"} — not copied` };
+            review++;
+            addLog(`Needs review (not copied): ${leaf}`);
           } else {
-            finalName = await dedupeName(out, reviewName(), used);
-            state = "review"; review++;
+            // Mirror the source sub-folder under the output root so structure is
+            // preserved; dedupe within that sub-folder so no copy is overwritten.
+            const dirPart = r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : "";
+            const outSub = (await getDirByPath(outRoot, dirPart, true))!;
+            let claimed = claimedByDir.get(dirPart);
+            if (!claimed) { claimed = new Set<string>(); claimedByDir.set(dirPart, claimed); }
+            const finalName = await dedupeInDir(outSub, r.proposedName, "", claimed);
+            await writeCopy(outSub, finalName, r.handle);
+            const outPath = `${OUTPUT_SUBDIR}/${dirPart ? dirPart + "/" : ""}${finalName}`;
+            // The row's own handle/path stay on the ORIGINAL (unchanged); only the
+            // proposed/final name and status reflect the copy that was written.
+            next[i] = { ...r, state: "renamed", finalName, stateMsg: `copy → ${outPath}` };
+            renamed++;
+            addLog(`Renamed copy: ${leaf} → ${outPath}`);
           }
-          await writeInto(out, finalName, bytes);
-          next[i] = { ...r, state, finalName, stateMsg: state === "renamed" ? `→ ${finalName}` : `${r.reviewReason || "review"} → ${finalName}` };
-          addLog(`${state === "renamed" ? "Renamed" : "Flagged"} ${r.path} → ${finalName}`);
         } catch (e) {
           failed++;
           next[i] = { ...r, state: "failed", stateMsg: (e as Error).message };
-          addLog(`FAILED ${r.path}: ${(e as Error).message}`);
+          addLog(`FAILED ${leaf}: ${(e as Error).message}`);
         }
         done++; setProgress({ done, total: targets.length }); setRows([...next]);
       }
       setBusy("");
-      pushHistory({ folder: folderName, total: targets.length, renamed, review, failed, mode: "local (write-back)" });
-      setMsg({ tone: "ok", text: `Done: ${renamed} renamed, ${review} review, ${failed} failed → “${folderName}/${OUTPUT_SUBDIR}/”. Originals untouched.` });
+      pushHistory({ folder: folderName, total: targets.length, renamed, review, failed, mode: `local (${OUTPUT_SUBDIR} folder)` });
+      setMsg({ tone: "ok", text: `Done: ${renamed} renamed copy(ies) written to “${folderName}/${OUTPUT_SUBDIR}”, ${review} need review, ${failed} failed. Your originals are unchanged.` });
       return;
     }
 
-    // Upload fallback: package renamed copies into a ZIP for download.
+    // No folder handle (Firefox/Safari, or a non-secure context): the page cannot
+    // write to the user's disk, so renamed copies are returned as a ZIP download —
+    // the best output method those browsers support.
+    await zipFallback(targets, "local (ZIP download)");
+  };
+
+  /** Build a renamed-copies ZIP and download it (browsers without the File System
+   *  Access API). Reads each file from its FS handle or its uploaded File, so it
+   *  works regardless of how the folder was selected. Originals are never modified.
+   *  Only files with a resolved invoice name are included (REVIEW files are left
+   *  for manual rename — numbers are never invented). Entries are placed under an
+   *  "UCP Renamed/…" path mirroring the source structure, deduped so nothing is
+   *  overwritten inside the archive. */
+  const zipFallback = async (targets: { r: Row; i: number }[], mode: string) => {
     try {
-      addLog(`Building a renamed ZIP for ${targets.length} file(s) (upload mode — your originals are not modified).`);
+      const renameable = targets.filter(({ r }) => r.decision === "RENAME" && r.proposedName);
+      const needReview = targets.length - renameable.length;
+      if (renameable.length === 0) { setBusy(""); setMsg({ tone: "err", text: "No files are ready to rename — every selected file needs review." }); return; }
+      addLog(`Building “${OUTPUT_SUBDIR}.zip” for ${renameable.length} file(s) (your originals are not modified).`);
+      setProgress({ done: 0, total: renameable.length });
       const fd = new FormData();
       const names: Record<string, string> = {};
       const usedZip = new Set<string>();
-      for (const { r } of targets) {
-        if (!r.file) continue;
-        const base = r.decision === "RENAME" && r.proposedName ? r.proposedName : reviewName();
-        let nm = base; let n = 2;
-        while (usedZip.has(nm.toLowerCase())) { const d = base.lastIndexOf("."); nm = `${base.slice(0, d)}-${n++}${base.slice(d)}`; }
-        usedZip.add(nm.toLowerCase());
-        names[r.file.name] = nm;
-        fd.append("files", r.file, r.file.name);
+      const relPath = (dirPart: string, nm: string) => `${OUTPUT_SUBDIR}/${dirPart ? dirPart + "/" : ""}${nm}`;
+      let done = 0;
+      for (const { r } of renameable) {
+        const file = r.handle ? await r.handle.getFile() : r.file;
+        if (!file) continue;
+        const dirPart = r.path.includes("/") ? r.path.slice(0, r.path.lastIndexOf("/")) : "";
+        const base = r.proposedName!;
+        // Dedupe on the full relative output path so same-named files in different
+        // sub-folders don't collide and no entry is overwritten in the archive.
+        let leaf = base; let n = 2;
+        while (usedZip.has(relPath(dirPart, leaf).toLowerCase())) { const d = base.lastIndexOf("."); leaf = `${base.slice(0, d)}-${n++}${base.slice(d)}`; }
+        usedZip.add(relPath(dirPart, leaf).toLowerCase());
+        // Key by the ORIGINAL path; value is the relative output path (keeps structure).
+        names[r.path] = relPath(dirPart, leaf);
+        fd.append("files", file, r.path);
+        done++; setProgress({ done, total: renameable.length });
       }
       fd.append("names", JSON.stringify(names));
       const res = await fetch("/api/pdf-rename/rename-zip", { method: "POST", body: fd });
       if (!res.ok) { const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` })); throw new Error((j as { error?: string }).error || `HTTP ${res.status}`); }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a"); a.href = url; a.download = "UCP Renamed.zip"; a.click(); URL.revokeObjectURL(url);
+      const a = document.createElement("a"); a.href = url; a.download = `${OUTPUT_SUBDIR}.zip`; a.click(); URL.revokeObjectURL(url);
+      // Reflect per-file status: exported rows → renamed; the rest stay as review.
+      const inZip = new Set(renameable.map(({ r }) => r.key));
+      setRows((rs) => rs.map((r) => (inZip.has(r.key) ? { ...r, state: "renamed" as RowState, finalName: r.proposedName ?? undefined, stateMsg: `exported to ${OUTPUT_SUBDIR}.zip` } : r)));
       setBusy("");
-      const renamed = targets.filter(({ r }) => r.decision === "RENAME").length;
-      pushHistory({ folder: folderName, total: targets.length, renamed, review: targets.length - renamed, failed: 0, mode: "local (ZIP download)" });
-      setMsg({ tone: "ok", text: `Downloaded “UCP Renamed.zip” with ${targets.length} renamed copy(ies). Your original files are unchanged.` });
+      pushHistory({ folder: folderName, total: targets.length, renamed: renameable.length, review: needReview, failed: 0, mode });
+      setMsg({ tone: "ok", text: `Downloaded “${OUTPUT_SUBDIR}.zip” with ${renameable.length} renamed copy(ies)${needReview ? `; ${needReview} need review and were not included` : ""}. Your original files are unchanged.` });
     } catch (e) {
       setBusy(""); setMsg({ tone: "err", text: `ZIP build failed: ${(e as Error).message}` });
     }
@@ -323,28 +443,43 @@ export function LocalFolderRename() {
   async function exists(dir: FsDirHandle, name: string): Promise<boolean> {
     try { await dir.getFileHandle(name); return true; } catch { return false; }
   }
-  async function dedupeName(dir: FsDirHandle, name: string, used: Set<string>): Promise<string> {
+  /** Pick a collision-free name within `dir`. A file's OWN current name counts as
+   *  free (so a no-op/re-rename keeps its name). `claimed` reserves names already
+   *  assigned in this run. Never returns a name that would overwrite a DIFFERENT
+   *  existing file — it appends `-2`, `-3`, … instead. */
+  async function dedupeInDir(dir: FsDirHandle, name: string, exceptName: string, claimed: Set<string>): Promise<string> {
     const d = name.lastIndexOf("."); const stem = d > 0 ? name.slice(0, d) : name; const ext = d > 0 ? name.slice(d) : ".pdf";
     let candidate = name; let n = 2;
-    while (used.has(candidate.toLowerCase()) || (await exists(dir, candidate))) candidate = `${stem}-${n++}${ext}`;
-    used.add(candidate.toLowerCase());
-    return candidate;
-  }
-  async function writeInto(dir: FsDirHandle, name: string, data: ArrayBuffer): Promise<void> {
-    const fh = await dir.getFileHandle(name, { create: true });
-    const w = await fh.createWritable();
-    await w.write(data);
-    await w.close();
-  }
-  /** Dedupe, but treat `except` (this row's own current output file) as free so a
-   *  re-save keeps its name instead of spawning a "-2" copy. Never overwrites a
-   *  DIFFERENT existing file. */
-  async function dedupeNameExcept(dir: FsDirHandle, name: string, except?: string): Promise<string> {
-    const d = name.lastIndexOf("."); const stem = d > 0 ? name.slice(0, d) : name; const ext = d > 0 ? name.slice(d) : ".pdf";
-    let candidate = name; let n = 2;
-    const taken = async (c: string) => (except && c.toLowerCase() === except.toLowerCase() ? false : await exists(dir, c));
+    const taken = async (c: string): Promise<boolean> => {
+      if (c.toLowerCase() === exceptName.toLowerCase()) return false;
+      if (claimed.has(c.toLowerCase())) return true;
+      return exists(dir, c);
+    };
     while (await taken(candidate)) candidate = `${stem}-${n++}${ext}`;
+    claimed.add(candidate.toLowerCase());
     return candidate;
+  }
+  /** Resolve (optionally creating) a nested sub-directory by its "a/b/c" relative
+   *  path within `root`, so the output folder mirrors the source structure. Empty
+   *  path returns `root`; with create=false a missing segment returns null. */
+  async function getDirByPath(root: FsDirHandle, rel: string, create: boolean): Promise<FsDirHandle | null> {
+    if (!rel) return root;
+    let cur: FsDirHandle = root;
+    for (const seg of rel.split("/").filter(Boolean)) {
+      try { cur = await cur.getDirectoryHandle(seg, { create }); }
+      catch (e) { if (!create) return null; throw new Error(`Could not create sub-folder “${seg}”: ${(e as Error).message}`); }
+    }
+    return cur;
+  }
+  /** Write a renamed COPY of a source file into `dir` under `name`. The source
+   *  (original) handle is only READ — never modified. PDF bytes are copied
+   *  verbatim, preserving the content exactly. */
+  async function writeCopy(dir: FsDirHandle, name: string, source: FsFileHandle): Promise<void> {
+    const bytes = await (await source.getFile()).arrayBuffer();
+    const nh = await dir.getFileHandle(name, { create: true });
+    const w = await nh.createWritable();
+    await w.write(bytes);
+    await w.close();
   }
 
   const pushHistory = (e: Omit<HistoryEntry, "at">) => {
@@ -371,22 +506,26 @@ export function LocalFolderRename() {
     const finalBase = `${stem}.pdf`;
     setBusy("rename");
     try {
-      const file = row.handle ? await row.handle.getFile() : row.file!;
-      const bytes = await file.arrayBuffer();
-      if (dirHandle) {
-        // In-place: write the corrected copy into the output folder and drop the
-        // file's previous output name so the folder reflects exactly one copy.
-        const out = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR, { create: true });
-        const oldName = row.finalName;
-        const finalName = await dedupeNameExcept(out, finalBase, oldName);
-        await writeInto(out, finalName, bytes);
-        if (oldName && oldName.toLowerCase() !== finalName.toLowerCase()) { try { await out.removeEntry(oldName); } catch { /* old copy already gone */ } }
-        setRows((rs) => rs.map((r) => (r.key === key ? { ...r, state: "renamed", decision: "RENAME", invoiceNumber: stem, proposedName: finalBase, finalName, corrected: true, stateMsg: `manual → ${finalName}` } : r)));
-        recordCorrection(row.path, stem, finalName, "manual rename (write-back)");
-        addLog(`Manual rename: ${row.path} → ${finalName}${oldName && oldName !== finalName ? ` (replaced ${oldName})` : ""}`);
-        setMsg({ tone: "ok", text: `Saved: ${row.path} → ${finalName}. Original preserved.` });
+      if (dirHandle && row.handle) {
+        // Direct mode: write a corrected COPY into the output folder (the original
+        // is left untouched), mirroring the file's sub-path.
+        const granted = await ensureWritePermission(dirHandle);
+        if (!granted) { setBusy(""); setMsg({ tone: "err", text: "The browser did not grant write access to the folder." }); return; }
+        const outRoot = await dirHandle.getDirectoryHandle(OUTPUT_SUBDIR, { create: true });
+        const dirPart = row.path.includes("/") ? row.path.slice(0, row.path.lastIndexOf("/")) : "";
+        const outSub = (await getDirByPath(outRoot, dirPart, true))!;
+        const finalName = await dedupeInDir(outSub, finalBase, "", new Set());
+        await writeCopy(outSub, finalName, row.handle);
+        const outPath = `${OUTPUT_SUBDIR}/${dirPart ? dirPart + "/" : ""}${finalName}`;
+        const leaf = row.path.split("/").pop() || row.path;
+        setRows((rs) => rs.map((r) => (r.key === key ? { ...r, state: "renamed", decision: "RENAME", invoiceNumber: stem, proposedName: finalBase, finalName, corrected: true, stateMsg: `manual → ${outPath}` } : r)));
+        recordCorrection(row.path, stem, finalName, "manual rename (copy)");
+        addLog(`Manual rename: ${leaf} → ${outPath}`);
+        setMsg({ tone: "ok", text: `Wrote corrected copy: ${leaf} → ${outPath}. Original unchanged.` });
       } else {
         // Upload mode: no folder handle, so download the single corrected copy.
+        const file = row.handle ? await row.handle.getFile() : row.file!;
+        const bytes = await file.arrayBuffer();
         const blob = new Blob([bytes], { type: "application/pdf" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a"); a.href = url; a.download = finalBase; a.click(); URL.revokeObjectURL(url);
@@ -446,7 +585,11 @@ export function LocalFolderRename() {
               <input ref={uploadRef} type="file" className="hidden" multiple onChange={(e) => pickViaUpload(e.target.files)}
                 // @ts-expect-error non-standard directory attributes for folder upload
                 webkitdirectory="" directory="" />
-              <div className="mt-2 text-[11px] text-amber-600">Your browser doesn’t support in-place folder writes; renamed files are provided as a ZIP download instead.</div>
+              {unavailableReason === "unsupported" ? (
+                <div className="mt-2 text-[11px] text-slate-400">
+                  Direct folder writing runs in Chrome or Edge. In this browser the renamed copies download as “{OUTPUT_SUBDIR}.zip” instead.
+                </div>
+              ) : null}
             </div>
           )}
           {folderName ? <div className="mx-auto mt-3 inline-flex items-center gap-2 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-700 ring-1 ring-slate-200">📂 {folderName} · {total} PDF(s)</div> : null}
@@ -464,7 +607,7 @@ export function LocalFolderRename() {
             <button onClick={runScan} disabled={busy !== "" || total === 0} className="btn-ghost text-xs disabled:opacity-40">{busy === "scan" ? `Scanning… ${pct}%` : "🔍 Scan & Preview"}</button>
             <button onClick={() => runRename(true)} disabled={busy !== "" || !scanned || selectedCount === 0} className="btn-primary text-xs disabled:opacity-40">{busy === "rename" ? "Renaming…" : `▶ Rename Selected (${selectedCount})`}</button>
             <button onClick={() => runRename(false)} disabled={busy !== "" || !scanned} className="btn-ghost text-xs disabled:opacity-40">▶ Rename All</button>
-            <span className="ml-auto text-[11px] text-slate-400">{dirHandle ? "Renamed copies write into an “UCP Renamed” sub-folder; originals preserved." : fsaPicker ? "" : "Upload mode: renamed copies download as a ZIP."}</span>
+            <span className="ml-auto text-[11px] text-slate-400">{dirHandle ? `Renamed copies are written to “${OUTPUT_SUBDIR}” inside the folder (originals preserved).` : fsaPicker ? "" : `Upload mode: renamed copies download as “${OUTPUT_SUBDIR}.zip”.`}</span>
           </div>
           {!scanned ? <div className="mt-2 text-[11px] text-slate-400">Actions become available after a folder is selected and scanned.</div> : null}
           {progress && busy ? (
