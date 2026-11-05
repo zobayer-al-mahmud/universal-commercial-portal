@@ -74,8 +74,8 @@ export async function startRenameJob(root: string, folder: string, opts: { actor
   if (active) return { jobId: active.id, total: active.totalItems, existingJobId: active.id };
 
   const names = await listPdfsDeep(abs, outputSubdir);
-  if (names.length > env.PDF_RENAME_MAX_FILES) {
-    throw new Error(`Folder has ${names.length} PDFs (> ${env.PDF_RENAME_MAX_FILES}). Raise PDF_RENAME_MAX_FILES or narrow the selection.`);
+  if (env.PDF_RENAME_MAX_FILES > 0 && names.length > env.PDF_RENAME_MAX_FILES) {
+    throw new Error(`Folder has ${names.length} PDFs (> ${env.PDF_RENAME_MAX_FILES}). Raise PDF_RENAME_MAX_FILES (set 0 for unlimited) or narrow the selection.`);
   }
 
   const job = await prisma.renameJob.create({
@@ -378,8 +378,8 @@ export interface PreviewResult {
 export async function previewRenameFolder(root: string, folder: string): Promise<PreviewResult> {
   const abs = resolveFolder(root, folder);
   const names = await listPdfsDeep(abs, env.PDF_RENAME_OUTPUT_SUBDIR);
-  if (names.length > env.PDF_RENAME_MAX_FILES) {
-    throw new Error(`Folder has ${names.length} PDFs (> ${env.PDF_RENAME_MAX_FILES}). Raise PDF_RENAME_MAX_FILES or narrow the selection.`);
+  if (env.PDF_RENAME_MAX_FILES > 0 && names.length > env.PDF_RENAME_MAX_FILES) {
+    throw new Error(`Folder has ${names.length} PDFs (> ${env.PDF_RENAME_MAX_FILES}). Raise PDF_RENAME_MAX_FILES (set 0 for unlimited) or narrow the selection.`);
   }
   const items: PreviewItem[] = [];
   for (const name of names) {

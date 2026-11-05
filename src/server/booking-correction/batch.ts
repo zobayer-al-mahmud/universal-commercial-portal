@@ -121,8 +121,8 @@ export async function createBookingBatch(
   if (valid.length === 0) {
     throw new Error(rejected.length ? `No valid PDFs: ${rejected.map((r) => `${r.name} (${r.reason})`).join("; ")}` : "No files supplied.");
   }
-  if (valid.length > env.BOOKING_MAX_FILES) {
-    throw new Error(`Too many files: ${valid.length} exceeds the limit of ${env.BOOKING_MAX_FILES}.`);
+  if (env.BOOKING_MAX_FILES > 0 && valid.length > env.BOOKING_MAX_FILES) {
+    throw new Error(`This upload has ${valid.length} files, above the configured cap of ${env.BOOKING_MAX_FILES}. Raise BOOKING_MAX_FILES (set 0 for unlimited).`);
   }
 
   const batch = await prisma.bookingBatch.create({
@@ -185,7 +185,7 @@ export async function createBookingExcelBatch(
   const buyer = (opts.buyer || env.DAMCO_DEFAULT_BUYER).trim();
 
   if (rows.length === 0) throw new Error("No data rows found in the workbook.");
-  if (rows.length > env.BOOKING_MAX_ROWS) throw new Error(`Too many rows: ${rows.length} exceeds the limit of ${env.BOOKING_MAX_ROWS}.`);
+  if (env.BOOKING_MAX_ROWS > 0 && rows.length > env.BOOKING_MAX_ROWS) throw new Error(`This workbook has ${rows.length} rows, above the configured cap of ${env.BOOKING_MAX_ROWS}. Raise BOOKING_MAX_ROWS (set 0 for unlimited).`);
 
   const sourceSha256 = createHash("sha256").update(workbook.buffer).digest("hex");
   const batch = await prisma.bookingBatch.create({

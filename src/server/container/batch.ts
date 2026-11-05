@@ -136,14 +136,21 @@ export async function beginContainerBatch(input: {
   if (valid.length === 0) {
     return { error: invalid.length ? "No valid container numbers found." : "Enter at least one container number." };
   }
-  if (valid.length > env.CONTAINER_MAX_BATCH) {
-    return { error: `Too many containers (${valid.length}); the limit is ${env.CONTAINER_MAX_BATCH}.` };
+  // Optional operator cap only — 0 (default) means UNLIMITED. The former hard
+  // 100-container limit is gone; a configured cap reports (never truncates).
+  if (env.CONTAINER_MAX_BATCH > 0 && valid.length > env.CONTAINER_MAX_BATCH) {
+    return { error: `This batch has ${valid.length} containers, above the configured cap of ${env.CONTAINER_MAX_BATCH}. Raise CONTAINER_MAX_BATCH (set 0 for unlimited) to process them all.` };
   }
 
   const batch = await prisma.containerBatch.create({ data: { total: valid.length, actor: input.actor } });
-  await prisma.containerSearch.createMany({
-    data: valid.map((containerNo) => ({ containerNo, batchId: batch.id, status: "queued", actor: input.actor })),
-  });
+  // Insert in chunks so a very large import never exceeds the DB's bound-parameter
+  // limit in a single statement. Every valid container gets a row (no silent skip).
+  for (let i = 0; i < valid.length; i += env.CONTAINER_INSERT_CHUNK) {
+    const slice = valid.slice(i, i + env.CONTAINER_INSERT_CHUNK);
+    await prisma.containerSearch.createMany({
+      data: slice.map((containerNo) => ({ containerNo, batchId: batch.id, status: "queued", actor: input.actor })),
+    });
+  }
   await audit({ entityType: "container", entityId: batch.id, action: "container.batch.started", actor: input.actor, data: { total: valid.length, invalid: invalid.length, duplicates: duplicates.length } });
 
   // Background sequential processing; the UI polls the batch status endpoint.
@@ -159,7 +166,9 @@ export async function beginContainerBatch(input: {
 export async function processContainerBatch(batchId: string, actor: string, force: boolean, run?: RunHandle): Promise<void> {
   const handle = run ?? startRun(containerKey(batchId));
   if (!run) onCancel(containerKey(batchId), () => { void detachContainerBrowser().catch(() => undefined); });
-  const rows = await prisma.containerSearch.findMany({ where: { batchId }, orderBy: { createdAt: "asc" } });
+  // Only the fields the loop needs — keeps a very large batch light in memory
+  // (the heavy per-row work streams one container at a time through the browser).
+  const rows = await prisma.containerSearch.findMany({ where: { batchId }, orderBy: { createdAt: "asc" }, select: { id: true, containerNo: true, status: true } });
   const t0 = Date.now();
   let processed = 0;
   try {

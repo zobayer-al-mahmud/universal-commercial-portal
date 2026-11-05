@@ -71,8 +71,9 @@ export async function createExpJobFromBuffer(input: {
     const reason = parsed.skipped[0]?.reason || "No data rows were found in the workbook.";
     return { error: reason };
   }
-  if (parsed.rows.length > env.EXP_MAX_ROWS) {
-    return { error: `Too many rows (${parsed.rows.length}); the limit is ${env.EXP_MAX_ROWS}.` };
+  // Optional operator cap only — 0 (default) = UNLIMITED (reports, never truncates).
+  if (env.EXP_MAX_ROWS > 0 && parsed.rows.length > env.EXP_MAX_ROWS) {
+    return { error: `This workbook has ${parsed.rows.length} rows, above the configured cap of ${env.EXP_MAX_ROWS}. Raise EXP_MAX_ROWS (set 0 for unlimited) to process them all.` };
   }
 
   const sha256 = createHash("sha256").update(input.buffer).digest("hex");
@@ -93,22 +94,25 @@ export async function createExpJobFromBuffer(input: {
     await prisma.expJob.update({ where: { id: job.id }, data: { storedPath: stored.path, fileBytes: stored.bytes } }).catch(() => undefined);
   }
 
-  await prisma.expJobRow.createMany({
-    data: parsed.rows.map((r: ParsedExpRow) => ({
-      jobId: job.id,
-      rowNo: r.rowNo,
-      kind: input.kind,
-      adscode: r.adscode,
-      expSerial: r.expSerial,
-      expYear: r.expYear,
-      expNo: r.expNo,
-      invoiceNo: r.invoiceNo,
-      saveAs: r.saveAs,
-      dataJson: JSON.stringify({ values: r.values, raw: r.raw, notes: r.notes, invalid: r.invalid, invalidReason: r.invalidReason }),
-      status: r.invalid ? "skipped" : "pending",
-      error: r.invalid ? r.invalidReason ?? "Invalid row." : "",
-    })),
-  });
+  // Chunked insert so a very large workbook never exceeds the DB's bound-parameter
+  // limit in one statement. Every parsed row is persisted (invalid rows as skipped).
+  const rowData = parsed.rows.map((r: ParsedExpRow) => ({
+    jobId: job.id,
+    rowNo: r.rowNo,
+    kind: input.kind,
+    adscode: r.adscode,
+    expSerial: r.expSerial,
+    expYear: r.expYear,
+    expNo: r.expNo,
+    invoiceNo: r.invoiceNo,
+    saveAs: r.saveAs,
+    dataJson: JSON.stringify({ values: r.values, raw: r.raw, notes: r.notes, invalid: r.invalid, invalidReason: r.invalidReason }),
+    status: r.invalid ? "skipped" : "pending",
+    error: r.invalid ? r.invalidReason ?? "Invalid row." : "",
+  }));
+  for (let i = 0; i < rowData.length; i += env.EXP_INSERT_CHUNK) {
+    await prisma.expJobRow.createMany({ data: rowData.slice(i, i + env.EXP_INSERT_CHUNK) });
+  }
 
   const invalid = parsed.rows.filter((r) => r.invalid).length;
   await audit({ entityType: "exp", entityId: job.id, action: "exp.job.created", actor: input.actor, data: { kind: input.kind, total: parsed.rows.length, invalid, sheet: parsed.sheetName } });

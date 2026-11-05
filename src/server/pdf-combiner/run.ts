@@ -38,16 +38,16 @@ export async function runPdfCombine(input: RunInput): Promise<{ runId: string }>
   const root = env.PDF_COMBINER_ROOT;
   if (!root) throw new Error("PDF_COMBINER_ROOT is not configured — set it in .env to the server source folder.");
   if (input.folders.length === 0) throw new Error("Select at least one folder.");
-  if (input.folders.length > env.PDF_COMBINER_MAX_FOLDERS)
-    throw new Error(`Select at most ${env.PDF_COMBINER_MAX_FOLDERS} folders.`);
+  if (env.PDF_COMBINER_MAX_FOLDERS > 0 && input.folders.length > env.PDF_COMBINER_MAX_FOLDERS)
+    throw new Error(`Select at most ${env.PDF_COMBINER_MAX_FOLDERS} folders (raise PDF_COMBINER_MAX_FOLDERS, or set 0 for unlimited).`);
   if (input.masterData.byteLength > env.PDF_COMBINER_MAX_MASTER_MB * 1024 * 1024)
     throw new Error(`Master file exceeds ${env.PDF_COMBINER_MAX_MASTER_MB} MB.`);
 
   const folders = await resolveSelection(root, input.folders);
   const master = await readMaster(input.masterFileName, input.masterData);
   if (master.rows.length === 0) throw new Error("The master file has no data rows.");
-  if (master.rows.length > env.PDF_COMBINER_MAX_ROWS)
-    throw new Error(`The master file has ${master.rows.length} rows; the limit is ${env.PDF_COMBINER_MAX_ROWS}.`);
+  if (env.PDF_COMBINER_MAX_ROWS > 0 && master.rows.length > env.PDF_COMBINER_MAX_ROWS)
+    throw new Error(`The master file has ${master.rows.length} rows, above PDF_COMBINER_MAX_ROWS (${env.PDF_COMBINER_MAX_ROWS}). The merge runs in memory — raise it to suit the server's RAM, or set 0 for unlimited.`);
 
   const files = await indexFolders(folders, { maxFiles: env.PDF_COMBINER_MAX_INDEXED_FILES });
   const index = buildIndex(files);

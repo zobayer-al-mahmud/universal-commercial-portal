@@ -71,8 +71,8 @@ export async function runMatrixCombine(input: MatrixRunInput): Promise<MatrixRun
   if (selected.length === 0) {
     throw new Error(wanted.size ? "None of the requested rows were found." : "The active master has no eligible rows to combine.");
   }
-  if (selected.length > env.PDF_COMBINER_MAX_ROWS) {
-    throw new Error(`Selected ${selected.length} rows; the limit is ${env.PDF_COMBINER_MAX_ROWS}.`);
+  if (env.PDF_COMBINER_MAX_ROWS > 0 && selected.length > env.PDF_COMBINER_MAX_ROWS) {
+    throw new Error(`Selected ${selected.length} rows, above PDF_COMBINER_MAX_ROWS (${env.PDF_COMBINER_MAX_ROWS}). The merge runs in memory — raise it to suit the server's RAM, or set 0 for unlimited.`);
   }
 
   const foldersUsed = [...new Set(selected.flatMap((r) => r.slots.map((s) => s.folder)))].sort();

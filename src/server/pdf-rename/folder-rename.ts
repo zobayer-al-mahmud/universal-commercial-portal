@@ -383,7 +383,7 @@ export async function scanFolder(
     const want = new Set(opts.files);
     names = names.filter((n) => want.has(n));
   }
-  if (names.length > opts.maxFiles) throw new Error(`Folder has ${names.length} PDFs (> ${opts.maxFiles}). Raise PDF_RENAME_MAX_FILES or narrow the scan.`);
+  if (opts.maxFiles > 0 && names.length > opts.maxFiles) throw new Error(`Folder has ${names.length} PDFs (> ${opts.maxFiles}). Raise PDF_RENAME_MAX_FILES (set 0 for unlimited) or narrow the scan.`);
 
   const processed: ProcessedFile[] = [];
   for (const name of names) {

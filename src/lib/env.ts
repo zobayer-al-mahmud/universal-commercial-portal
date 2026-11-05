@@ -78,10 +78,13 @@ const schema = z.object({
   DAMCO_DEFAULT_BUYER: z.string().default("H&M HENNES & MAURITZ GBC AB"),
 
   // --- Booking Correction batch upload limits -----------------------------
-  BOOKING_MAX_FILES: z.coerce.number().int().positive().default(25),
+  // Count caps are optional operator ceilings; 0 (default) = UNLIMITED. The
+  // per-file MB limit stays as the real memory guard (uploaded bytes are held in
+  // memory). Documents are persisted one row/file at a time, so DB load is bounded.
+  BOOKING_MAX_FILES: z.coerce.number().int().nonnegative().default(0),
   BOOKING_MAX_FILE_MB: z.coerce.number().positive().default(20),
-  // Excel-driven workflow: max data rows accepted from one PackingLists.xlsx.
-  BOOKING_MAX_ROWS: z.coerce.number().int().positive().default(500),
+  // Excel-driven workflow: optional cap on data rows from one PackingLists.xlsx.
+  BOOKING_MAX_ROWS: z.coerce.number().int().nonnegative().default(0),
   BOOKING_CONCURRENCY: z.coerce.number().int().positive().max(16).default(4),
   // Gross-weight tolerance (kg) and carton/qty precision policy (Â§9 matching).
   BOOKING_GROSS_WEIGHT_TOLERANCE_KG: z.coerce.number().nonnegative().default(0.5),
@@ -133,8 +136,13 @@ const schema = z.object({
   // source root, so a dead/unreachable share fails fast with an actionable
   // message instead of hanging the request.
   PDF_COMBINER_FS_TIMEOUT_MS: z.coerce.number().int().positive().default(15000),
-  PDF_COMBINER_MAX_FOLDERS: z.coerce.number().int().positive().default(20),
-  PDF_COMBINER_MAX_ROWS: z.coerce.number().int().positive().default(1000),
+  // PDF Combiner builds ONE merged PDF in memory (pdf-lib), so these are
+  // RESOURCE guards, not arbitrary business caps: raise them per the server's RAM.
+  // 0 = unlimited is allowed for operators who have sized their host, but the
+  // defaults stay non-zero so an unbounded merge can never OOM the box by accident.
+  PDF_COMBINER_MAX_FOLDERS: z.coerce.number().int().nonnegative().default(20),
+  PDF_COMBINER_MAX_ROWS: z.coerce.number().int().nonnegative().default(1000),
+  // Directory-scan runaway guard (counts indexed source PDFs). High by default.
   PDF_COMBINER_MAX_INDEXED_FILES: z.coerce.number().int().positive().default(50000),
   PDF_COMBINER_MAX_MASTER_MB: z.coerce.number().positive().default(10),
 
@@ -148,7 +156,10 @@ const schema = z.object({
   // Renamed copies are written into this sub-folder of each dedicated folder,
   // so FCR / soft-copy / scanned outputs never mix and originals stay intact.
   PDF_RENAME_OUTPUT_SUBDIR: z.string().default("UCP Renamed"),
-  PDF_RENAME_MAX_FILES: z.coerce.number().int().positive().default(2000),
+  // Optional operator cap on PDFs in one rename job. 0 (default) = UNLIMITED —
+  // items are inserted one at a time and processed by a bounded worker pool
+  // (PDF_RENAME_CONCURRENCY), so a large folder is memory-safe.
+  PDF_RENAME_MAX_FILES: z.coerce.number().int().nonnegative().default(0),
   // Max size per PDF for the local-folder analyze/zip endpoints (client-side flow).
   PDF_RENAME_MAX_FILE_MB: z.coerce.number().positive().default(25),
   // Deep-extraction job: min confidence to auto-rename (else → review) + workers.
@@ -173,8 +184,17 @@ const schema = z.object({
   CONTAINER_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
   // Where captured container result PDFs are stored (under STORAGE_ROOT).
   CONTAINER_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
-  // Max container numbers accepted in one bulk batch.
-  CONTAINER_MAX_BATCH: z.coerce.number().int().positive().default(100),
+  // Optional operator safety cap on one bulk batch. 0 (the default) = UNLIMITED:
+  // the former hard 100-container limit is removed, so manual input and .xlsx
+  // imports accept any number of containers. Set a positive value only to
+  // re-impose a ceiling for a specific deployment; batches above it are reported
+  // (never silently truncated). The portal is driven sequentially regardless, so
+  // size affects total run time, not memory (rows are inserted + processed in
+  // CONTAINER_INSERT_CHUNK-sized pages).
+  CONTAINER_MAX_BATCH: z.coerce.number().int().nonnegative().default(0),
+  // Rows inserted per DB round-trip when creating a large batch (keeps a single
+  // insert well under SQLite's bound-parameter limit on very large imports).
+  CONTAINER_INSERT_CHUNK: z.coerce.number().int().positive().default(500),
   // Max size (MB) for an uploaded .xlsx of container numbers.
   CONTAINER_MAX_FILE_MB: z.coerce.number().positive().default(5),
 
@@ -218,8 +238,12 @@ const schema = z.object({
   EXP_CDP_PORT: z.coerce.number().int().min(1024).max(65535).default(9335),
   EXP_SESSION_DIR: z.string().default("./var/exp-session"),
   EXP_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
-  // Max data rows accepted from one uploaded workbook.
-  EXP_MAX_ROWS: z.coerce.number().int().positive().default(2000),
+  // Optional operator cap on rows accepted from one uploaded workbook. 0 (the
+  // default) = UNLIMITED — the former 2000-row limit is removed. Rows are
+  // inserted in EXP_INSERT_CHUNK pages and processed one at a time, so workbook
+  // size affects run time, not memory. A positive value reports (never truncates).
+  EXP_MAX_ROWS: z.coerce.number().int().nonnegative().default(0),
+  EXP_INSERT_CHUNK: z.coerce.number().int().positive().default(500),
   // Max size (MB) for an uploaded EXP .xlsx.
   EXP_MAX_FILE_MB: z.coerce.number().positive().default(25),
 });
