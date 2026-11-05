@@ -164,7 +164,13 @@ const schema = z.object({
   PDF_RENAME_MAX_FILE_MB: z.coerce.number().positive().default(25),
   // Deep-extraction job: min confidence to auto-rename (else → review) + workers.
   PDF_RENAME_MIN_CONFIDENCE: z.coerce.number().min(0).max(1).default(0.75),
-  PDF_RENAME_CONCURRENCY: z.coerce.number().int().positive().max(16).default(3),
+  PDF_RENAME_CONCURRENCY: z.coerce.number().int().positive().max(64).default(3),
+  // OCR worker pool size (tesseract.js scheduler). Scanned-PDF OCR is the PDF
+  // Rename bottleneck; a pool of independent WASM workers OCRs pages/files in
+  // parallel. Each worker is a full WASM instance (~120-200 MB RAM + one CPU
+  // thread), so this is RESOURCE-bound: the effective size is clamped to
+  // (CPU cores - 1) at runtime. Raise per the server's cores/RAM. Default 4.
+  PDF_RENAME_OCR_WORKERS: z.coerce.number().int().positive().max(32).default(4),
 
   // --- Container Module (CTG Port / cpatos.gov.bd) ----------------------------
   // The Port Community System entry page (holds the public container search

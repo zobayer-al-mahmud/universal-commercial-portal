@@ -16,6 +16,7 @@
  */
 
 import { promises as fsp } from "fs";
+import os from "os";
 import { env } from "@/lib/env";
 
 /**
@@ -148,44 +149,58 @@ export async function extractG4Pages(pdf: Buffer, maxPages: number): Promise<Pag
   return out;
 }
 
-// --- Tesseract worker (lazy singleton, serialized) -------------------------
-// The WASM worker is expensive to spin up, so one is reused for a whole batch.
-// recognize() is not re-entrant on a single worker, so calls are serialized.
+// --- Tesseract worker POOL (lazy scheduler, parallel) ----------------------
+// Scanned-PDF OCR is the PDF Rename bottleneck. Instead of ONE serialized WASM
+// worker (every recognize queued behind the last), a tesseract.js Scheduler owns
+// a pool of independent workers and distributes recognize() jobs across them, so
+// pages and concurrent files OCR in parallel. Each worker is a full WASM
+// instance (~120-200 MB + one CPU thread), so the pool is RESOURCE-bound: its
+// size is PDF_RENAME_OCR_WORKERS clamped to (cores - 1). The whole batch shares
+// one warm pool; addJob() is safe to call concurrently (that is the point).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type TessWorker = { recognize: (img: Buffer, opts?: unknown, output?: unknown) => Promise<{ data: { text: string; confidence?: number; blocks?: any[] } }>; terminate: () => Promise<unknown> };
-let workerPromise: Promise<TessWorker> | null = null;
-let ocrChain: Promise<unknown> = Promise.resolve();
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type TessScheduler = { addWorker: (w: TessWorker) => string; addJob: (action: "recognize", ...args: unknown[]) => Promise<{ data: { text: string; confidence?: number; blocks?: any[] } }>; terminate: () => Promise<unknown> };
+let schedulerPromise: Promise<TessScheduler> | null = null;
 
-async function getWorker(): Promise<TessWorker> {
-  if (!workerPromise) {
-    workerPromise = (async () => {
+/** Effective pool size — configured workers, never more than (cores - 1). */
+function poolSize(): number {
+  const cores = Math.max(1, os.cpus().length - 1);
+  return Math.max(1, Math.min(env.PDF_RENAME_OCR_WORKERS, cores));
+}
+
+async function getScheduler(): Promise<TessScheduler> {
+  if (!schedulerPromise) {
+    schedulerPromise = (async () => {
       const path = await import("path");
       const dir = path.resolve(env.OCR_TESSDATA_DIR);
       const dataFile = path.join(dir, `${env.OCR_LANG}.traineddata`);
-      // Fail FAST and CLEARLY when the language data is absent. Without this,
-      // tesseract.js spawns a worker that emits an uncaught ENOENT and NEVER
-      // settles createWorker() — which hung every scan at 0%. A plain throw
-      // here is caught by ocrPdfPages and reported as an honest review reason.
+      // Fail FAST and CLEARLY when the language data is absent (otherwise a worker
+      // emits an uncaught ENOENT and never settles — which once hung every scan at
+      // 0%). The throw is caught by ocrPdfPages and reported as a review reason.
       try {
         await fsp.access(dataFile);
       } catch {
         throw new Error(`OCR language data not found: ${dataFile}. Add ${env.OCR_LANG}.traineddata to OCR_TESSDATA_DIR, or set OCR_ENABLED=false.`);
       }
-      const { createWorker } = await import("tesseract.js");
+      const { createScheduler, createWorker } = await import("tesseract.js");
+      const n = poolSize();
+      const scheduler = createScheduler() as unknown as TessScheduler;
       // gzip:false → read an uncompressed `<lang>.traineddata` from the dir.
       // Bounded so a WASM/init stall can't hang the request indefinitely.
-      const worker = await withTimeout(
-        createWorker(env.OCR_LANG, 1, { langPath: dir, cachePath: dir, gzip: false }),
+      const workers = await withTimeout(
+        Promise.all(Array.from({ length: n }, () => createWorker(env.OCR_LANG, 1, { langPath: dir, cachePath: dir, gzip: false }))),
         OCR_INIT_TIMEOUT_MS,
-        "OCR engine did not initialise",
+        `OCR engine pool (${n} worker${n === 1 ? "" : "s"}) did not initialise`,
       );
-      return worker as unknown as TessWorker;
+      for (const w of workers) scheduler.addWorker(w as unknown as TessWorker);
+      return scheduler;
     })().catch((e) => {
-      workerPromise = null; // allow a retry on the next call
+      schedulerPromise = null; // allow a retry on the next call
       throw e;
     });
   }
-  return workerPromise;
+  return schedulerPromise;
 }
 
 /** One OCR'd word: its text and the engine's per-word confidence (0..100). */
@@ -196,13 +211,6 @@ export interface OcrWord {
 
 interface BBox { x0: number; y0: number; x1: number; y1: number }
 interface RichWord extends OcrWord { bbox?: BBox }
-
-/** Serialize every OCR call on the single WASM worker (recognize is not re-entrant). */
-function serialize<T>(run: () => Promise<T>): Promise<T> {
-  const result = ocrChain.then(run, run);
-  ocrChain = result.then(() => undefined, () => undefined);
-  return result;
-}
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wordsFromData(data: { blocks?: any[] }): RichWord[] {
@@ -227,13 +235,12 @@ function wordsFromData(data: { blocks?: any[] }): RichWord[] {
  * review.
  */
 async function recognize(tiff: Buffer): Promise<{ text: string; confidence: number; words: RichWord[] }> {
-  return serialize(async () => {
-    const worker = await getWorker();
-    // v5: pass an output spec to get structured blocks (→ per-word confidence).
-    const { data } = await withTimeout(worker.recognize(tiff, {}, { blocks: true, text: true }), OCR_RECOGNIZE_TIMEOUT_MS, "OCR page recognition");
-    const conf = typeof data.confidence === "number" ? Math.max(0, Math.min(1, data.confidence / 100)) : 0.85;
-    return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf, words: wordsFromData(data) };
-  });
+  const scheduler = await getScheduler();
+  // v5: pass an output spec to get structured blocks (→ per-word confidence).
+  // The scheduler runs this on whichever pool worker is idle (parallel-safe).
+  const { data } = await withTimeout(scheduler.addJob("recognize", tiff, {}, { blocks: true, text: true }), OCR_RECOGNIZE_TIMEOUT_MS, "OCR page recognition");
+  const conf = typeof data.confidence === "number" ? Math.max(0, Math.min(1, data.confidence / 100)) : 0.85;
+  return { text: (data.text ?? "").replace(/\r/g, ""), confidence: conf, words: wordsFromData(data) };
 }
 
 /**
@@ -243,11 +250,9 @@ async function recognize(tiff: Buffer): Promise<{ text: string; confidence: numb
  * invoice region / retry" step, done with no extra image dependency.
  */
 async function recognizeRect(tiff: Buffer, rect: { left: number; top: number; width: number; height: number }): Promise<RichWord[]> {
-  return serialize(async () => {
-    const worker = await getWorker();
-    const { data } = await withTimeout(worker.recognize(tiff, { rectangle: rect }, { blocks: true, text: true }), OCR_RECOGNIZE_TIMEOUT_MS, "OCR region recognition");
-    return wordsFromData(data);
-  });
+  const scheduler = await getScheduler();
+  const { data } = await withTimeout(scheduler.addJob("recognize", tiff, { rectangle: rect }, { blocks: true, text: true }), OCR_RECOGNIZE_TIMEOUT_MS, "OCR region recognition");
+  return wordsFromData(data);
 }
 
 // Candidate invoice-number contexts on a page (STRUCTURAL — no hardcoded values):
@@ -362,27 +367,36 @@ export async function ocrPdfPages(pdf: Buffer): Promise<OcrPagesResult> {
 
   const pages: OcrPage[] = [];
   try {
-    for (const img of images) {
-      const full = await recognize(img.tiff);
-      const extra = await refinePage(img, full);
-      const words: OcrWord[] = [...full.words.map((w) => ({ text: w.text, confidence: w.confidence })), ...extra];
-      pages.push({ page: img.page + 1, text: full.text, confidence: full.confidence, words });
-    }
+    // OCR every page concurrently — the scheduler spreads the jobs across the
+    // worker pool. One unreadable page never fails the whole file (→ null).
+    const settled = await Promise.all(images.map(async (img): Promise<OcrPage | null> => {
+      try {
+        const full = await recognize(img.tiff);
+        const extra = await refinePage(img, full);
+        const words: OcrWord[] = [...full.words.map((w) => ({ text: w.text, confidence: w.confidence })), ...extra];
+        return { page: img.page + 1, text: full.text, confidence: full.confidence, words };
+      } catch {
+        return null;
+      }
+    }));
+    for (const p of settled) if (p) pages.push(p);
+    pages.sort((a, b) => a.page - b.page);
   } catch (e) {
     return { pages, engineAvailable: false, error: `OCR engine error: ${e instanceof Error ? e.message : String(e)}` };
   }
+  if (pages.length === 0) return { pages, engineAvailable: false, error: "OCR produced no readable pages" };
   return { pages, engineAvailable: true };
 }
 
-/** Release the OCR worker (used by scripts/tests; the web app keeps it warm). */
+/** Release the OCR worker pool (used by scripts/tests; the web app keeps it warm). */
 export async function shutdownOcr(): Promise<void> {
-  if (workerPromise) {
+  if (schedulerPromise) {
     try {
-      const w = await workerPromise;
-      await w.terminate();
+      const s = await schedulerPromise;
+      await s.terminate(); // terminates every worker in the pool
     } catch {
       /* ignore */
     }
-    workerPromise = null;
+    schedulerPromise = null;
   }
 }
