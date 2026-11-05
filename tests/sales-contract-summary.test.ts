@@ -62,16 +62,23 @@ function cfg(overrides: Partial<SalesContractSummaryConfig> = {}): SalesContract
 }
 
 describe("mapToSummaryRows (spec Â§11)", () => {
-  it("Order Qty + Pack/Set Qty appear only on the first row for a PO", () => {
+  it("Order Qty + Pack/Set Qty carry the per-country quantity on every row (2026-10-27 rule)", () => {
+    // Rule change (summary-rows.ts): column G (Order Qty) now carries the
+    // per-country quantity on EVERY row — no "total on first row only". Pack/Set
+    // Qty = packSet × that per-row qty; packSet shows on every row.
     const rows = mapToSummaryRows(fakePo(), cfg(), "po1");
     expect(rows).toHaveLength(4);
-    expect(rows[0].orderQty).toBe(4078);
-    expect(rows[0].packSetQty).toBe(4078); // packSet=1 × 4078
-    for (const r of rows.slice(1)) {
-      expect(r.orderQty).toBeNull();
-      expect(r.packSetQty).toBeNull();
-      expect(r.packSet).toBe("");
+    const byMarket = Object.fromEntries(rows.map((r) => [r.marketCode, r]));
+    expect(byMarket.OE.orderQty).toBe(3544);
+    expect(byMarket.OF.orderQty).toBe(274);
+    expect(byMarket.OD.orderQty).toBe(10);
+    expect(byMarket.LH.orderQty).toBe(250);
+    for (const r of rows) {
+      expect(r.packSet).toBe("1");
+      expect(r.packSetQty).toBe(r.orderQty); // packSet=1 × per-row qty
     }
+    // Per-row quantities reconcile to the PO total.
+    expect(rows.reduce((n, r) => n + (r.orderQty ?? 0), 0)).toBe(4078);
   });
 
   it("TOD, COUNTRY, FOB, CONTRACT VALUE populated on every applicable row", () => {

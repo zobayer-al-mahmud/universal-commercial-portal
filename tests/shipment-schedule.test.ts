@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import ExcelJS from "exceljs";
 import { parseBookingFilename } from "@/server/shipment-schedule/parse-filename";
@@ -10,7 +10,18 @@ import { validateField, computeValue, isEditableField, changesLineValue } from "
 import { buildCutoffWorkbook, type XlsxRow } from "@/server/shipment-schedule/write-xlsx";
 import type { SalesContractLookup } from "@/server/shipment-schedule/types";
 
-const SAMPLE_DIR = "D:/oct-2026/automation docs/New folder/2. Week Wise Shipment Schedule Creation/41";
+// Real booking-confirmation samples live in the read-only source set beside the
+// repo (…/2. Week Wise Shipment Schedule Creation/41), not in the repo itself.
+// Resolve the first candidate that actually has them (env override → the source
+// set next to the checkout → a legacy absolute path); the sample-dependent tests
+// skip when none is present so the suite is green on CI / another machine.
+const SAMPLE_CANDIDATES = [
+  process.env.SHIPMENT_SAMPLE_DIR,
+  join(process.cwd(), "..", "2. Week Wise Shipment Schedule Creation", "41"),
+  "D:/oct-2026/automation docs/New folder/2. Week Wise Shipment Schedule Creation/41",
+].filter((p): p is string => Boolean(p));
+const SAMPLE_DIR = SAMPLE_CANDIDATES.find((d) => existsSync(join(d, "1", "569959 AUW118.pdf"))) ?? SAMPLE_CANDIDATES[SAMPLE_CANDIDATES.length - 1];
+const HAVE_SAMPLES = existsSync(join(SAMPLE_DIR, "1", "569959 AUW118.pdf"));
 
 describe("parseBookingFilename", () => {
   it("parses AUW118 pattern", () => {
@@ -58,7 +69,7 @@ describe("parseBookingFilename", () => {
 });
 
 describe("parseBookingPdfText (real sample PDFs)", () => {
-  it("extracts BCN, BRef, status and ports from AUW118", async () => {
+  it.skipIf(!HAVE_SAMPLES)("extracts BCN, BRef, status and ports from AUW118", async () => {
     const buf = readFileSync(join(SAMPLE_DIR, "1", "569959 AUW118.pdf"));
     const { text } = await parsePdfText(buf);
     const f = parseBookingPdfText(text);
@@ -74,7 +85,7 @@ describe("parseBookingPdfText (real sample PDFs)", () => {
     expect(f.transportMode).toBe("SEA");
   });
 
-  it("extracts PE market from PEW153 (cut-off 2)", async () => {
+  it.skipIf(!HAVE_SAMPLES)("extracts PE market from PEW153 (cut-off 2)", async () => {
     const buf = readFileSync(join(SAMPLE_DIR, "2", "583635 PEW153.pdf"));
     const { text } = await parsePdfText(buf);
     const f = parseBookingPdfText(text);
@@ -251,7 +262,7 @@ describe("buildCutoffWorkbook (per-cut-off .xlsx export)", () => {
     const headerLabels = Array.from({ length: 15 }, (_, i) => String(ws.getCell(2, i + 1).value ?? ""));
     expect(headerLabels).toEqual([
       "Buyer Code", "Cont.No.", "Date", "OrderNo.", "PCS", "STYLE", "FOB",
-      "COMPOSITION", "CAT", "HTS", "Value", "INVOICE", "Market+Sub", "Market", "Mode",
+      "COMPOSITION", "CAT", "HTS", "Value", "INVOICE", "Country+Sub", "Country", "Mode",
     ]);
 
     // Data row.
