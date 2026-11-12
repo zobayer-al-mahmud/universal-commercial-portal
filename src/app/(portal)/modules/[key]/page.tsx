@@ -211,7 +211,7 @@ export default async function ModulePage({ params }: { params: { key: string } }
       <div>
         <PageHeader
           title="PDF File Rename"
-          subtitle="Pick a folder on your computer, deep-scan each PDF's invoice number (text + OCR), preview the proposed names, then rename in bulk — duplicates and unreadable files go to manual review, never a guessed name."
+          subtitle="Pick a folder on your computer, deep-scan each PDF (text + OCR) for the field you choose — Invoice, FCR, Container, EXP or a custom label — preview the proposed names, rename in bulk, then download an Excel summary. Duplicates and unreadable files go to manual review, never a guessed name."
           actions={<StatusBadge status={module.status} />}
         />
         <div className="mb-6">

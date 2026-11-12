@@ -24,6 +24,53 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 const OUTPUT_SUBDIR = "UCP Renamed";
 const SCAN_CONCURRENCY = 4;
 
+// --- Rename-by field options (feature 1) -----------------------------------
+type FieldKind = "invoice" | "fcr" | "container" | "exp" | "custom";
+const RENAME_BY_OPTIONS: { value: FieldKind; label: string }[] = [
+  { value: "invoice", label: "Invoice Number" },
+  { value: "fcr", label: "FCR Number" },
+  { value: "container", label: "Container Number" },
+  { value: "exp", label: "EXP Number" },
+  { value: "custom", label: "Custom Field" },
+];
+const FIELD_HEADER: Record<FieldKind, string> = {
+  invoice: "Invoice No.", fcr: "FCR No.", container: "Container No.", exp: "EXP No.", custom: "Custom value",
+};
+const NOT_FOUND_LABEL: Record<FieldKind, string> = {
+  invoice: "invoice number", fcr: "FCR number", container: "container number", exp: "EXP number", custom: "custom value",
+};
+
+/** One extracted field as returned by /api/pdf-rename/analyze. */
+interface ServerFieldValue { value: string | null; key?: string | null; confidence: number; source: string; evidence?: string; label?: string; page?: number }
+interface ServerFields {
+  invoice: ServerFieldValue; fcr: ServerFieldValue; container: ServerFieldValue; exp: ServerFieldValue; custom: ServerFieldValue | null;
+}
+interface SelectedView {
+  extractedValue: string | null; proposedName: string | null; decision: "RENAME" | "REVIEW";
+  confidence: number; source: string; reviewReason: string; reasonText: string;
+}
+
+/** Re-derive the selected-field view from the already-scanned field set — so
+ *  switching Invoice→FCR→Container→EXP never needs a re-scan. (Custom still needs
+ *  a scan with its label; handled by the caller.) Mirrors the server's logic. */
+function deriveSelected(fields: ServerFields | undefined, renameBy: FieldKind, minConf: number): SelectedView | null {
+  if (!fields) return null;
+  const review = (reason: string, text: string, val: string | null = null, conf = 0, src = "none"): SelectedView =>
+    ({ extractedValue: val, proposedName: null, decision: "REVIEW", confidence: conf, source: src, reviewReason: reason, reasonText: text });
+  if (renameBy === "invoice") {
+    const f = fields.invoice;
+    if (f?.key) return { extractedValue: f.value ?? null, proposedName: `${f.key}.pdf`, decision: "RENAME", confidence: f.confidence, source: f.source, reviewReason: "", reasonText: f.label ?? "" };
+    return review("INVOICE_NUMBER_NOT_FOUND", "No credible invoice number was read from this PDF.");
+  }
+  const f = renameBy === "fcr" ? fields.fcr : renameBy === "container" ? fields.container : renameBy === "exp" ? fields.exp : fields.custom;
+  if (!f || !f.value) return review(`${renameBy.toUpperCase()}_NOT_FOUND`, `No credible ${NOT_FOUND_LABEL[renameBy]} could be read from this PDF.`);
+  const stem = toStem(f.value);
+  if (!stem) return review(`${renameBy.toUpperCase()}_NOT_FOUND`, `No usable ${NOT_FOUND_LABEL[renameBy]} after cleaning the value.`);
+  if (f.confidence > 0 && f.confidence < minConf)
+    return review("LOW_CONFIDENCE", `${FIELD_HEADER[renameBy]} “${f.value}” read at ${Math.round(f.confidence * 100)}% (below the ${Math.round(minConf * 100)}% threshold).`, f.value, f.confidence, f.source);
+  return { extractedValue: f.value, proposedName: `${stem}.pdf`, decision: "RENAME", confidence: f.confidence, source: f.source, reviewReason: "", reasonText: f.label ?? "" };
+}
+
 // --- Minimal File System Access API typings (not in all TS lib.dom versions) --
 type FsPermissionState = "granted" | "denied" | "prompt";
 interface FsWritable { write(data: BufferSource | Blob): Promise<void>; close(): Promise<void> }
@@ -76,6 +123,7 @@ interface Analysis {
   originalName: string;
   docType: string;
   invoiceNumber: string | null;
+  extractedValue?: string | null; // value of the SELECTED field
   proposedName: string | null;
   confidence: number;
   decision: string; // RENAME | REVIEW
@@ -83,6 +131,9 @@ interface Analysis {
   reasonText: string;
   source: string;
   pages: number;
+  renameBy?: FieldKind;
+  minConfidence?: number;
+  fields?: ServerFields | null; // every extracted field (for field switching + Excel)
 }
 type RowState = "pending" | "scanned" | "renamed" | "review" | "failed";
 interface Row extends Partial<Analysis> {
@@ -97,6 +148,8 @@ interface Row extends Partial<Analysis> {
   handle?: FsFileHandle; // FS Access mode
   dir?: FsDirHandle; // the file's OWN parent directory (for in-place rename)
   file?: File; // upload fallback mode
+  /** The custom label this row was scanned with (so a label change triggers a re-scan). */
+  scannedCustomLabel?: string;
 }
 interface HistoryEntry { at: string; folder: string; total: number; renamed: number; review: number; failed: number; mode: string }
 /** One manual correction, kept so the UI, the output folder and the log agree. */
@@ -162,7 +215,14 @@ export function LocalFolderRename() {
   const [corrLog, setCorrLog] = useState<CorrectionEntry[]>([]);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  // Feature 1 — "Rename by" field selection.
+  const [renameBy, setRenameBy] = useState<FieldKind>("invoice");
+  const [customLabel, setCustomLabel] = useState("");
+  const [customScanned, setCustomScanned] = useState(""); // custom label the rows were last scanned with
+  // Feature 2 — Excel summary export in progress ("", "po", "bill-of-export", "fcr").
+  const [exporting, setExporting] = useState("");
   const uploadRef = useRef<HTMLInputElement>(null);
+  const lastField = useRef<{ by: FieldKind; label: string }>({ by: "invoice", label: "" });
 
   useEffect(() => {
     setMounted(true);
@@ -227,7 +287,12 @@ export function LocalFolderRename() {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 115_000);
     try {
-      const res = await fetch("/api/pdf-rename/analyze", { method: "POST", headers: { "x-filename": encodeURIComponent(name).replace(/%20/g, " ") }, body: bytes, signal: ctrl.signal });
+      const headers: Record<string, string> = {
+        "x-filename": encodeURIComponent(name).replace(/%20/g, " "),
+        "x-rename-by": renameBy,
+      };
+      if (renameBy === "custom" && customLabel.trim()) headers["x-custom-label"] = encodeURIComponent(customLabel.trim());
+      const res = await fetch("/api/pdf-rename/analyze", { method: "POST", headers, body: bytes, signal: ctrl.signal });
       if (!res.ok) {
         const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
         throw new Error((j as { error?: string }).error || `HTTP ${res.status}`);
@@ -262,7 +327,7 @@ export function LocalFolderRename() {
           // Fresh analysis for THIS batch: clear any rename-output fields left
           // over from a previous run of these rows, so no stale "renamed"
           // name/flag survives into the newly-scanned state.
-          next[i] = { ...r, ...a, state: "scanned", finalName: undefined, corrected: false, stateMsg: undefined };
+          next[i] = { ...r, ...a, state: "scanned", finalName: undefined, corrected: false, stateMsg: undefined, scannedCustomLabel: renameBy === "custom" ? customLabel.trim() : "" };
           if (a.decision === "RENAME" && a.proposedName) addLog(`✓ ${r.path} → ${a.proposedName} (${a.source}, ${Math.round((a.confidence || 0) * 100)}%)`);
           else addLog(`⚠ ${r.path} needs review: ${a.reviewReason || a.reasonText || "no invoice number found"}`);
         } catch (e) {
@@ -303,6 +368,7 @@ export function LocalFolderRename() {
     }
     setRows([...next]);
     setBusy("");
+    setCustomScanned(renameBy === "custom" ? customLabel.trim() : "");
     const willRename = next.filter((r) => r.decision === "RENAME").length;
     const restoredNote = restored ? ` ${restored} manual correction(s) restored.` : "";
     addLog(`Scan complete: ${willRename} ready to rename, ${total - willRename} need review.${restoredNote} No files changed.`);
@@ -542,6 +608,70 @@ export function LocalFolderRename() {
     }
   };
 
+  // Re-derive the selected-field view when "Rename by" changes. Invoice / FCR /
+  // Container / EXP are all extracted in one scan, so switching among them needs
+  // NO re-scan (instant, from the stored field set). Only Custom (server-side, by
+  // label) needs a scan with its label — a mismatch is flagged RESCAN_REQUIRED.
+  useEffect(() => {
+    const prev = lastField.current;
+    const label = customLabel.trim();
+    const byChanged = prev.by !== renameBy;
+    const labelChanged = prev.label !== label;
+    lastField.current = { by: renameBy, label };
+    if (!byChanged && !(renameBy === "custom" && labelChanged)) return; // irrelevant change
+    setRows((rs) =>
+      rs.map((r) => {
+        if (!r.fields) return r; // not scanned yet
+        const nextState: RowState = r.state === "pending" ? "pending" : "scanned";
+        if (renameBy === "custom" && label !== (r.scannedCustomLabel ?? "")) {
+          return { ...r, extractedValue: null, proposedName: null, decision: "REVIEW", reviewReason: "RESCAN_REQUIRED", reasonText: "Re-scan to extract this custom field.", finalName: undefined, corrected: false, stateMsg: undefined, state: nextState };
+        }
+        const sel = deriveSelected(r.fields as ServerFields, renameBy, r.minConfidence ?? 0.75);
+        if (!sel) return r;
+        return { ...r, extractedValue: sel.extractedValue, proposedName: sel.proposedName, decision: sel.decision, confidence: sel.confidence, source: sel.source, reviewReason: sel.reviewReason, reasonText: sel.reasonText, finalName: undefined, corrected: false, stateMsg: undefined, state: nextState };
+      }),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [renameBy, customLabel]);
+
+  // --- Excel summary export (feature 2) ----------------------------------
+  const downloadSummary = async (report: "po" | "bill-of-export" | "fcr", label: string) => {
+    const scannedRows = rows.filter((r) => r.state !== "pending" && r.fields !== undefined);
+    if (scannedRows.length === 0) { setMsg({ tone: "err", text: "Scan a folder first — there are no extracted rows to summarise." }); return; }
+    setExporting(report);
+    try {
+      const payload = {
+        report,
+        rows: scannedRows.map((r) => {
+          const f = r.fields as ServerFields | null | undefined;
+          const success = r.state === "renamed" || (r.decision === "RENAME" && Boolean(r.proposedName));
+          return {
+            file: r.path,
+            invoiceNumber: f?.invoice?.key ?? f?.invoice?.value ?? r.invoiceNumber ?? null,
+            fcrNumber: f?.fcr?.value ?? null,
+            containerNumber: f?.container?.value ?? null,
+            expNumber: f?.exp?.value ?? null,
+            confidence: typeof r.confidence === "number" ? r.confidence : null,
+            success,
+            message: success ? (r.stateMsg || r.reasonText || "Extracted") : (r.reviewReason || r.reasonText || "Needs review"),
+          };
+        }),
+      };
+      const res = await fetch("/api/pdf-rename/summary", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) { const j = await res.json().catch(() => ({ error: `HTTP ${res.status}` })); throw new Error((j as { error?: string }).error || `HTTP ${res.status}`); }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const stamp = new Date().toISOString().slice(0, 10);
+      const a = document.createElement("a"); a.href = url; a.download = `${label} - ${stamp}.xlsx`; a.click(); URL.revokeObjectURL(url);
+      addLog(`Downloaded “${label}” Excel summary (${scannedRows.length} row(s)).`);
+      setMsg({ tone: "ok", text: `Downloaded “${label}” summary with ${scannedRows.length} row(s).` });
+    } catch (e) {
+      setMsg({ tone: "err", text: `Could not build the ${label} summary: ${(e as Error).message}` });
+    } finally {
+      setExporting("");
+    }
+  };
+
   // --- Derived ------------------------------------------------------------
   const scanned = rows.some((r) => r.state !== "pending");
   const total = rows.length;
@@ -558,7 +688,7 @@ export function LocalFolderRename() {
       if (filter === "review" && r.decision !== "REVIEW") return false;
       if (filter === "renamed" && r.state !== "renamed") return false;
       if (!q) return true;
-      return `${r.path} ${r.invoiceNumber ?? ""} ${r.proposedName ?? ""}`.toLowerCase().includes(q);
+      return `${r.path} ${r.extractedValue ?? ""} ${r.invoiceNumber ?? ""} ${r.proposedName ?? ""}`.toLowerCase().includes(q);
     });
   }, [rows, query, filter]);
 
@@ -603,8 +733,25 @@ export function LocalFolderRename() {
         </div>
 
         <div className="border-t border-slate-100 pt-3">
+          <div className="mb-3 flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Rename by</span>
+              <select value={renameBy} onChange={(e) => setRenameBy(e.target.value as FieldKind)} disabled={busy !== ""} className="rounded border border-slate-200 px-2 py-1 text-xs disabled:opacity-50">
+                {RENAME_BY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            {renameBy === "custom" ? (
+              <label className="flex flex-col gap-1">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-slate-400">Field label to extract</span>
+                <input value={customLabel} onChange={(e) => setCustomLabel(e.target.value)} placeholder="e.g. HS CODE, Order No" className="w-56 rounded border border-slate-200 px-2 py-1 text-xs" />
+              </label>
+            ) : null}
+            <span className="mb-1 text-[11px] text-slate-400">
+              Files are renamed to the selected field&rsquo;s value.{renameBy === "custom" && !customLabel.trim() ? " Enter a field label, then Scan." : " Change the field, then Scan & Preview."}
+            </span>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
-            <button onClick={runScan} disabled={busy !== "" || total === 0} className="btn-ghost text-xs disabled:opacity-40">{busy === "scan" ? `Scanning… ${pct}%` : "🔍 Scan & Preview"}</button>
+            <button onClick={runScan} disabled={busy !== "" || total === 0 || (renameBy === "custom" && !customLabel.trim())} className="btn-ghost text-xs disabled:opacity-40">{busy === "scan" ? `Scanning… ${pct}%` : "🔍 Scan & Preview"}</button>
             <button onClick={() => runRename(true)} disabled={busy !== "" || !scanned || selectedCount === 0} className="btn-primary text-xs disabled:opacity-40">{busy === "rename" ? "Renaming…" : `▶ Rename Selected (${selectedCount})`}</button>
             <button onClick={() => runRename(false)} disabled={busy !== "" || !scanned} className="btn-ghost text-xs disabled:opacity-40">▶ Rename All</button>
             <span className="ml-auto text-[11px] text-slate-400">{dirHandle ? `Renamed copies are written to “${OUTPUT_SUBDIR}” inside the folder (originals preserved).` : fsaPicker ? "" : `Upload mode: renamed copies download as “${OUTPUT_SUBDIR}.zip”.`}</span>
@@ -617,6 +764,18 @@ export function LocalFolderRename() {
             </div>
           ) : null}
           {msg ? <div className={`mt-2 text-sm ${msg.tone === "ok" ? "text-emerald-700" : "text-rose-600"}`}>{msg.text}</div> : null}
+
+          {scanned ? (
+            <div className="mt-4 border-t border-slate-100 pt-3">
+              <div className="mb-2 text-[11px] font-medium uppercase tracking-wide text-slate-400">Excel summary — one row per scanned PDF</div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => downloadSummary("po", "PO Extraction")} disabled={busy !== "" || exporting !== ""} className="btn-ghost text-xs disabled:opacity-40">{exporting === "po" ? "Building…" : "⬇ PO Extraction"}</button>
+                <button onClick={() => downloadSummary("bill-of-export", "Bill Of Export Data")} disabled={busy !== "" || exporting !== ""} className="btn-ghost text-xs disabled:opacity-40">{exporting === "bill-of-export" ? "Building…" : "⬇ Bill Of Export Data"}</button>
+                <button onClick={() => downloadSummary("fcr", "FCR Extraction")} disabled={busy !== "" || exporting !== ""} className="btn-ghost text-xs disabled:opacity-40">{exporting === "fcr" ? "Building…" : "⬇ FCR Extraction"}</button>
+                <span className="ml-auto text-[11px] text-slate-400">Columns match the reference templates; blank where a value was not extracted, Success=false for failed rows.</span>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -637,7 +796,7 @@ export function LocalFolderRename() {
               <thead className="bg-slate-50 text-slate-500"><tr>
                 <th className="px-3 py-1.5 text-left"><input type="checkbox" checked={allSelected} onChange={(e) => toggleAll(e.target.checked)} aria-label="Select all" /></th>
                 <th className="px-3 py-1.5 text-left font-semibold">File</th>
-                <th className="px-3 py-1.5 text-left font-semibold">Invoice No.</th>
+                <th className="px-3 py-1.5 text-left font-semibold">{FIELD_HEADER[renameBy]}</th>
                 <th className="px-3 py-1.5 text-left font-semibold">Proposed name</th>
                 <th className="px-3 py-1.5 text-left font-semibold">Conf.</th>
                 <th className="px-3 py-1.5 text-left font-semibold">Via</th>
@@ -649,7 +808,7 @@ export function LocalFolderRename() {
                   <tr key={r.key} className="border-t border-slate-100">
                     <td className="px-3 py-1.5"><input type="checkbox" checked={r.selected} onChange={(e) => toggleOne(r.key, e.target.checked)} aria-label={`Select ${r.path}`} /></td>
                     <td className="px-3 py-1.5 font-mono max-w-[240px] truncate" title={r.path}>{r.path}</td>
-                    <td className="px-3 py-1.5 font-mono">{r.invoiceNumber || "—"}</td>
+                    <td className="px-3 py-1.5 font-mono">{r.extractedValue ?? r.invoiceNumber ?? "—"}</td>
                     <td className="px-3 py-1.5 font-mono">{r.finalName || r.proposedName || "—"}</td>
                     <td className="px-3 py-1.5">{r.confidence ? `${Math.round(r.confidence * 100)}%` : "—"}</td>
                     <td className="px-3 py-1.5">{!r.source || r.source === "none" ? "—" : r.source}</td>
@@ -673,7 +832,7 @@ export function LocalFolderRename() {
                       ) : r.state === "pending" ? (
                         <span className="text-slate-300">—</span>
                       ) : (
-                        <button onClick={() => { setEditingKey(r.key); setEditValue(r.invoiceNumber || ""); setMsg(null); }} className="text-[11px] font-medium text-ananta hover:underline">✎ Rename</button>
+                        <button onClick={() => { setEditingKey(r.key); setEditValue(r.extractedValue || r.invoiceNumber || ""); setMsg(null); }} className="text-[11px] font-medium text-ananta hover:underline">✎ Rename</button>
                       )}
                     </td>
                   </tr>

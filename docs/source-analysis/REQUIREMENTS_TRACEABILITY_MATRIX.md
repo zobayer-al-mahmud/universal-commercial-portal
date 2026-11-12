@@ -28,6 +28,9 @@ documented scope, not code.
 | PDF rename: collision detection, no overwrite | preserve-originals policy | `rename.ts` `buildRenamePlan` | `tests/pdf-rename.test.ts` |
 | PDF rename: batch persistence + review routing | — | `src/server/pdf-rename/intake.ts` | verified live (UI) |
 | PDF rename: gated apply (copy, no overwrite, originals preserved) | preserve-originals policy | `src/server/pdf-rename/apply.ts` `resolveApplyActions` / `applyRenameBatch` | `tests/rename-apply.test.ts` + live |
+| PDF rename: multi-field extraction (FCR No, Container, EXP, custom) | real FCR `64408.pdf` (CTG3320724 / CSNU2397962 / EXP NO 1558-21129-2026) + Bill `65341.pdf` box-44 | `src/server/pdf-rename/fields.ts` `extractFields` / `extractCustom`; `analyze/route.ts` | `tests/pdf-rename-fields.test.ts` |
+| PDF rename: "Rename by" selection (invoice/FCR/container/EXP/custom/manual) | task spec feature 1 | `src/components/LocalFolderRename.tsx` `deriveSelected`; `analyze/route.ts` (`x-rename-by`) | verified live (UI) |
+| PDF rename: Excel summary (PO / Bill of Export / FCR templates, no fabrication) | 3 reference workbooks' Sheet1 headers | `src/server/pdf-rename/excel-summary.ts` `buildSummaryMatrix` / `buildSummaryWorkbook`; `summary/route.ts` | `tests/pdf-rename-excel-summary.test.ts` |
 | Shipment schedule: week-title parse | Week workbook names | `src/server/shipment-schedule/schedule.ts` `parseWeekTitle` | `tests/shipment-schedule.test.ts` |
 | Shipment schedule: order→market expansion, value=PCS×FOB | Week `Summary` layout | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |
 | Shipment schedule: sequential invoice allocation (Q-SS-01) | observed invoice sequence | `schedule.ts` `buildSchedule` | `tests/shipment-schedule.test.ts` |

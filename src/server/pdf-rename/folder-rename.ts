@@ -117,6 +117,9 @@ export interface AnalyzeResult {
   usedOcr: boolean;
   ocrError?: string;
   parseError?: string;
+  /** The per-page text (native + OCR) the validator saw, so callers can run
+   *  additional pure field extractors (fields.ts) without re-parsing/re-OCRing. */
+  pageTexts: PageText[];
 }
 
 /**
@@ -138,7 +141,7 @@ export async function analyzePdf(buffer: Buffer, opts: { minConfidence: number }
         decision: "REVIEW", reasonCode: "PDF_UNREADABLE_OR_CORRUPTED",
         reasonText: `PDF could not be parsed: ${e instanceof Error ? e.message : String(e)}`,
       },
-      pages: 0, textChars: 0, usedOcr: false, parseError: e instanceof Error ? e.message : String(e),
+      pages: 0, textChars: 0, usedOcr: false, parseError: e instanceof Error ? e.message : String(e), pageTexts: [],
     };
   }
 
@@ -164,12 +167,12 @@ export async function analyzePdf(buffer: Buffer, opts: { minConfidence: number }
         decision: "REVIEW", reasonCode: "INVOICE_NUMBER_NOT_FOUND",
         reasonText: ocrError ? `Scanned PDF — ${ocrError}. Manual review needed.` : "No readable text; scanned PDF needs OCR (enable OCR_ENABLED) or manual review.",
       },
-      pages: numpages, textChars, usedOcr, ocrError,
+      pages: numpages, textChars, usedOcr, ocrError, pageTexts,
     };
   }
 
   const validation = validateInvoice(pageTexts, { minConfidence: opts.minConfidence });
-  return { validation, pages: numpages || nativePages.length, textChars, usedOcr, ocrError };
+  return { validation, pages: numpages || nativePages.length, textChars, usedOcr, ocrError, pageTexts };
 }
 
 /**
