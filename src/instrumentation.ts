@@ -12,4 +12,13 @@ export async function register(): Promise<void> {
   } catch (e) {
     console.error("[instrumentation] boot recovery failed:", e instanceof Error ? e.message : e);
   }
+  // Capture otherwise-unhandled process errors into the Control Center's Error
+  // Monitoring (de-duplicated, best-effort). Never let the handler itself throw.
+  try {
+    const { recordError } = await import("@/server/monitoring/errors");
+    process.on("unhandledRejection", (reason) => { void recordError({ source: "process.unhandledRejection", error: reason, level: "error" }); });
+    process.on("uncaughtException", (errv) => { void recordError({ source: "process.uncaughtException", error: errv, level: "critical" }); });
+  } catch {
+    /* monitoring is best-effort */
+  }
 }

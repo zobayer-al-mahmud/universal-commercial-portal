@@ -24,6 +24,10 @@ export const PERMISSIONS = {
   ADMIN_USERS: "admin.users",
   ADMIN_REFERENCE: "admin.reference",
   ADMIN_INTEGRATION: "admin.integration",
+  // Super Admin Control Center: system/user/error/process/db monitoring. Granted
+  // to ADMIN only (ADMIN = every permission); enforced on the backend on every
+  // page, server action and API that exposes monitoring data.
+  SYSTEM_MONITOR: "system.monitor",
 } as const;
 
 export type PermissionKey = (typeof PERMISSIONS)[keyof typeof PERMISSIONS];
@@ -48,6 +52,7 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   [PERMISSIONS.ADMIN_USERS]: "Manage users and roles",
   [PERMISSIONS.ADMIN_REFERENCE]: "Manage reference / mapping data",
   [PERMISSIONS.ADMIN_INTEGRATION]: "Manage integration adapters",
+  [PERMISSIONS.SYSTEM_MONITOR]: "Super Admin Control Center: monitor users, system, processes, database, and errors",
 };
 
 // Baseline least-privilege role → permission map.

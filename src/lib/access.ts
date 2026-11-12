@@ -1,7 +1,7 @@
 import "server-only";
 import { redirect } from "next/navigation";
-import { getSessionUser, type SessionUser } from "./auth";
-import { roleCanAccessSection, type PortalSection } from "./permissions";
+import { getSessionUser, userHasPermission, type SessionUser } from "./auth";
+import { roleCanAccessSection, type PortalSection, type PermissionKey } from "./permissions";
 
 /**
  * Guard a top-level portal section for direct-URL and backend access.
@@ -17,5 +17,19 @@ export async function requireSection(section: PortalSection): Promise<SessionUse
   const user = await getSessionUser();
   if (!user) redirect("/login");
   if (!roleCanAccessSection(user.role, section)) redirect("/modules");
+  return user;
+}
+
+/**
+ * Guard a page/route on a specific fine-grained permission (server-side).
+ * Redirects to /login when signed out, or to /modules when the user lacks the
+ * permission. Used by the Super Admin Control Center (SYSTEM_MONITOR) so the
+ * monitoring pages and their data are never served to a non-admin, independent
+ * of nav hiding.
+ */
+export async function requirePermission(permission: PermissionKey): Promise<SessionUser> {
+  const user = await getSessionUser();
+  if (!user) redirect("/login");
+  if (!userHasPermission(user, permission)) redirect("/modules");
   return user;
 }
