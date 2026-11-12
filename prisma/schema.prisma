@@ -34,6 +34,7 @@ model User {
   updatedAt    DateTime @updatedAt
 
   reviewTickets ReviewTicket[] @relation("AssignedReviewer")
+  notifications Notification[]
 
   @@index([roleId])
 }
@@ -1078,6 +1079,10 @@ model ContainerSearch {
   pdfPath         String?
   pdfSha256       String?
   pdfPages        Int                    @default(0)
+  // Operator-reviewed output filename (without extension) for the downloaded PDF.
+  // Defaults (when null) to portalContainerNo || containerNo. Set via the
+  // review-and-apply step so the download is always <containerNo>.pdf, flat.
+  outputName      String?
   error           String                 @default("")
   actor           String                 @default("system")
   createdAt       DateTime               @default(now())
@@ -1212,4 +1217,84 @@ model PortalCredential {
   updatedBy String   @default("") // actor who last saved it (audit/display)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Super Admin Control Center — authentication history + central error capture
+// (append-only, insert-only; feeds the monitoring dashboard). No secrets here.
+// ---------------------------------------------------------------------------
+
+// Authentication history for User Monitoring: every login success/failure and
+// logout, with the client IP + user agent. Used for login/logout history, failed
+// login attempts, and inferring active sessions (success not yet followed by a
+// logout, within the session TTL). Append-only.
+model AuthEvent {
+  id        String   @id @default(cuid())
+  kind      String // login_success | login_failed | logout
+  username  String   @default("") // the identifier that was entered / the user
+  userId    String? // set when a real user resolved
+  role      String   @default("") // role name at the time (display)
+  ip        String   @default("")
+  userAgent String   @default("")
+  detail    String   @default("") // e.g. failure reason (never the password)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([username])
+  @@index([kind])
+  @@index([userId])
+}
+
+// Central application/automation error capture for Error Monitoring: full message
+// + stack + sanitized context, de-duplicated by `fingerprint` so repeat errors
+// raise `count` and move `lastSeen` instead of flooding the table (frequency +
+// history). `resolvedAt` lets an admin acknowledge an error. Never stores secrets.
+model ErrorEvent {
+  id          String    @id @default(cuid())
+  level       String    @default("error") // warn | error | critical
+  source      String    @default("") // module / route / worker that raised it
+  message     String
+  stack       String    @default("")
+  context     String    @default("{}") // sanitized JSON (no credentials)
+  fingerprint String    @default("") // hash(source+message+top-frame) for dedup
+  count       Int       @default(1)
+  firstSeen   DateTime  @default(now())
+  lastSeen    DateTime  @default(now())
+  resolvedAt  DateTime?
+  resolvedBy  String    @default("")
+
+  @@index([lastSeen])
+  @@index([level])
+  @@index([source])
+  @@index([fingerprint])
+  @@index([resolvedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Global notifications (centralized, persistent, non-mock). Fan-out model: one
+// row PER RECIPIENT user, so unread/read state is per-user and simple. Role-based
+// visibility is enforced at CREATION (only users matching the scope get a row)
+// and again at READ time (a user only ever queries userId = their own id).
+// Every notification carries an in-app `link` so it is clickable → navigates to
+// the relevant module / record / task. Append-only except `readAt`.
+// ---------------------------------------------------------------------------
+model Notification {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category   String // job | automation | review | system | workflow | announcement
+  level      String    @default("info") // info | success | warning | error
+  title      String
+  body       String    @default("")
+  link       String    @default("") // in-app href to the relevant module/record/task
+  entityType String    @default("") // job | review | error | container | exp | rename | ...
+  entityId   String    @default("")
+  groupKey   String    @default("") // collapse/dedupe key (e.g. "rename-job:<id>")
+  actor      String    @default("system") // who/what raised it (display)
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@index([userId, groupKey])
 }

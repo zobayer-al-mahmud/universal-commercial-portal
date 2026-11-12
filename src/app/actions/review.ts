@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
+import { notifyReviewUpdate } from "@/server/notifications/events";
 
 export async function resolveReviewAction(formData: FormData) {
   const user = await getSessionUser();
@@ -32,6 +33,16 @@ export async function resolveReviewAction(formData: FormData) {
     action: `review.${decision}`,
     actor: user.email,
     data: { note, jobId: ticket.jobId },
+  });
+
+  // Persistent, role-scoped notification so the queue's watchers (reviewers +
+  // admins) see the decision; the actor is excluded from their own update.
+  await notifyReviewUpdate({
+    ticketId,
+    module: ticket.module,
+    state: decision as "resolved" | "rejected",
+    reason: ticket.reason,
+    actor: user.email,
   });
 
   // If no open tickets remain for the job, nudge job status forward from queued.

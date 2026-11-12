@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import { logoutAction } from "@/app/actions/auth";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { NotificationBell } from "@/components/NotificationBell";
 import { AppFooter } from "@/components/AppFooter";
 import { roleCanAccessSection, type PortalSection } from "@/lib/permissions";
 
@@ -63,13 +64,26 @@ function Brand() {
   );
 }
 
+// Super Admin Control Center — shown only when the signed-in user holds the
+// SYSTEM_MONITOR permission (ADMIN only). Gated by permission, not section.
+const CONTROL_CENTER: NavItem = {
+  href: "/control-center",
+  label: "Control Center",
+  section: "admin",
+  icon: <Icon path={<><path d="M12 2a10 10 0 1 0 10 10" /><path d="M12 6v6l4 2" /><path d="M20 4l-2 2" /></>} />,
+};
+
 export function PortalShell({
   user,
   openReviews,
+  canSystemMonitor,
+  canAnnounce,
   children,
 }: {
   user: { name: string; username?: string; email: string; role: string };
   openReviews: number;
+  canSystemMonitor?: boolean;
+  canAnnounce?: boolean;
   children: ReactNode;
 }) {
   const pathname = usePathname() ?? "";
@@ -81,7 +95,11 @@ export function PortalShell({
   }, [pathname]);
 
   // Hide nav links for sections this role cannot open (Commercial → Processes only).
-  const visibleNav = NAV.filter((n) => roleCanAccessSection(user.role, n.section));
+  // The Control Center is appended separately, gated by the SYSTEM_MONITOR permission.
+  const visibleNav = [
+    ...NAV.filter((n) => roleCanAccessSection(user.role, n.section)),
+    ...(canSystemMonitor ? [CONTROL_CENTER] : []),
+  ];
 
   const nav = (
     <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
@@ -169,6 +187,7 @@ export function PortalShell({
         <header className="sticky top-0 z-30 flex items-center justify-between border-b border-slate-200 bg-white/90 px-4 py-3 backdrop-blur lg:hidden">
           <Brand />
           <div className="flex items-center gap-2">
+            <NotificationBell canAnnounce={canAnnounce} />
             <ThemeToggle />
             <button
               className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
@@ -180,8 +199,10 @@ export function PortalShell({
           </div>
         </header>
 
-        {/* Desktop top bar — the global theme toggle lives here, on every module. */}
-        <header className="sticky top-0 z-20 hidden items-center justify-end border-b border-slate-200 bg-white/80 px-6 py-2.5 backdrop-blur lg:flex">
+        {/* Desktop top bar — the notification bell + global theme toggle live here,
+            on every module, for every role. */}
+        <header className="sticky top-0 z-20 hidden items-center justify-end gap-2 border-b border-slate-200 bg-white/80 px-6 py-2.5 backdrop-blur lg:flex">
+          <NotificationBell canAnnounce={canAnnounce} />
           <ThemeToggle />
         </header>
 

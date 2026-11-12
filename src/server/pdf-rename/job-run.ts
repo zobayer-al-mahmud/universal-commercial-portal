@@ -20,6 +20,7 @@ import { env } from "@/lib/env";
 import { audit } from "@/lib/audit";
 import { analyzePdf, resolveFolder } from "./folder-rename";
 import { runKey, startRun, requestCancel, isRunning, cancelInfo } from "@/server/automation/cancellation";
+import { notifyJobFinished, notifyAutomationError } from "@/server/notifications/events";
 
 const NON_TERMINAL = ["queued", "processing", "paused"];
 const RENAME_STOP_REASON = "Stopped by the operator.";
@@ -246,6 +247,17 @@ export async function runJob(jobId: string, opts: { actor?: string; force?: bool
     await prisma.renameJob.update({ where: { id: jobId }, data: { currentActivity: "Finished" } });
   }
   await audit({ entityType: "document", entityId: job.folder, action: run.signal.aborted ? "rename.job.stopped" : "rename.job.run", actor, data: { jobId, items: queue.length } });
+
+  // Persistent notification for the job creator + admins (best-effort; never
+  // blocks the run). Failures also raise an automation alert for monitors.
+  const finished = await prisma.renameJob.findUnique({ where: { id: jobId } });
+  if (finished) {
+    const summary = `${finished.renamedItems} renamed · ${finished.reviewItems} to review · ${finished.failedItems} failed (of ${finished.totalItems}).`;
+    await notifyJobFinished({ module: "PDF Rename", jobId, status: finished.status, actor, link: "/modules/pdf-rename", summary });
+    if (finished.failedItems > 0 || finished.status === "failed") {
+      await notifyAutomationError({ source: "PDF Rename", message: `${finished.failedItems} file(s) failed in folder “${finished.folder}”. ${summary}`, link: "/modules/pdf-rename", entityType: "rename-job", entityId: jobId });
+    }
+  }
 }
 
 /**

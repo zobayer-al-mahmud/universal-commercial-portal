@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
-import { getSessionUser } from "@/lib/auth";
+import { getSessionUser, userHasPermission } from "@/lib/auth";
+import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
 import { PortalShell } from "@/components/PortalShell";
 
@@ -13,6 +14,8 @@ export default async function PortalLayout({ children }: { children: React.React
     <PortalShell
       user={{ name: user.name, username: user.username, email: user.email, role: user.role }}
       openReviews={openReviews}
+      canSystemMonitor={userHasPermission(user, PERMISSIONS.SYSTEM_MONITOR)}
+      canAnnounce={userHasPermission(user, PERMISSIONS.ADMIN_USERS)}
     >
       {children}
     </PortalShell>
