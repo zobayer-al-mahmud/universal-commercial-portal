@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
+import { containerPdfFilename } from "@/server/container/output-name";
 
 const TERMINAL = new Set(["completed", "not_found", "mismatch", "failed", "needs_auth", "stopped"]);
 
@@ -35,6 +36,10 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     containers: rows.map((r) => ({
       id: r.id,
       containerNo: r.portalContainerNo || r.containerNo,
+      searchedNo: r.containerNo,
+      portalContainerNo: r.portalContainerNo,
+      outputName: r.outputName,
+      fileName: containerPdfFilename(r), // the exact download filename for review
       status: r.status,
       step: r.step,
       location: r.positionLocation,

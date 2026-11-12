@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { startContainerBatchAction, retryContainerAction } from "@/app/actions/container";
+import { startContainerBatchAction, retryContainerAction, applyContainerOutputNamesAction } from "@/app/actions/container";
 import { StopProcessButton } from "@/components/StopProcessButton";
 
 export interface RecentSearch {
@@ -18,6 +18,10 @@ export interface RecentSearch {
 interface BatchContainer {
   id: string;
   containerNo: string;
+  searchedNo?: string;
+  portalContainerNo?: string | null;
+  outputName?: string | null;
+  fileName?: string; // computed "<containerNo>.pdf"
   status: string;
   step: string;
   location: string | null;
@@ -64,6 +68,9 @@ export function ContainerSearchManager({
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Review-and-apply: per-row edited output filename base (without ".pdf").
+  const [nameDraft, setNameDraft] = useState<Record<string, string>>({});
+  const [applying, setApplying] = useState(false);
 
   const stopPolling = useCallback(() => {
     if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
@@ -139,6 +146,26 @@ export function ContainerSearchManager({
       await retryContainerAction(rowId);
       if (batchId) startPolling(batchId);
     });
+  }
+
+  // The current output-name base shown for a verified row (edited draft, else the
+  // server's computed "<containerNo>.pdf" minus the extension).
+  const verifiedRows = (batch?.containers ?? []).filter((c) => c.status === "completed" && c.hasPdf);
+  const baseName = (c: BatchContainer): string =>
+    nameDraft[c.id] ?? (c.fileName ? c.fileName.replace(/\.pdf$/i, "") : c.portalContainerNo || c.searchedNo || c.containerNo);
+
+  async function applyNames() {
+    if (!batchId) return;
+    setApplying(true);
+    setError(null); setNotice(null);
+    try {
+      const updates = verifiedRows.map((c) => ({ id: c.id, name: baseName(c) }));
+      const res = await applyContainerOutputNamesAction(batchId, updates);
+      if (res.error) setError(res.error);
+      else { setNotice(`Applied ${res.applied ?? updates.length} file name(s). Downloads will use these names.`); setNameDraft({}); startPolling(batchId); }
+    } finally {
+      setApplying(false);
+    }
   }
 
   const counts = batch?.counts;
@@ -264,6 +291,54 @@ export function ContainerSearchManager({
               </tbody>
             </table>
           </div>
+        </div>
+      ) : null}
+
+      {batchId && batch && verifiedRows.length > 0 ? (
+        <div className="card p-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Review file names &amp; download</h3>
+              <p className="text-xs text-slate-400">Each verified PDF downloads as <span className="font-mono">&lt;container number&gt;.pdf</span> — flat, no nested folders. Review the names, edit any if needed, then Apply.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button onClick={applyNames} disabled={applying} className="btn-ghost btn-xs disabled:opacity-40">{applying ? "Applying…" : "✓ Apply names"}</button>
+              <a href={`/api/container/batch/${batchId}/zip`} className="btn-primary btn-xs">⬇ Download All ({verifiedRows.length}) ZIP</a>
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-slate-500">
+                <tr>
+                  <th className="th text-left">Searched</th>
+                  <th className="th text-left">Verified (portal)</th>
+                  <th className="th text-left">Download file name</th>
+                  <th className="th text-left">PDF</th>
+                </tr>
+              </thead>
+              <tbody>
+                {verifiedRows.map((c) => (
+                  <tr key={c.id} className="border-t border-slate-100">
+                    <td className="td font-mono">{c.searchedNo || c.containerNo}</td>
+                    <td className="td font-mono">{c.portalContainerNo || "—"}</td>
+                    <td className="td">
+                      <span className="inline-flex items-center gap-1">
+                        <input value={baseName(c)} onChange={(e) => setNameDraft((d) => ({ ...d, [c.id]: e.target.value }))} className="input w-48 font-mono text-xs" aria-label={`File name for ${c.searchedNo || c.containerNo}`} />
+                        <span className="text-slate-400">.pdf</span>
+                      </span>
+                    </td>
+                    <td className="td">
+                      <span className="flex gap-2">
+                        <a href={`/api/container/${c.id}/pdf`} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline">👁</a>
+                        <a href={`/api/container/${c.id}/pdf?download=1`} className="text-sky-700 hover:underline">⬇</a>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-400">Clear a name to reset it to the portal/searched container number. Per-row ⬇ and “Download All” use the applied names. Apply before downloading to save any edits.</p>
         </div>
       ) : null}
 

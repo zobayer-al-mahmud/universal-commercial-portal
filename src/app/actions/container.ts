@@ -5,6 +5,9 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { beginContainerSearch } from "@/server/container/run";
 import { beginContainerBatch, parseContainerList, retryContainerRow, type BeginBatchResult } from "@/server/container/batch";
+import { prisma } from "@/lib/db";
+import { audit } from "@/lib/audit";
+import { containerOutputBase } from "@/server/container/output-name";
 
 export interface ContainerSearchActionResult {
   id?: string;
@@ -77,5 +80,45 @@ export async function retryContainerAction(rowId: string): Promise<{ ok?: boolea
     return r.ok ? { ok: true } : { error: r.message };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Retry failed." };
+  }
+}
+
+/**
+ * Review & apply the output filenames for a batch's verified container PDFs before
+ * downloading. Each update sets a reviewed `outputName` (the download becomes
+ * `<outputName>.pdf`, flat). Names are sanitized identically to the download path;
+ * a blank name clears the override (falls back to the portal/searched number).
+ * Only verified (completed + has-PDF) rows are updated. Audited.
+ */
+export async function applyContainerOutputNamesAction(
+  batchId: string,
+  updates: { id: string; name: string }[],
+): Promise<{ ok?: boolean; applied?: number; error?: string }> {
+  const user = await getSessionUser();
+  if (!user) return { error: "Not authenticated." };
+  if (!userHasPermission(user, PERMISSIONS.CONTAINER_SEARCH)) return { error: "You do not have permission to run container searches." };
+  if (!Array.isArray(updates) || updates.length === 0) return { error: "Nothing to apply." };
+  try {
+    const rows = await prisma.containerSearch.findMany({
+      where: { batchId, id: { in: updates.map((u) => u.id) }, status: "completed", pdfPath: { not: null } },
+      select: { id: true, containerNo: true, portalContainerNo: true },
+    });
+    const allowed = new Map(rows.map((r) => [r.id, r]));
+    let applied = 0;
+    for (const u of updates) {
+      const row = allowed.get(u.id);
+      if (!row) continue; // not a verified row of this batch — skip
+      const trimmed = (u.name || "").trim();
+      // Blank → clear override (revert to portal/searched number). Else sanitize to
+      // the same safe, flat base the download uses.
+      const outputName = trimmed ? containerOutputBase({ outputName: trimmed, containerNo: row.containerNo }) : null;
+      await prisma.containerSearch.update({ where: { id: u.id }, data: { outputName } });
+      applied++;
+    }
+    await audit({ entityType: "container", entityId: batchId, action: "container.outputnames.applied", actor: user.email, data: { applied } });
+    revalidatePath("/modules/container");
+    return { ok: true, applied };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Could not apply names." };
   }
 }

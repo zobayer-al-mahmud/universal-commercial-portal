@@ -5,6 +5,7 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
 import { buildZip, type ZipEntry } from "@/server/booking-correction/zip";
+import { containerPdfFilename } from "@/server/container/output-name";
 
 /** Download every VERIFIED container PDF in a batch as one ZIP (one file per matched container). */
 export async function GET(_req: Request, { params }: { params: { batchId: string } }) {
@@ -26,7 +27,8 @@ export async function GET(_req: Request, { params }: { params: { batchId: string
     if (!r.pdfPath) continue;
     try {
       const data = await readFile(r.pdfPath);
-      let name = `container-${(r.portalContainerNo || r.containerNo).replace(/[^\w.-]+/g, "_")}.pdf`;
+      // Flat entry named by the container number, e.g. "MSCU1234567.pdf" (no folder, no prefix).
+      let name = containerPdfFilename(r);
       // Guard against duplicate names (same container searched twice in a batch).
       if (usedNames.has(name)) name = name.replace(/\.pdf$/, `-${r.id.slice(0, 6)}.pdf`);
       usedNames.add(name);

@@ -4,6 +4,7 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { containerPdfFilename } from "@/server/container/output-name";
 
 /** Preview (inline) or download (?download=1) a captured container result PDF. */
 export async function GET(req: Request, { params }: { params: { id: string } }) {
@@ -22,7 +23,8 @@ export async function GET(req: Request, { params }: { params: { id: string } }) 
   }
 
   const asDownload = new URL(req.url).searchParams.get("download") === "1";
-  const filename = `container-${(row.portalContainerNo || row.containerNo).replace(/[^\w.-]+/g, "_")}.pdf`;
+  // Named by the container number itself — "MSCU1234567.pdf", flat (no prefix, no folder).
+  const filename = containerPdfFilename(row);
   if (asDownload) {
     await audit({ entityType: "container", entityId: row.id, action: "container.pdf.downloaded", actor: user.email, data: { containerNo: row.containerNo } });
   }
