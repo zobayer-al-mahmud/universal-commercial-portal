@@ -6,7 +6,7 @@ import { listTemplates, resolveTemplate } from "@/server/customs-invoice/templat
 import { CustomsInvoiceEditor } from "@/components/CustomsInvoiceEditor";
 import { CustomsInvoicePdfUpload } from "@/components/CustomsInvoicePdfUpload";
 import { CustomsInvoiceRefill } from "@/components/CustomsInvoiceRefill";
-import { buildPrefill, preferredCountryCode } from "@/server/customs-invoice/pull-data";
+import { buildPrefill } from "@/server/customs-invoice/pull-data";
 import { updateInvoiceFields } from "@/server/customs-invoice/intake";
 import type { InvoiceFields } from "@/server/customs-invoice/types";
 
@@ -23,58 +23,54 @@ export default async function CustomsInvoiceDetail({ params }: { params: { id: s
   if (!inv) notFound();
 
   // Auto-sync from the ONE shipment row this invoice tracks (user flow:
-  // "first invoice no + order no → shipment schedule row → country code →
-  // template"). Mechanical fields (marketCode / marketSubCode / countryCode)
-  // ALWAYS re-sync, since they are derived deterministically from the row and
-  // the user never types them. Headline fields (invoiceNumber / invoiceDate)
-  // are backfilled only when the invoice has them blank — user-typed values
-  // stay sticky. Guarantee: opening any invoice shows the SAME country code
-  // as the list, and the template resolves to EXACTLY that country.
+  // "first invoice no + order no → shipment schedule row"). Fields that the
+  // operator can't meaningfully type by hand (they're parsed off the booking
+  // PDF or allocated via the shipment-schedule flow) ALWAYS re-sync to the
+  // live shipment row every time the invoice is opened, so the Excel never
+  // carries a stale snapshot:
+  //   - EXP No. / EXP Date   (from ShipmentScheduleRow.expNo / expDate)
+  //   - Transport mode       (from PO or booking PDF — never guess)
+  //   - Gross weight, cartons, measurement (from the booking PDF)
+  //   - Ports of loading/discharge, place of delivery (booking PDF)
+  //   - packSet              (from the Sales Contract — drives AZ vs AZ Pack)
+  //   - marketCode / marketSubCode / countryCode (destination country)
+  // Headline fields (invoiceNumber / invoiceDate) are backfilled only when
+  // the invoice has them blank — user-typed values stay sticky.
   //
-  // Resolution priority for the shipment row:
-  //   1. The row whose invoiceNo equals this invoice's stored number
-  //      (invoice numbers are globally unique per week — 1:1 link).
-  //   2. Fallback: the first shipment row for this invoice's Order No via
-  //      buildPrefill (used when the invoice has not yet been numbered —
-  //      buildPrefill now prefers rows that DO carry an invoiceNo + PDF).
+  // User rule 2026-11-05: the generated Excel must not carry any guessed /
+  // previous data — if the shipment or PO changed, the Excel reflects the
+  // new values on the next open.
   const templates = listTemplates();
-  let srcMarketCode = "";
-  let srcMarketSubCode = "";
-  let srcInvoiceNo = "";
-  let srcExpectedDelivery = "";
-  if (inv.invoiceNumber) {
-    const row = await prisma.shipmentScheduleRow.findFirst({
-      where: { invoiceNo: inv.invoiceNumber },
-      select: { marketCode: true, marketSubCode: true, invoiceNo: true, expectedDelivery: true },
-    });
-    if (row) {
-      srcMarketCode = preferredCountryCode(row);
-      srcMarketSubCode = row.marketSubCode;
-      srcInvoiceNo = row.invoiceNo;
-      srcExpectedDelivery = row.expectedDelivery;
-    }
-  }
-  if (!srcMarketCode) {
-    const prefill = await buildPrefill(inv.orderNo);
-    if (prefill) {
-      srcMarketCode = prefill.marketCode;
-      srcMarketSubCode = prefill.marketSubCode;
-      srcInvoiceNo = prefill.invoiceNo;
-      srcExpectedDelivery = prefill.expectedDelivery;
-    }
-  }
-  if (srcMarketCode) {
-    // Template is picked by packSet (not by country) — the destination
-    // country code stays whatever the shipment resolved (MY / AU / NL …).
-    const nextCountryCode = srcMarketCode;
+  const prefill = await buildPrefill(inv.orderNo, {
+    invoiceNo: inv.invoiceNumber || undefined,
+  });
+  if (prefill) {
+    const nextCountryCode = prefill.marketCode;
     const patch: Partial<InvoiceFields> = {};
-    if (srcMarketCode !== inv.marketCode) patch.marketCode = srcMarketCode;
-    if (srcMarketSubCode !== inv.marketSubCode) patch.marketSubCode = srcMarketSubCode;
-    if (nextCountryCode !== inv.countryCode) patch.countryCode = nextCountryCode;
-    // Backfill the headline fields on first visit — never overwrite values
-    // the user already typed.
-    if (!inv.invoiceNumber && srcInvoiceNo) patch.invoiceNumber = srcInvoiceNo;
-    if (!inv.invoiceDate && srcExpectedDelivery) patch.invoiceDate = srcExpectedDelivery;
+    // Mechanical / derived fields — always follow the shipment row.
+    const setStr = (key: keyof InvoiceFields, next: string, cur: string) => {
+      if ((next ?? "") !== (cur ?? "")) (patch as Record<string, unknown>)[key] = next ?? "";
+    };
+    const setNum = (key: keyof InvoiceFields, next: number | null | undefined, cur: number | null) => {
+      const n = next == null ? null : next;
+      if (n !== cur) (patch as Record<string, unknown>)[key] = n;
+    };
+    setStr("marketCode", prefill.marketCode, inv.marketCode);
+    setStr("marketSubCode", prefill.marketSubCode, inv.marketSubCode);
+    setStr("countryCode", nextCountryCode, inv.countryCode);
+    setStr("expNo", prefill.expNo, inv.expNo);
+    setStr("expDate", prefill.expDate, inv.expDate);
+    setStr("transportMode", prefill.transportMode, inv.transportMode);
+    setStr("portOfLoading", prefill.portOfLoading, inv.portOfLoading);
+    setStr("portOfDischarge", prefill.portOfDischarge, inv.portOfDischarge);
+    setStr("placeOfDelivery", prefill.placeOfDelivery, inv.placeOfDelivery);
+    setStr("packSet", prefill.packSet, inv.packSet);
+    setNum("grossWeightKg", prefill.grossWeightKg ?? null, inv.grossWeightKg);
+    setNum("totalCartons", prefill.totalCartons ?? null, inv.totalCartons);
+    setNum("measurementCbm", prefill.measurementCbm ?? null, inv.measurementCbm);
+    // Headline fields — backfill only; never overwrite what the user typed.
+    if (!inv.invoiceNumber && prefill.invoiceNo) patch.invoiceNumber = prefill.invoiceNo;
+    if (!inv.invoiceDate && prefill.expectedDelivery) patch.invoiceDate = prefill.expectedDelivery;
     if (Object.keys(patch).length > 0) {
       await updateInvoiceFields(inv.id, patch, { actor: "system", source: "prefill" });
       // Re-read so this render shows the corrected values, not the stale ones.
