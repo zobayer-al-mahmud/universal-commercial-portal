@@ -9,6 +9,7 @@ import { type ExpKind, type ParsedExpRow } from "./types";
 import { runCorrection, runDuplicate, runDownload, type ExpRowResult, type ProgressFn } from "./live-run";
 import { detachExpBrowser } from "./browser";
 import { runKey, startRun, requestCancel, isRunning, onCancel, cancelInfo, type RunHandle } from "@/server/automation/cancellation";
+import { recordError } from "@/server/monitoring/errors";
 
 const EXP_STOP_REASON = "Stopped by the operator.";
 function expKey(jobId: string): string {
@@ -176,16 +177,30 @@ export interface ProcessResult {
  * Queue selected rows (or all pending) and start sequential background
  * processing. Returns immediately so the UI can poll.
  */
-export async function processExpRows(input: { jobId: string; rowIds?: string[]; actor: string }): Promise<ProcessResult> {
+export async function processExpRows(input: { jobId: string; rowIds?: string[]; actor: string; apply?: boolean }): Promise<ProcessResult> {
   const job = await prisma.expJob.findUnique({ where: { id: input.jobId } });
   if (!job) return { ok: false, queued: 0, message: "Job not found." };
 
+  // Live "Apply Changes" is the irreversible central-bank submission. It requires
+  // BOTH the operator's per-run intent (input.apply) AND the server master switch
+  // (EXP_AUTO_UPDATE). Fail closed with a clear message rather than silently
+  // downgrading an "Apply" request to a fill-only run.
+  if (input.apply && !env.EXP_AUTO_UPDATE) {
+    return { ok: false, queued: 0, message: "Live Apply Changes is disabled on the server (EXP_AUTO_UPDATE). Enable it before submitting to the portal." };
+  }
+
+  // Eligible statuses. An "Apply" run may also act on already-filled (reviewed)
+  // rows; a fill/review run keeps the standard set. A row already `updated` is
+  // excluded in both (duplicate-submission prevention).
+  const REVIEW_STATUSES = ["pending", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed", "stopped"];
+  const APPLY_STATUSES = [...REVIEW_STATUSES, "filled"];
+  const eligible = input.apply ? APPLY_STATUSES : REVIEW_STATUSES;
   const where = input.rowIds && input.rowIds.length
-    ? { jobId: job.id, id: { in: input.rowIds }, status: { in: ["pending", "not_found", "mismatch", "failed", "needs_auth", "partially_updated", "update_failed", "stopped"] } }
+    ? { jobId: job.id, id: { in: input.rowIds }, status: { in: eligible } }
     : { jobId: job.id, status: "pending" as const };
 
   const rows = await prisma.expJobRow.findMany({ where, select: { id: true } });
-  if (rows.length === 0) return { ok: false, queued: 0, message: "No eligible rows to process (invalid rows are skipped)." };
+  if (rows.length === 0) return { ok: false, queued: 0, message: "No eligible rows to process (invalid rows are skipped; already-applied rows are not re-submitted)." };
 
   // Record EXACTLY the rows this run will process (the selection, or every
   // pending row for Process-all). The UI scopes its progress/counters/log to
@@ -194,7 +209,7 @@ export async function processExpRows(input: { jobId: string; rowIds?: string[]; 
   const scopeIds = rows.map((r) => r.id);
   await prisma.expJobRow.updateMany({ where: { id: { in: scopeIds } }, data: { status: "queued", error: "", step: "" } });
   await prisma.expJob.update({ where: { id: job.id }, data: { status: "running", runScopeJson: JSON.stringify(scopeIds) } }).catch(() => undefined);
-  await audit({ entityType: "exp", entityId: job.id, action: "exp.job.process", actor: input.actor, data: { queued: rows.length, scoped: input.rowIds ? input.rowIds.length : null } });
+  await audit({ entityType: "exp", entityId: job.id, action: input.apply ? "exp.job.apply" : "exp.job.process", actor: input.actor, data: { queued: rows.length, scoped: input.rowIds ? input.rowIds.length : null, apply: !!input.apply } });
 
   // Register the run (a fresh, un-aborted signal — clears any prior Stop) BEFORE
   // the loop is scheduled, so a Stop clicked the instant processing begins can
@@ -202,12 +217,12 @@ export async function processExpRows(input: { jobId: string; rowIds?: string[]; 
   // page op throw at once instead of running to its navigation timeout.
   const run = startRun(expKey(job.id));
   onCancel(expKey(job.id), () => { void detachExpBrowser().catch(() => undefined); });
-  void runQueue(job.id, input.actor, run).catch(() => undefined);
-  return { ok: true, queued: rows.length, message: `${rows.length} row(s) queued.` };
+  void runQueue(job.id, input.actor, run, !!input.apply).catch(() => undefined);
+  return { ok: true, queued: rows.length, message: `${rows.length} row(s) queued${input.apply ? " for live Apply Changes" : ""}.` };
 }
 
 /** Drive every queued row of a job, one at a time. Cooperative-cancellable. */
-async function runQueue(jobId: string, actor: string, run: RunHandle): Promise<void> {
+async function runQueue(jobId: string, actor: string, run: RunHandle, apply = false): Promise<void> {
   try {
     // Re-fetch each loop so rows queued mid-run are also processed.
     for (;;) {
@@ -216,7 +231,7 @@ async function runQueue(jobId: string, actor: string, run: RunHandle): Promise<v
       if (!row) break;
       if (run.signal.aborted) break;
       await prisma.expJobRow.update({ where: { id: row.id }, data: { status: "running", step: "" } }).catch(() => undefined);
-      await runExpRow(row.id, actor).catch(async (e) => {
+      await runExpRow(row.id, actor, apply).catch(async (e) => {
         // A Stop closes the browser mid-row, which surfaces as a thrown page
         // error: record the interrupted row as Stopped, not Failed.
         const stopped = run.signal.aborted;
@@ -226,6 +241,8 @@ async function runQueue(jobId: string, actor: string, run: RunHandle): Promise<v
             ? { status: "stopped", step: "Stopped", error: EXP_STOP_REASON }
             : { status: "failed", error: e instanceof Error ? e.message : "Row crashed." },
         }).catch(() => undefined);
+        // Surface an unexpected row crash (not an operator Stop) to Error Monitoring.
+        if (!stopped) void recordError({ source: "exp-automation.runExpRow", error: e, level: "error", context: { jobId, rowId: row.id, kind: row.kind } });
       });
       await recomputeCounters(jobId);
     }
@@ -279,7 +296,7 @@ export async function requestStopExpJob(jobId: string, actor: string): Promise<{
 }
 
 /** Process one row end-to-end against the live portal + persist the result. */
-export async function runExpRow(rowId: string, actor: string): Promise<void> {
+export async function runExpRow(rowId: string, actor: string, apply = false): Promise<void> {
   const row = await prisma.expJobRow.findUnique({ where: { id: rowId } });
   if (!row) return;
 
@@ -313,8 +330,8 @@ export async function runExpRow(rowId: string, actor: string): Promise<void> {
   };
 
   let result: ExpRowResult;
-  if (row.kind === "correction") result = await runCorrection(parsedRow, onProgress);
-  else if (row.kind === "duplicate") result = await runDuplicate(parsedRow, onProgress);
+  if (row.kind === "correction") result = await runCorrection(parsedRow, onProgress, { apply });
+  else if (row.kind === "duplicate") result = await runDuplicate(parsedRow, onProgress, { apply });
   else result = await runDownload(parsedRow, onProgress);
 
   // Persist the PDF (download kind).
@@ -393,6 +410,32 @@ export async function retryExpRow(rowId: string, actor: string): Promise<{ ok: b
   onCancel(expKey(row.jobId), () => { void detachExpBrowser().catch(() => undefined); });
   void runQueue(row.jobId, actor, run).catch(() => undefined);
   return { ok: true, message: "Retry queued." };
+}
+
+/**
+ * Manual mode: apply ONE reviewed row to the live portal (fill → read back →
+ * Apply Changes → verify the portal's response). Fail-closed on the server master
+ * switch; never re-submits a row the portal already confirmed (`updated`); never
+ * ticks Acknowledge. The operator clicks this per row after reviewing it.
+ */
+export async function applyExpRow(rowId: string, actor: string): Promise<{ ok: boolean; message: string }> {
+  const row = await prisma.expJobRow.findUnique({ where: { id: rowId } });
+  if (!row) return { ok: false, message: "Row not found." };
+  if (row.kind === "download") return { ok: false, message: "Download rows have no Apply Changes step." };
+  if (row.status === "skipped") return { ok: false, message: "This row is invalid and cannot be processed." };
+  if (row.status === "updated") return { ok: false, message: "This row was already applied and confirmed by the portal — it will not be submitted again." };
+  if (row.status === "running" || row.status === "queued") return { ok: false, message: "This row is already being processed." };
+  if (!env.EXP_LIVE_ENABLED) return { ok: false, message: "Live EXP automation is disabled (EXP_LIVE_ENABLED)." };
+  if (!env.EXP_AUTO_UPDATE) return { ok: false, message: "Live Apply Changes is disabled on the server (EXP_AUTO_UPDATE). Enable it before submitting to the portal." };
+
+  await prisma.expJobRow.update({ where: { id: rowId }, data: { status: "queued", error: "", step: "", retryCount: { increment: 1 } } });
+  await prisma.expJob.update({ where: { id: row.jobId }, data: { status: "running", runScopeJson: JSON.stringify([rowId]) } }).catch(() => undefined);
+  await recomputeCounters(row.jobId);
+  await audit({ entityType: "exp", entityId: rowId, action: "exp.row.apply_requested", actor, data: { kind: row.kind, prevStatus: row.status } });
+  const run = startRun(expKey(row.jobId));
+  onCancel(expKey(row.jobId), () => { void detachExpBrowser().catch(() => undefined); });
+  void runQueue(row.jobId, actor, run, true).catch(() => undefined);
+  return { ok: true, message: "Apply Changes queued for this row." };
 }
 
 /**

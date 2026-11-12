@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { processExpRows, retryExpRow, updateExpRow } from "@/server/exp-automation/batch";
+import { processExpRows, retryExpRow, applyExpRow, updateExpRow } from "@/server/exp-automation/batch";
 import { getExpCredentialStatus, saveExpCredentials, type ExpCredentialStatus } from "@/server/exp-automation/credentials";
 
 /**
@@ -19,11 +19,11 @@ async function requireExpUser() {
   return { user };
 }
 
-export async function processExpRowsAction(jobId: string, rowIds?: string[]): Promise<{ ok?: boolean; queued?: number; message?: string; error?: string }> {
+export async function processExpRowsAction(jobId: string, rowIds?: string[], apply?: boolean): Promise<{ ok?: boolean; queued?: number; message?: string; error?: string }> {
   const auth = await requireExpUser();
   if ("error" in auth) return { error: auth.error };
   try {
-    const r = await processExpRows({ jobId, rowIds, actor: auth.user.email });
+    const r = await processExpRows({ jobId, rowIds, actor: auth.user.email, apply: !!apply });
     revalidatePath("/modules/exp-automation");
     return r.ok ? { ok: true, queued: r.queued, message: r.message } : { error: r.message };
   } catch (e) {
@@ -39,6 +39,19 @@ export async function retryExpRowAction(rowId: string): Promise<{ ok?: boolean; 
     return r.ok ? { ok: true } : { error: r.message };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Retry failed." };
+  }
+}
+
+/** Manual mode: apply ONE reviewed row to the live portal (fill → Apply → verify). */
+export async function applyExpRowAction(rowId: string): Promise<{ ok?: boolean; message?: string; error?: string }> {
+  const auth = await requireExpUser();
+  if ("error" in auth) return { error: auth.error };
+  try {
+    const r = await applyExpRow(rowId, auth.user.email);
+    revalidatePath("/modules/exp-automation");
+    return r.ok ? { ok: true, message: r.message } : { error: r.message };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Apply failed." };
   }
 }
 

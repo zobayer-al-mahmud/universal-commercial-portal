@@ -4,9 +4,9 @@ import { getExpPage } from "./browser";
 import { ensureExpAuth, type AuthResult } from "./auth";
 import { serializeExpRun, openCorrectionForm, openDuplicateForm, openSearchDetailForm } from "./nav";
 import type { Response as PwResponse } from "playwright";
-import { fillControl, fillSearchField, readFieldValue, fillField, pickEditControl } from "./form-fields";
+import { fillControl, fillSearchField, readFieldValue, fillField } from "./form-fields";
 import { type FieldDiff, valuesEquivalent, formatDateLike, normDate } from "./compare";
-import { capturePortalDump, summarizeDump, writeDump, type PortalDump } from "./diagnostics";
+import { capturePortalDump, summarizeDump, writeDump, isEditFormLoaded, type PortalDump } from "./diagnostics";
 import { CORRECTION_FIELDS, DUPLICATE_FIELDS, type FieldMap, type ParsedExpRow, type ExpKind } from "./types";
 import { neutralizeFinalControls, assertSafeToClick, type ClickPolicy } from "./guards";
 import { validateCapturedPdf } from "./pdf";
@@ -53,6 +53,16 @@ export interface ExpRowResult {
 }
 
 export type ProgressFn = (step: string, detail?: string) => void | Promise<void>;
+
+/** Per-run options chosen by the operator in the UI (not global env). */
+export interface ExpRunOptions {
+  /**
+   * Request a live "Apply Changes" submission after filling + read-back. Still
+   * gated by the server master switch EXP_AUTO_UPDATE (fail-closed). Default false
+   * = fill + read back for review only, never submitted.
+   */
+  apply?: boolean;
+}
 
 function base(outcome: ExpOutcome, message: string, auth: AuthResult): ExpRowResult {
   return { ok: false, outcome, message, auth, mismatchedFields: [], portalValues: {}, pdf: null };
@@ -214,30 +224,26 @@ async function searchByIdentifiers(page: Page, row: ParsedExpRow): Promise<void>
   await clickSearch(page);
 }
 
-// Anchor labels that are always present on the Edit/Update EXP form (correction
-// has "Commodity Code"/"Update Remarks"; duplicate has "Transport Doc No"/etc.).
-const EDIT_FORM_ANCHORS = ["Update Remarks", "Commodity Code", "Invoice No", "Ship Port", "Transport Doc No", "Custom Office"];
-
 /**
  * Is the Edit/Update EXP form present and ready to FILL?
  *
- * The form is BLANK by design — it is a correction-entry form, not a read-back of
- * existing values — so the old "a mapped field already holds a value" check made
- * every search look like NOT_FOUND and nothing was ever filled. The correct gate
- * is: the portal did not reject the identifiers AND the editable form controls
- * are present and enabled.
+ * ROOT CAUSE (proven live 2026-11-10): the Edit/Update EXP Correction form (APEX
+ * page 68) carries a sub-report "HSCODE received from Customs ASYCUDA system" that
+ * renders the literal placeholder "No data found" whenever that lookup is empty
+ * for the record — unrelated to whether the EXP record itself loaded. The old gate
+ * scanned the WHOLE page (`page.content()`) for "no data found" and rejected the
+ * form on that placeholder, so every fully-loaded record was reported NOT_FOUND
+ * (the form held Invoice No / Commodity Code / Update Remarks yet still failed).
+ *
+ * The authoritative signal is the loaded record's own data: a matching search
+ * fills the edit-form record fields (Invoice No, Commodity Code, …); a no-match
+ * leaves them BLANK (verified with a non-existent serial). Readiness is therefore
+ * decided from the captured DOM controls by the pure, unit-tested
+ * `isEditFormLoaded` — never from a stray page-text scan.
  */
 async function editFormReady(page: Page): Promise<boolean> {
-  const body = (await page.content().catch(() => "")).toLowerCase();
-  if (/no data found|record not found|no record|invalid\s+(adscode|exp|serial|year)|does not exist/.test(body)) return false;
-  for (const label of EDIT_FORM_ANCHORS) {
-    const c = await pickEditControl(page, [label]);
-    if (c) {
-      const disabled = await c.isDisabled().catch(() => false);
-      if (!disabled) return true;
-    }
-  }
-  return false;
+  const dump = await capturePortalDump(page).catch(() => null);
+  return dump ? isEditFormLoaded(dump.controls) : false;
 }
 
 /** Poll for the Edit/Update EXP form to become ready after a search. */
@@ -311,15 +317,18 @@ async function runFormFill(
   openForm: (p: Page) => Promise<boolean>,
   kind: ExpKind,
   onProgress?: ProgressFn,
+  opts?: ExpRunOptions,
 ): Promise<ExpRowResult> {
   const emit = async (s: string, d?: string) => { try { await onProgress?.(s, d); } catch { /* best-effort */ } };
 
-  // What the bot may click on the live portal, from the opt-in env flags. Apply
-  // (EXP_AUTO_UPDATE) unlocks "Apply Changes"; Acknowledge (EXP_AUTO_ACKNOWLEDGE,
-  // duplicate only, and only with Apply on) unlocks the acknowledge checkbox.
+  // What the bot may click on the live portal. Apply ("Apply Changes") is gated
+  // TWICE: the per-run intent (`opts.apply`, chosen by the operator in the UI —
+  // Automatic bulk or Manual per-row) AND the server master switch
+  // (EXP_AUTO_UPDATE). Both must be on, else we only fill + read back and stop.
+  // Acknowledge is NEVER auto-clicked (operator requirement) — always forbidden.
   const policy: ClickPolicy = {
-    allowApply: env.EXP_AUTO_UPDATE,
-    allowAcknowledge: env.EXP_AUTO_UPDATE && env.EXP_AUTO_ACKNOWLEDGE && kind === "duplicate",
+    allowApply: !!opts?.apply && env.EXP_AUTO_UPDATE,
+    allowAcknowledge: false,
   };
 
   return serializeExpRun(async () => {
@@ -465,14 +474,14 @@ async function runFormFill(
   });
 }
 
-export function runCorrection(row: ParsedExpRow, onProgress?: ProgressFn): Promise<ExpRowResult> {
+export function runCorrection(row: ParsedExpRow, onProgress?: ProgressFn, opts?: ExpRunOptions): Promise<ExpRowResult> {
   // Correction and Duplicate use the SAME logic: fill every mapped field from Excel.
-  return runFormFill(row, CORRECTION_FIELDS, CORRECTION_STEPS, openCorrectionForm, "correction", onProgress);
+  return runFormFill(row, CORRECTION_FIELDS, CORRECTION_STEPS, openCorrectionForm, "correction", onProgress, opts);
 }
 
-export function runDuplicate(row: ParsedExpRow, onProgress?: ProgressFn): Promise<ExpRowResult> {
+export function runDuplicate(row: ParsedExpRow, onProgress?: ProgressFn, opts?: ExpRunOptions): Promise<ExpRowResult> {
   // Identical to Correction: fill the Export Acknowledgement form directly from Excel (no comparison).
-  return runFormFill(row, DUPLICATE_FIELDS, DUPLICATE_STEPS, openDuplicateForm, "duplicate", onProgress);
+  return runFormFill(row, DUPLICATE_FIELDS, DUPLICATE_STEPS, openDuplicateForm, "duplicate", onProgress, opts);
 }
 
 /** Click a labelled control (link / button / input) — flexible, visible-only, guarded. Never submits. */

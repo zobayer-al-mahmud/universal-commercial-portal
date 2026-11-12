@@ -10,6 +10,91 @@ import {
 } from "@/server/exp-automation/excel";
 import { normDate, normNumber, normText, valuesEquivalent, formatDateLike } from "@/server/exp-automation/compare";
 import { buildEditedWorkbook } from "@/server/exp-automation/exp-export";
+import { isEditFormLoaded } from "@/server/exp-automation/diagnostics";
+
+/* ---------------------- Edit/Update EXP form readiness ---------------------- *
+ * Regression for the 2026-11-10 NOT_FOUND bug: the EXP Correction form (APEX p68)
+ * has an "HSCODE received from Customs ASYCUDA system" sub-report that shows the
+ * literal "No data found" when empty for the record. Readiness must come from the
+ * LOADED record's edit fields, not a page-text scan. Fixtures mirror the real
+ * captured DOM controls (prod dumps for serial 24408 loaded vs 99999 no-match). */
+type RC = { label: string; value: string; visible: boolean; disabled: boolean; looksSearch: boolean };
+const ctrl = (label: string, value: string, o: Partial<RC> = {}): RC => ({
+  label, value, visible: o.visible ?? true, disabled: o.disabled ?? false, looksSearch: o.looksSearch ?? false,
+});
+// The shared search panel (ADSCODE/EXP Serial/EXP Year) — APEX ids end in a digit
+// variant (Pnn_X2) so capturePortalDump flags them looksSearch=true.
+const searchPanel: RC[] = [
+  ctrl("ADSCODE", "00001558", { looksSearch: true }),
+  ctrl("EXP Serial", "24408", { looksSearch: true }),
+  ctrl("EXP Year", "2026", { looksSearch: true }),
+];
+
+describe("isEditFormLoaded — Edit/Update EXP form readiness", () => {
+  it("TRUE when a record loaded (correction p68: Invoice No + Commodity Code populated)", () => {
+    const loaded24408: RC[] = [
+      ...searchPanel,
+      ctrl("Commodity Code", "1162034200"),
+      ctrl("Invoice No", "66995"),
+      ctrl("Invoice Amount (Issue)", "4596.5"),
+      ctrl("Ship Port", "CHITTAGONG"),
+      ctrl("Update Remarks", "."),
+    ];
+    expect(isEditFormLoaded(loaded24408)).toBe(true);
+  });
+
+  it("TRUE for the duplicate form (p3: P3_INVOICE_NO populated)", () => {
+    const dupLoaded: RC[] = [
+      ...searchPanel,
+      ctrl("Commodity", "62034200"),
+      ctrl("Invoice No", "62258"),
+      ctrl("Quantity", "172"),
+      ctrl("Transport Doc No", ""),
+      ctrl("Remarks", "."),
+    ];
+    expect(isEditFormLoaded(dupLoaded)).toBe(true);
+  });
+
+  it("FALSE on a genuine no-match: anchors present but record fields BLANK (serial 99999)", () => {
+    const noMatch: RC[] = [
+      ...searchPanel,
+      ctrl("Commodity Code", ""),
+      ctrl("Invoice No", ""),
+      ctrl("Invoice Amount (Issue)", ""),
+      ctrl("Update Remarks", ""),
+    ];
+    expect(isEditFormLoaded(noMatch)).toBe(false);
+  });
+
+  it("FALSE when the edit region is not visible (only the search panel showing)", () => {
+    const hidden: RC[] = [
+      ...searchPanel,
+      ctrl("Invoice No", "66995", { visible: false }),
+      ctrl("Commodity Code", "1162034200", { visible: false }),
+    ];
+    expect(isEditFormLoaded(hidden)).toBe(false);
+  });
+
+  it("FALSE when the only populated 'Invoice No'-like field is a search field", () => {
+    const searchOnly: RC[] = [
+      ...searchPanel,
+      ctrl("Invoice No", "66995", { looksSearch: true }), // a search-panel variant, not the edit field
+    ];
+    expect(isEditFormLoaded(searchOnly)).toBe(false);
+  });
+
+  it("ignores a stray 'No data found' placeholder — it is page text, never a form control", () => {
+    // The ASYCUDA sub-report's "No data found" is not a form control, so it never
+    // appears in the controls list the decision reads; a loaded record stays ready.
+    const loadedWithEmptyAsycuda: RC[] = [
+      ...searchPanel,
+      ctrl("Commodity Code", "1162034200"),
+      ctrl("Invoice No", "66995"),
+      ctrl("Update Remarks", "."),
+    ];
+    expect(isEditFormLoaded(loadedWithEmptyAsycuda)).toBe(true);
+  });
+});
 
 /* --------------------------- cell + number helpers --------------------------- */
 

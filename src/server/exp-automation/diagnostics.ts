@@ -186,6 +186,53 @@ export function summarizeDump(d: PortalDump): string {
   ].join(" | ");
 }
 
+/**
+ * Labels that, when present as an ENABLED edit control, prove the Edit/Update EXP
+ * form is on screen. Correction (APEX page 68) and Duplicate (page 3) share most
+ * of these; matched case/space-insensitively, by prefix either way.
+ */
+export const EDIT_FORM_ANCHOR_LABELS = [
+  "update remarks", "remarks", "commodity code", "commodity", "invoice no",
+  "ship port", "port of shipment", "transport doc no", "custom office",
+];
+
+/**
+ * Record-identifying edit fields that Oracle APEX fills from the LOADED EXP record
+ * and leaves BLANK when the search matched nothing (verified live 2026-11-10: a
+ * valid serial loads Invoice No / Commodity Code; a non-existent serial comes back
+ * with those fields empty). A populated one is positive proof the record loaded.
+ */
+export const RECORD_VALUE_LABELS = ["invoice no", "commodity code", "commodity", "quantity"];
+
+/**
+ * Pure readiness decision for the Edit/Update EXP form, from the captured DOM
+ * controls. The form is READY to fill when an enabled edit-form anchor is present
+ * AND a record-identifying field actually holds a value.
+ *
+ * This deliberately IGNORES any "no data found"/"not found" page text. The
+ * correction form embeds an always-present "HSCODE received from Customs ASYCUDA
+ * system" sub-report that shows the literal "No data found" when that lookup is
+ * empty for the record — which has nothing to do with whether the EXP record
+ * loaded. Scanning the whole page for that phrase made every fully-loaded record
+ * look NOT_FOUND (the 2026-11-10 bug). Search fields (looksSearch) are excluded so
+ * the identifiers typed into the search panel never count as loaded record data.
+ */
+export function isEditFormLoaded(controls: Pick<DomControl, "label" | "value" | "visible" | "disabled" | "looksSearch">[]): boolean {
+  const norm = (s: string) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+  const matches = (label: string, wants: string[]) => {
+    const l = norm(label);
+    return !!l && wants.some((w) => l === w || l.startsWith(w) || w.startsWith(l));
+  };
+  let enabledAnchor = false;
+  let recordValue = false;
+  for (const c of controls) {
+    if (!c.visible || c.looksSearch) continue;
+    if (!c.disabled && matches(c.label, EDIT_FORM_ANCHOR_LABELS)) enabledAnchor = true;
+    if (matches(c.label, RECORD_VALUE_LABELS) && (c.value || "").trim()) recordValue = true;
+  }
+  return enabledAnchor && recordValue;
+}
+
 /** Persist the full dump JSON under STORAGE_ROOT/exp/diagnostics for later inspection. */
 export async function writeDump(tag: string, d: PortalDump): Promise<string | null> {
   try {

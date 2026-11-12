@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { processExpRowsAction, retryExpRowAction, updateExpRowAction, saveExpCredentialsAction } from "@/app/actions/exp";
+import { processExpRowsAction, retryExpRowAction, applyExpRowAction, updateExpRowAction, saveExpCredentialsAction } from "@/app/actions/exp";
 import { fieldsForKind } from "@/server/exp-automation/types";
 import { StopProcessButton } from "@/components/StopProcessButton";
 
@@ -258,17 +258,23 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
     });
   }
 
-  function process(rowIds?: string[]) {
+  function process(rowIds?: string[], apply = false) {
     if (!jobId) return;
     if (submittingRef.current) return; // prevent duplicate job creation on double-click
     // rowIds === undefined → "Process all pending". A defined-but-empty list means
     // the user hit "Process selected" with nothing selected: guard it.
     if (rowIds && rowIds.length === 0) { setError("Select at least one row to process, or use “Process all pending”."); return; }
+    // Live Apply Changes is an irreversible submission to the Bangladesh Bank
+    // portal — confirm the exact row count before firing.
+    if (apply) {
+      const n = rowIds ? rowIds.length : selectableRows.length;
+      if (typeof window !== "undefined" && !window.confirm(`Apply Changes LIVE to the Bangladesh Bank EXP portal for ${n} selected row(s)?\n\nEach row is filled from Excel, read back, then Apply Changes is clicked and the portal response is verified. This is a real, irreversible submission. Acknowledge is never clicked.`)) return;
+    }
     submittingRef.current = true;
     setError(null); setNotice(null);
     startTransition(async () => {
       try {
-        const res = await processExpRowsAction(jobId, rowIds);
+        const res = await processExpRowsAction(jobId, rowIds, apply);
         if (res.error) { setError(res.error); return; }
         setNotice(res.message ?? "Processing started.");
         setSelected(new Set()); // clear ONLY after the job was successfully queued
@@ -282,6 +288,17 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
     startTransition(async () => {
       const res = await retryExpRowAction(rowId);
       if (res.error) { setError(res.error); return; }
+      if (jobId) startPolling(jobId);
+    });
+  }
+  // Manual mode: apply ONE reviewed row to the live portal.
+  function applyRow(rowId: string, label: string) {
+    if (typeof window !== "undefined" && !window.confirm(`Apply Changes LIVE to the Bangladesh Bank EXP portal for ${label}?\n\nThe row is filled from Excel, read back, then Apply Changes is clicked and the portal response is verified. This is a real, irreversible submission. Acknowledge is never clicked.`)) return;
+    setError(null); setNotice(null);
+    startTransition(async () => {
+      const res = await applyExpRowAction(rowId);
+      if (res.error) { setError(res.error); return; }
+      setNotice(res.message ?? "Apply queued.");
       if (jobId) startPolling(jobId);
     });
   }
@@ -349,9 +366,9 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
           Sign-in is {credsConfigured ? "configured" : <strong>not configured — set it in the Credentials panel</strong>}.
           {!isDownload ? (
             autoApply ? (
-              <> Each form is <strong>filled from Excel, read back to confirm</strong>, then <strong>Apply Changes is clicked</strong>{autoAcknowledge && kind === "duplicate" ? <> and the <strong>Acknowledge/Duplicate Export</strong> checkbox is ticked</> : null}; a row is marked done only when the portal confirms success.</>
+              <> Each form is <strong>filled from Excel and read back to confirm</strong>. Live <strong>Apply Changes is enabled</strong>: use <strong>“Apply selected to portal”</strong> (automatic, bulk, sequential) or a row’s <strong>“Apply Changes”</strong> (manual, after review) to submit — a row is marked done only when the portal confirms success. Plain <strong>Fill</strong> only prepares the form for review. <strong>Acknowledge is never clicked.</strong></>
             ) : (
-              <> Each form is <strong>filled from Excel and read back to confirm</strong>, then left for your review — the bot does not click Apply Changes or Acknowledge.</>
+              <> Each form is <strong>filled from Excel and read back to confirm</strong>, then left for your review — the bot does not click Apply Changes or Acknowledge. (Live Apply is off: <code>EXP_AUTO_UPDATE</code>.)</>
             )
           ) : null}
         </div>
@@ -430,10 +447,13 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
           })()}
 
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <button onClick={() => process(Array.from(selected))} disabled={pending || selected.size === 0} className="btn-primary btn-sm disabled:opacity-40">▶ Process selected ({selected.size})</button>
-            <button onClick={() => process(undefined)} disabled={pending || selectableRows.length === 0} className="btn-ghost btn-sm disabled:opacity-40">▶ Process all pending</button>
+            <button onClick={() => process(Array.from(selected))} disabled={pending || selected.size === 0} className="btn-primary btn-sm disabled:opacity-40" title="Fill the form from Excel and read it back for review — nothing is submitted.">▶ {isDownload ? "Download selected" : "Fill selected for review"} ({selected.size})</button>
+            <button onClick={() => process(undefined)} disabled={pending || selectableRows.length === 0} className="btn-ghost btn-sm disabled:opacity-40">▶ {isDownload ? "Download all pending" : "Fill all pending"}</button>
+            {!isDownload && autoApply ? (
+              <button onClick={() => process(Array.from(selected), true)} disabled={pending || selected.size === 0} className="btn-danger btn-sm disabled:opacity-40" title="AUTOMATIC: fill, read back, then click Apply Changes on the live Bangladesh Bank portal for every selected row, sequentially. Irreversible. Acknowledge is never clicked.">⚑ Apply selected to portal ({selected.size})</button>
+            ) : null}
             {selected.size === 0 && selectableRows.length > 0 ? (
-              <span className="text-[11px] font-medium text-amber-600">Select rows to process, or use “Process all pending”.</span>
+              <span className="text-[11px] font-medium text-amber-600">Select rows to process{!isDownload && autoApply ? " or apply" : ""}, or use “{isDownload ? "Download" : "Fill"} all pending”.</span>
             ) : null}
             <label className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               <input type="checkbox" checked={selected.size >= selectableRows.length && selectableRows.length > 0} onChange={toggleAll} /> Select all
@@ -496,11 +516,23 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
                         ) : r.status === "matched" ? <span className="text-slate-400">unchanged</span> : "—"}
                       </td>
                       <td className="td">
-                        <div className="flex items-center gap-2">
-                          {canEdit ? <button onClick={() => (editId === r.id ? setEditId(null) : openEdit(r))} disabled={pending} className="text-slate-600 hover:underline disabled:text-slate-300">{editId === r.id ? "✕ Close" : "✎ Edit"}</button> : null}
-                          {err ? <button onClick={() => retry(r.id)} disabled={pending} className="text-sky-700 hover:underline disabled:text-slate-300">↻ Retry</button> : null}
-                          {!canEdit && !err ? "—" : null}
-                        </div>
+                        {(() => {
+                          // Manual mode: a reviewed/filled row (or a previously
+                          // not-confirmed apply) can be applied to the live portal
+                          // one at a time. Gated by the server master switch
+                          // (autoApply) and never offered for an already-applied row.
+                          const canApply = !isDownload && autoApply && !job.running
+                            && (r.status === "filled" || r.status === "update_failed" || r.status === "partially_updated");
+                          return (
+                            <div className="flex items-center gap-2">
+                              {canEdit ? <button onClick={() => (editId === r.id ? setEditId(null) : openEdit(r))} disabled={pending} className="text-slate-600 hover:underline disabled:text-slate-300">{editId === r.id ? "✕ Close" : "✎ Edit"}</button> : null}
+                              {canApply ? <button onClick={() => applyRow(r.id, `row ${r.rowNo}`)} disabled={pending} className="font-semibold text-rose-700 hover:underline disabled:text-slate-300" title="Review done — fill, read back, then click Apply Changes on the live portal for this one row. Irreversible.">⚑ Apply Changes</button> : null}
+                              {err ? <button onClick={() => retry(r.id)} disabled={pending} className="text-sky-700 hover:underline disabled:text-slate-300">↻ Retry</button> : null}
+                              {r.status === "updated" ? <span className="text-emerald-600" title="Applied and confirmed by the portal">✓ Applied</span> : null}
+                              {!canEdit && !canApply && !err && r.status !== "updated" ? "—" : null}
+                            </div>
+                          );
+                        })()}
                       </td>
                     </tr>
                     {editId === r.id ? (
@@ -716,9 +748,9 @@ export function ExpAutomationManager({ liveEnabled, credsConfigured, canManageCr
 
       <p className="text-[11px] text-slate-400">
         {autoApply ? (
-          <>Auto-apply is <strong>on</strong>: after filling and reading every field back, the Correction and Duplicate workflows click <strong>Apply Changes</strong>{autoAcknowledge ? <> and tick <strong>Acknowledge/Duplicate Export</strong></> : null} on the live portal, and a row is marked done only when the portal confirms success. Watch the visible browser and keep the Excel row as the source of truth.</>
+          <>Live <strong>Apply Changes is enabled</strong>. Correction and Duplicate rows are filled and read back, then submitted only when you choose to — <strong>Apply selected to portal</strong> (automatic, bulk, sequential) or a row’s <strong>Apply Changes</strong> (manual, after review). A row is marked done only when the portal confirms success, an already-applied row is never re-submitted, and <strong>Acknowledge is never clicked</strong>.</>
         ) : (
-          <>Safety: the Correction and Duplicate workflows search and fill the portal form, then stop — the bot does not click Apply Changes or Acknowledge. Review each prepared form in the visible browser and submit it yourself.</>
+          <>Safety: the Correction and Duplicate workflows search and fill the portal form, then stop — the bot does not click Apply Changes or Acknowledge. Review each prepared form, then submit it yourself. (Enable live Apply with <code>EXP_AUTO_UPDATE</code>.)</>
         )}{" "}
         <Link href="/modules/exp-automation" className="hidden">.</Link>
       </p>
