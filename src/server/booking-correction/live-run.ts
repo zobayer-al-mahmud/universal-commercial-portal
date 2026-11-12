@@ -267,6 +267,13 @@ export async function runLivePortalForDoc(input: {
     const IDENTITY_FIELDS: string[] = ["poNumber", "sku", "frCode"];
     const identityConflicts = (m: MatchResult | null): boolean =>
       !!m && m.comparisons.some((c) => IDENTITY_FIELDS.includes(c.field) && !c.match);
+    // Uppercase-alphanumeric core (same rule selectBooking uses). When the row
+    // carries an FR, only an FR-matching candidate can ever be selected, so a
+    // non-matching candidate's totals are irrelevant — we skip generating its
+    // booking PDF (a slow, timeout-capped race) just to recover them. Selection
+    // still runs on the real FR read, so this never changes which booking wins.
+    const core = (v: string | undefined): string => String(v ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const rowFr = core(input.extraction.frCode);
 
     for (const cand of candidates) {
       // Open each candidate by DIRECT URL (search.shipperId) so EVERY candidate is
@@ -289,8 +296,11 @@ export async function runLivePortalForDoc(input: {
 
       // If the Details DOM read is incomplete, recover the totals from the genuine
       // portal PDF (cached so the chosen candidate reuses it rather than re-downloading).
+      // Skip this for a candidate the row's FR already rules out — its totals can
+      // never make it the selected booking, so the PDF round-trip is pure waste.
+      const couldBeSelected = !rowFr || core(details?.frCode) === rowFr;
       let pdf: PortalPdfCapture | null = null;
-      if (!values.grossWeight || !values.cartons || !values.quantity) {
+      if (couldBeSelected && (!values.grossWeight || !values.cartons || !values.quantity)) {
         await report("generating-pdf", `Portal details incomplete for ${cand.soNumber} — reading its booking PDF`);
         pdf = await generateBookingPdf(cand.soNumber);
         if (pdf) {
@@ -412,12 +422,15 @@ export async function runLivePortalForDoc(input: {
       };
     }
 
-    // STEP: Generating PDF — re-open the chosen booking (we navigated through the
-    // other candidates) and capture its genuine portal PDF.
-    await report("opening-detail", `Opening matched booking ${picked.soNumber}`);
-    await openBookingDetail(picked.soNumber);
+    // STEP: Generating PDF. If the chosen candidate's PDF was already captured
+    // while inspecting it (its DOM totals were incomplete), reuse that exact
+    // document — no need to re-open the booking and re-generate. Only when it was
+    // not captured do we re-open the chosen booking (we navigated through the
+    // other candidates) and generate it now.
     let pdf: Awaited<ReturnType<typeof generateBookingPdf>> = chosen.pdf;
     if (!pdf) {
+      await report("opening-detail", `Opening matched booking ${picked.soNumber}`);
+      await openBookingDetail(picked.soNumber);
       await report("generating-pdf", `Generating the Damco booking PDF for ${picked.soNumber}`);
       pdf = await generateBookingPdf(picked.soNumber);
     }

@@ -260,7 +260,17 @@ async function submitBookingSearch(page: Page): Promise<void> {
       { timeout: env.DAMCO_NAV_TIMEOUT_MS },
     )
     .catch(() => undefined);
-  await page.waitForTimeout(1000);
+  // Let the result rows render before the grid is read. Resolve as soon as a
+  // booking-number link appears (or the explicit no-results text), capped at the
+  // old flat delay — a populated grid is now read without always waiting 1s.
+  await page
+    .waitForFunction(
+      () =>
+        [...document.querySelectorAll("tr a")].some((a) => /^\d{6,}$/.test((a.textContent || "").trim())) ||
+        /No Booking found matching the search criteria/i.test(document.body.innerText),
+      { timeout: 1000 },
+    )
+    .catch(() => undefined);
 }
 
 async function runBookingSearch(page: Page, poNumber: string, countryCode: string): Promise<Awaited<ReturnType<typeof readGrid>>> {
@@ -297,7 +307,10 @@ export async function liveSearchBookings(input: LiveSearchInput): Promise<LiveSe
   const page = await getDamcoPage();
   await page.goto(SEARCH_URL, { waitUntil: "domcontentloaded" });
   await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-  await page.waitForTimeout(1200);
+  // Wait for the search tab bar to attach instead of a flat delay — this resolves
+  // as soon as the page is interactive (openBookingTab then confirms the Booking
+  // field is really usable), so a fast load no longer always costs ~1.2s.
+  await page.waitForSelector("#tab_treetab2", { state: "attached", timeout: env.DAMCO_NAV_TIMEOUT_MS }).catch(() => undefined);
   await page.evaluate("globalThis.__name = globalThis.__name || ((f) => f)");
 
   // Booking tab FIRST, then PO + SKU search. (No shipper/consignee dropdown
@@ -373,8 +386,13 @@ export async function openBookingDetail(bookingNumber: string, shipperId?: strin
   {
     const url = `${VIEW_SO_URL}?so_number=${encodeURIComponent(bookingNumber)}&searchByShipper_id=${encodeURIComponent(shipperId ?? "")}`;
     await page.goto(url, { waitUntil: "domcontentloaded" }).catch(() => undefined);
-    await page.waitForTimeout(1500);
-    if (/ViewSOAction/i.test(page.url())) return true;
+    if (/ViewSOAction/i.test(page.url())) {
+      // Landed on the detail page — wait for a detail marker (Generate-PDF control
+      // or the Details tab) to attach rather than a flat 1.5s. The caller
+      // (readBookingDetails / generateBookingPdf) then drives a page that is ready.
+      await page.waitForSelector("#PDFGenHrefId, #tab_treetab3", { state: "attached", timeout: 4000 }).catch(() => undefined);
+      return true;
+    }
     // Direct nav did not land (session/URL quirk) — fall through to the click path.
   }
   let clicked: boolean;
@@ -401,8 +419,12 @@ export async function openBookingDetail(bookingNumber: string, shipperId?: strin
   }
   if (!clicked) return false;
   await page.waitForLoadState("domcontentloaded").catch(() => undefined);
-  await page.waitForTimeout(2000);
-  return /ViewSOAction/i.test(page.url());
+  // Wait for the detail URL to settle (bounded) instead of a flat 2s, then for a
+  // detail marker to attach so the caller drives a ready page.
+  await page.waitForFunction(() => /ViewSOAction/i.test(location.href), { timeout: 4000 }).catch(() => undefined);
+  if (!/ViewSOAction/i.test(page.url())) return false;
+  await page.waitForSelector("#PDFGenHrefId, #tab_treetab3", { state: "attached", timeout: 4000 }).catch(() => undefined);
+  return true;
 }
 
 /**
@@ -627,7 +649,9 @@ export async function readBookingDetails(): Promise<BookingDetailValues> {
   for (let attempt = 0; attempt < 4; attempt++) {
     await clickDetails();
     await detailsActive();
-    await page.waitForTimeout(900 + attempt * 700);
+    // Short settle for the Details tab's async dynamic fields; escalates only on
+    // retries (when the first read came back without FR or any total).
+    await page.waitForTimeout(400 + attempt * 600);
     raw = await readRaw();
     const got = assembleBookingDetails(raw);
     if (got.frCode || got.quantity || got.grossWeight || got.cartons) break;
