@@ -4,7 +4,8 @@ import { requireSection } from "@/lib/access";
 import { PageHeader, StatusBadge } from "@/components/ui";
 import { isKnownFactory, factoryById } from "@/server/ud-automation/factories";
 import { getUdRecordScoped, loadFieldStates } from "@/server/ud-automation/intake";
-import { bgmeaLiveGate } from "@/server/ud-automation/guards";
+import { bgmeaLiveGate, bgmeaWriteBackGate } from "@/server/ud-automation/guards";
+import { listWriteBackPages } from "@/server/ud-automation/writeback";
 import { UdWorkflow } from "@/components/UdWorkflow";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +20,8 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
 
   const fields = await loadFieldStates(record.id);
   const gate = await bgmeaLiveGate(factoryId);
+  const wbGate = await bgmeaWriteBackGate(factoryId);
+  const writeBackPages = await listWriteBackPages(record.id);
   const factory = factoryById(factoryId)!;
 
   return (
@@ -26,7 +29,7 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
       <PageHeader
         eyebrow={factory.label}
         title={record.title || `UD workflow ${record.id.slice(0, 8)}`}
-        subtitle="Guided, resumable UD preparation. Fill each step manually, import from the Sales Contract / PI, or read-only import from BGMEA — all reviewed before applying. BGMEA access is read-only; nothing is created, edited or submitted there."
+        subtitle="Guided, resumable UD preparation. Fill each step manually, import from the Sales Contract / PI, or read a UD from BGMEA — all reviewed before applying. After review you can explicitly populate & save the BGMEA pages (gated; mock in dev, production disabled). The final submission is always separate and never automatic."
         actions={
           <div className="flex items-center gap-2">
             <StatusBadge status={record.status} />
@@ -44,6 +47,7 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
         sourceDocs={record.documents.filter((d) => d.kind === "sales-contract" || d.kind === "pi").map((d) => ({ id: d.id, kind: d.kind, originalName: d.originalName }))}
         pendingImports={record.imports.filter((i) => i.status === "preview").map((i) => ({ id: i.id, source: i.source, stepKey: i.stepKey, previewJson: i.previewJson }))}
         liveEnabled={gate.liveEnabled}
+        writeBack={{ enabled: wbGate.enabled, allowed: wbGate.allowed, target: wbGate.target, production: wbGate.production, reason: wbGate.reason, pages: writeBackPages }}
       />
     </div>
   );

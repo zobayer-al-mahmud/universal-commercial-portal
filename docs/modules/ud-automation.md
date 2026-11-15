@@ -9,9 +9,11 @@ Sources: `UCP_UD_Preparation_Automation_SRS.docx` (product brief), `UD_Preparati
 
 A **factory-first**, document-driven, **resumable** 12-step workflow that prepares a UD
 record for the BGMEA portal. The operator fills each step manually or imports values
-from the uploaded Sales Contract / PI (reviewed before applying). Every value keeps its
-**provenance**. UCP **never submits** to BGMEA — it fills and reviews only; the operator
-submits in the portal.
+from the uploaded Sales Contract / PI, a read of the UD from BGMEA, or the catalog
+(all reviewed before applying). Every value keeps its **provenance**. After review the
+operator can **explicitly populate + save** the BGMEA pages (gated; mock in dev,
+production disabled). UCP **never submits** — the final submission is always a separate,
+manual action.
 
 ### Factory first (hard rule)
 
@@ -41,10 +43,31 @@ manual entry; `sales-contract` / `pi` only where the SRS permits auto-population
 
 ## Data model (`prisma/schema.prisma`)
 
-`Factory` → `UdRecord` → `UdStep` (per-step status/mode) · `UdFieldValue` (value +
-provenance: `source`, `sourceRef`, `confidence`, `conflict`, `edited`) · `UdBtbLc` ·
-`UdDocument` (SC/PI/supporting, immutable under `STORAGE_ROOT`) · `UdImportBatch`
-(preview-before-apply) · `UdStepEvent` (append-only execution log, no secrets).
+`Factory` → `UdCatalogEntry` (per-factory UD list) + `UdCatalogImport` (import
+history/report) · `Factory` → `UdRecord` → `UdStep` (per-step status/mode) ·
+`UdFieldValue` (value + provenance: `source`, `sourceRef`, `confidence`, `conflict`,
+`edited`) · `UdBtbLc` · `UdDocument` (SC/PI/supporting, immutable under `STORAGE_ROOT`) ·
+`UdImportBatch` (preview-before-apply) · `UdWriteBackPage` (per-page populate/save status) ·
+`UdStepEvent` (append-only execution log, no secrets).
+
+## UD catalog (factory-wise UD list)
+
+The operator's first move inside a factory is to pick a UD. The per-factory
+**catalog** (`UdCatalogEntry`, unique `(factoryId, trackingNo)`) is the searchable
+list of known UD tracking numbers, imported from the BGMEA UD-list export
+(`Tracking No / UD Date / Membership ID`).
+
+- Import: `POST /api/ud/catalog` (`.txt` / `.csv` / `.tsv`), scoped to the selected
+  factory. `parseUdCatalog` (pure, unit-tested) resolves each row's factory from its
+  **own data** (membership id, else the digits after `UD`), cross-checks the section
+  header, and **reports** duplicates and malformed rows instead of dropping them. A
+  re-import updates an existing entry's date rather than creating a second row. Rows for
+  other factories are counted and reported, not imported (strict factory isolation); each
+  import is logged in `UdCatalogImport`.
+- Pick + open: `UdCatalogPanel` searches the catalog and opens a UD. Opening a UD that
+  already has a workflow record **resumes** it (never a duplicate); otherwise it creates
+  an `existing`-mode `UdRecord`. The initial 1095/4148/4149/2966 list (364 UDs) is loaded
+  in dev; the file itself is business data and is **not** committed.
 
 ## Population paths (kept separate + provenance-tracked)
 
@@ -67,12 +90,33 @@ differing non-empty values become **conflicts** that are never overwritten witho
 explicit choice; low-confidence (<0.75) values are flagged for review. Imported, edited
 and manual values stay visually distinct.
 
+## BGMEA write-back (populate + save) — Q-UD-13
+
+After the operator reviews the UCP values, they can **explicitly** populate + save the UD's
+BGMEA pages (`writeback.ts`). It is fail-closed (`bgmeaWriteBackGate`):
+
+- `BGMEA_WRITEBACK_ENABLED` (default off) gates the feature. `BGMEA_WRITEBACK_TARGET`
+  picks **`mock`** (simulated, no portal — how it is developed/verified; a page "saves"
+  when its required fields are satisfied) or **`nonprod`** (real driver against a confirmed
+  non-production `BGMEA_NONPROD_URL`; stays fail-closed until the per-page WRITE selector map
+  is confirmed).
+- **Production write-back is disabled** — a `nonprod` run refuses any production host unless
+  `BGMEA_ALLOW_PRODUCTION_WRITE` is set, which stays off until the owner authorizes it.
+- Per-page status (`UdWriteBackPage`, unique per record+step) drives the progress UI and lets a
+  run **resume/retry** only the pages that are not yet saved, without duplicating.
+- The **final submission is a separate action and is never automatic** (`requestBgmeaSubmit`
+  records intent and tells the operator to submit in the portal; `UD_NEVER_AUTO_SUBMITS`). The
+  guard distinguishes page-**save** (allowed under a confirmed write-back) from final-**submit**
+  (never clicked by automation, in any context).
+
 ## Security & safety
 
-- **Read-only BGMEA access** — the portal is only ever read (scrape). UCP never creates,
-  edits, fills or submits a portal record (`UD_NEVER_AUTO_SUBMITS`, no flag enables it; the
-  scraper performs no writes). Live portal access is fail-closed behind `BGMEA_LIVE_ENABLED`
-  (default off) + per-factory creds, and the read map is fail-closed until confirmed.
+- **Reads are read-only; writes are explicit, gated and non-production.** Reading a UD
+  (scrape) never writes. Write-back populates/saves pages only on explicit confirmation,
+  only against the mock or a confirmed non-production environment, and **never** submits
+  (`UD_NEVER_AUTO_SUBMITS`, no flag enables auto-submit). Live access is fail-closed behind
+  `BGMEA_LIVE_ENABLED` + per-factory creds; the read and write selector maps are fail-closed
+  until confirmed; production write-back is disabled.
 - **Credentials** are per-factory, encrypted at rest (`PortalCredential` = `bgmea:<id>`,
   AES-256-GCM) or per-factory `.env` in dev (placeholders only in `.env.example`). Never
   in source, logs, prompts, or client bundles; read only server-side. Passwords shared in
@@ -81,12 +125,16 @@ and manual values stay visually distinct.
 
 ## Open decisions
 
-See `docs/source-analysis/BUSINESS_DECISIONS_REQUIRED.md` → Q-UD-01…Q-UD-12.
+See `docs/source-analysis/BUSINESS_DECISIONS_REQUIRED.md` → Q-UD-01…Q-UD-13 (Q-UD-13 resolved).
 
 ## Status
 
-Scaffold implemented (factory-first workflow, manual entry, SC/PI import with provenance,
-review, per-factory encrypted credentials, fail-closed gate). Pending: confirmed BGMEA
-Excel template + field/dropdown/validation map, the 8 supporting-document rules, OCR
-wiring for scanned SC/PI, and the live portal driver (selectors). **Not deployed** —
-awaiting explicit approval, and to be released separately from other process updates.
+Implemented (factory-first workflow, per-factory UD catalog import + search/open, manual
+entry, SC/PI import with provenance, read-only BGMEA scrape, review, **explicit mock
+write-back** with per-page status + resume/retry and a separate never-automatic submission,
+per-factory encrypted credentials, fail-closed gates). Pending: confirmed BGMEA Excel template
++ field/dropdown/validation map, the read and **write** selector maps, a confirmed
+non-production environment (nonprod write-back is fail-closed until then), the 8
+supporting-document rules, OCR for scanned SC/PI, and owner authorization for any production
+write-back. **Not deployed** — awaiting explicit approval, and to be released separately from
+other process updates.

@@ -4,6 +4,7 @@ import { audit } from "@/lib/audit";
 import { isKnownFactory, FACTORIES } from "./factories";
 import { UD_STEPS, stepByKey, type UdSource } from "./steps";
 import { applyDetected, computeConflicts, foldStates } from "./provenance";
+import { parseUdCatalog, type CatalogParseResult } from "./catalog";
 import type { DetectedValue, ImportPreview, UdFieldState } from "./types";
 
 /**
@@ -88,6 +89,167 @@ export async function getUdRecordScoped(id: string, factoryId: string) {
   });
   if (!record || record.factoryId !== factoryId) return null;
   return record;
+}
+
+// --------------------------------------------------------------------------
+// UD catalog (per-factory list of known UD tracking numbers) — import + search
+// --------------------------------------------------------------------------
+
+export interface CatalogImportReport {
+  factoryId: string;
+  totalRows: number;
+  imported: number;
+  updated: number;
+  unchanged: number;
+  duplicates: number;
+  malformed: number;
+  otherFactory: number;
+  duplicateRows: { trackingNo: string; line: number; firstSeenLine: number }[];
+  malformedRows: { line: number; raw: string; reason: string }[];
+  otherFactoryCounts: { factoryId: string; rows: number }[];
+}
+
+/**
+ * Import a BGMEA UD-list export for ONE factory. Rows for other factories in the
+ * same file are counted and reported but not imported here (import each factory
+ * from its own workspace) so the factory scoping stays strict. Duplicates and
+ * malformed rows are reported, never silently dropped. A re-import updates an
+ * existing entry's date rather than creating a second row.
+ */
+export async function importCatalog(input: {
+  factoryId: string;
+  text: string;
+  originalName?: string;
+  sha256?: string;
+  actor: string;
+}): Promise<CatalogImportReport | { error: string }> {
+  if (!isKnownFactory(input.factoryId)) return { error: "Unknown factory." };
+
+  const parsed: CatalogParseResult = parseUdCatalog(input.text);
+  const mine = parsed.entries.filter((e) => e.factoryId === input.factoryId);
+  const otherEntries = parsed.entries.filter((e) => e.factoryId !== input.factoryId);
+  const myDuplicates = parsed.duplicates.filter((d) => d.entry.factoryId === input.factoryId);
+
+  let imported = 0;
+  let updated = 0;
+  let unchanged = 0;
+
+  for (const e of mine) {
+    const existing = await prisma.udCatalogEntry.findUnique({
+      where: { factoryId_trackingNo: { factoryId: input.factoryId, trackingNo: e.trackingNo } },
+    });
+    if (!existing) {
+      await prisma.udCatalogEntry.create({
+        data: {
+          factoryId: input.factoryId,
+          trackingNo: e.trackingNo,
+          udDate: e.udDate,
+          udDateIso: e.udDateIso,
+          membershipId: e.membershipId,
+          source: "import",
+          importedBy: input.actor,
+        },
+      });
+      imported += 1;
+    } else if (existing.udDate !== e.udDate || existing.udDateIso !== e.udDateIso) {
+      await prisma.udCatalogEntry.update({
+        where: { id: existing.id },
+        data: { udDate: e.udDate, udDateIso: e.udDateIso, membershipId: e.membershipId, importedBy: input.actor },
+      });
+      updated += 1;
+    } else {
+      unchanged += 1;
+    }
+  }
+
+  const otherFactoryCounts = Object.entries(
+    otherEntries.reduce<Record<string, number>>((acc, e) => {
+      acc[e.factoryId] = (acc[e.factoryId] ?? 0) + 1;
+      return acc;
+    }, {}),
+  ).map(([factoryId, rows]) => ({ factoryId, rows }));
+
+  const report: CatalogImportReport = {
+    factoryId: input.factoryId,
+    totalRows: parsed.entries.length + parsed.duplicates.length + parsed.errors.length,
+    imported,
+    updated,
+    unchanged,
+    duplicates: myDuplicates.length,
+    malformed: parsed.errors.length,
+    otherFactory: otherEntries.length,
+    duplicateRows: myDuplicates.map((d) => ({ trackingNo: d.entry.trackingNo, line: d.entry.line, firstSeenLine: d.firstSeenLine })),
+    malformedRows: parsed.errors.slice(0, 200),
+    otherFactoryCounts,
+  };
+
+  await prisma.udCatalogImport.create({
+    data: {
+      factoryId: input.factoryId,
+      originalName: input.originalName ?? "",
+      sha256: input.sha256 ?? "",
+      totalRows: report.totalRows,
+      imported,
+      updated,
+      unchanged,
+      duplicates: report.duplicates,
+      malformed: report.malformed,
+      otherFactory: report.otherFactory,
+      reportJson: JSON.stringify(report),
+      createdBy: input.actor,
+    },
+  });
+  await audit({ entityType: "job", entityId: `ud-catalog:${input.factoryId}`, action: "ud.catalog.imported", actor: input.actor, data: { imported, updated, unchanged, duplicates: report.duplicates, malformed: report.malformed, otherFactory: report.otherFactory } });
+  return report;
+}
+
+export async function catalogCount(factoryId: string): Promise<number> {
+  if (!isKnownFactory(factoryId)) return 0;
+  return prisma.udCatalogEntry.count({ where: { factoryId } });
+}
+
+/** Search a factory's catalog by tracking number (most recent UD first). */
+export async function listCatalog(factoryId: string, query = "", take = 50): Promise<{ trackingNo: string; udDate: string; udDateIso: string; hasRecord: boolean }[]> {
+  if (!isKnownFactory(factoryId)) return [];
+  const q = query.trim();
+  const rows = await prisma.udCatalogEntry.findMany({
+    where: { factoryId, ...(q ? { trackingNo: { contains: q.toUpperCase() } } : {}) },
+    orderBy: [{ udDateIso: "desc" }, { trackingNo: "desc" }],
+    take,
+  });
+  // Mark which catalog UDs already have a workflow record in this factory.
+  const existing = await prisma.udRecord.findMany({
+    where: { factoryId, udNumber: { in: rows.map((r) => r.trackingNo) } },
+    select: { udNumber: true },
+  });
+  const withRecord = new Set(existing.map((r) => r.udNumber));
+  return rows.map((r) => ({ trackingNo: r.trackingNo, udDate: r.udDate, udDateIso: r.udDateIso, hasRecord: withRecord.has(r.trackingNo) }));
+}
+
+/**
+ * Open the workflow for a catalog UD: reuse an existing record for that UD in the
+ * same factory (resume, never duplicate) or create a new "existing"-mode record.
+ */
+export async function openCatalogUd(input: { factoryId: string; trackingNo: string; actor: string }): Promise<{ id: string; created: boolean } | { error: string }> {
+  if (!isKnownFactory(input.factoryId)) return { error: "Unknown factory." };
+  const trackingNo = input.trackingNo.trim().toUpperCase();
+  if (!trackingNo) return { error: "Select a UD number." };
+
+  const entry = await prisma.udCatalogEntry.findUnique({
+    where: { factoryId_trackingNo: { factoryId: input.factoryId, trackingNo } },
+  });
+  if (!entry) return { error: "That UD is not in this factory's catalog." };
+
+  const existing = await prisma.udRecord.findFirst({
+    where: { factoryId: input.factoryId, udNumber: trackingNo },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true },
+  });
+  if (existing) return { id: existing.id, created: false };
+
+  const res = await createUdRecord({ factoryId: input.factoryId, mode: "existing", udNumber: trackingNo, title: trackingNo, actor: input.actor });
+  if ("error" in res) return res;
+  return { id: res.id, created: true };
 }
 
 // --------------------------------------------------------------------------

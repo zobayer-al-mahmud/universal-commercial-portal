@@ -1324,8 +1324,53 @@ model Factory {
   updatedAt DateTime @updatedAt
 
   udRecords UdRecord[]
+  catalog   UdCatalogEntry[]
 
   @@index([active])
+}
+
+// The per-factory catalog of known UD tracking numbers, imported from the BGMEA
+// UD list export (Tracking No / UD Date / Membership ID). This is the lookup the
+// operator searches to pick a UD before fetching its details — it is NOT a
+// workflow instance (that is UdRecord). Scoped to one factory; unique per
+// (factory, tracking no) so a re-import updates rather than duplicates.
+model UdCatalogEntry {
+  id            String   @id @default(cuid())
+  factoryId     String
+  factory       Factory  @relation(fields: [factoryId], references: [id], onDelete: Cascade)
+  trackingNo    String // UD tracking number, e.g. "UD10952026004"
+  udDate        String   @default("") // as-listed date (dd/mm/yyyy)
+  udDateIso     String   @default("") // normalised yyyy-mm-dd for sorting (blank if unparseable)
+  membershipId  String   @default("") // as-listed membership id (equals factoryId)
+  source        String   @default("import") // import | manual
+  importBatchId String   @default("")
+  importedBy    String   @default("system")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([factoryId, trackingNo])
+  @@index([factoryId, udDateIso])
+}
+
+// Append-only record of each catalog import: counts + a JSON report of the
+// duplicates and malformed rows that were reported (never silently dropped).
+model UdCatalogImport {
+  id           String   @id @default(cuid())
+  factoryId    String
+  originalName String   @default("")
+  sha256       String   @default("")
+  totalRows    Int      @default(0)
+  imported     Int      @default(0) // new rows inserted
+  updated      Int      @default(0) // existing rows whose date changed
+  unchanged    Int      @default(0)
+  duplicates   Int      @default(0) // in-file duplicate tracking numbers
+  malformed    Int      @default(0)
+  otherFactory Int      @default(0) // rows belonging to a different factory (skipped)
+  reportJson   String   @default("{}")
+  createdBy    String   @default("system")
+  createdAt    DateTime @default(now())
+
+  @@index([factoryId, createdAt])
 }
 
 // One UD preparation workflow instance, owned by exactly one factory.
@@ -1342,15 +1387,38 @@ model UdRecord {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  steps     UdStep[]
-  fields    UdFieldValue[]
-  btbLcs    UdBtbLc[]
-  documents UdDocument[]
-  imports   UdImportBatch[]
-  events    UdStepEvent[]
+  steps          UdStep[]
+  fields         UdFieldValue[]
+  btbLcs         UdBtbLc[]
+  documents      UdDocument[]
+  imports        UdImportBatch[]
+  events         UdStepEvent[]
+  writeBackPages UdWriteBackPage[]
 
   @@index([factoryId, status])
   @@index([udNumber])
+}
+
+// Per-page status of BGMEA write-back (populate + save) for a UD (Q-UD-13). One row
+// per (record, step) so a run can RESUME/RETRY without duplicating and the UI can
+// show page-level loading/success/failure. Write-back is gated + user-confirmed and
+// never performs the final portal submission (that is a separate, manual action).
+model UdWriteBackPage {
+  id        String    @id @default(cuid())
+  recordId  String
+  record    UdRecord  @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  stepKey   String
+  status    String    @default("pending") // pending | saving | saved | failed | skipped
+  target    String    @default("mock") // mock | nonprod (never production)
+  message   String    @default("")
+  attempts  Int       @default(0)
+  savedAt   DateTime?
+  updatedBy String    @default("")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([recordId, stepKey])
+  @@index([recordId])
 }
 
 // Per-section status for the 12 workflow steps (progress + resume + entry mode).

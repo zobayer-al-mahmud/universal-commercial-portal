@@ -270,6 +270,20 @@ const schema = z.object({
   // Max size (MB) for an uploaded Sales Contract / PI / BGMEA workbook / supporting doc.
   BGMEA_MAX_FILE_MB: z.coerce.number().positive().default(25),
 
+  // --- BGMEA write-back (populate + save portal pages) ----------------------
+  // Resolves Q-UD-13: populate/save is an EXPLICIT, user-confirmed action; final
+  // submission is a SEPARATE action and is never automatic. Fail-closed:
+  //   * BGMEA_WRITEBACK_ENABLED (default false) must be on for the feature at all.
+  //   * BGMEA_WRITEBACK_TARGET selects "mock" (simulated, no portal — the dev/verify
+  //     path) or "nonprod" (a confirmed non-production BGMEA at BGMEA_NONPROD_URL).
+  //   * PRODUCTION write-back stays DISABLED: a nonprod run refuses any URL on the
+  //     production host unless BGMEA_ALLOW_PRODUCTION_WRITE is true, which must not be
+  //     set without the owner's explicit authorization.
+  BGMEA_WRITEBACK_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  BGMEA_WRITEBACK_TARGET: z.enum(["mock", "nonprod"]).default("mock"),
+  BGMEA_NONPROD_URL: z.string().optional().or(z.literal("")),
+  BGMEA_ALLOW_PRODUCTION_WRITE: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+
   // Per-factory portal credentials — DEV fallback only (the preferred source is
   // the encrypted PortalCredential store, keyed "bgmea:<factoryId>", managed in
   // the UI). Variable names use the STABLE BGMEA factory id, never the display

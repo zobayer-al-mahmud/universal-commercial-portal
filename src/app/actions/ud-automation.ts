@@ -15,9 +15,12 @@ import {
   confirmReview,
   createImportPreview,
   findDuplicateUd,
+  listCatalog,
+  openCatalogUd,
 } from "@/server/ud-automation/intake";
 import { saveBgmeaCredentials } from "@/server/ud-automation/credentials";
 import { scrapeUd } from "@/server/ud-automation/scrape";
+import { writeBackUd, requestBgmeaSubmit } from "@/server/ud-automation/writeback";
 
 /**
  * UD Automation server actions. Every mutation checks UD_RUN server-side and, for
@@ -134,6 +137,47 @@ export async function fetchFromBgmeaAction(input: { recordId: string; factoryId:
   });
   revalidatePath(`/ud-automation/${input.recordId}`);
   return { ok: true as const, message: scrape.message, batchId, detectedCount: preview.detected.length, conflicts: preview.conflicts.length, duplicates: dups.length };
+}
+
+/** Search a factory's UD catalog (read-only lookup for the UD picker). */
+export async function searchCatalogAction(input: { factoryId: string; query: string }) {
+  const auth = await requireUd();
+  if ("error" in auth) return { error: auth.error };
+  if (!isKnownFactory(input.factoryId)) return { error: "Unknown factory." };
+  const rows = await listCatalog(input.factoryId, input.query);
+  return { rows };
+}
+
+/** Open (resume) or create the workflow record for a catalog UD, then navigate. */
+export async function openCatalogUdAction(input: { factoryId: string; trackingNo: string }) {
+  const auth = await requireUd();
+  if ("error" in auth) return auth;
+  const res = await openCatalogUd({ factoryId: input.factoryId, trackingNo: input.trackingNo, actor: auth.actor });
+  if ("id" in res) revalidatePath("/ud-automation");
+  return res;
+}
+
+/**
+ * Populate + SAVE the UD's pages to BGMEA — explicit, user-confirmed (Q-UD-13).
+ * `confirm` must be true (the UI asks first). Develops/verifies against the mock;
+ * fail-closed otherwise. Never performs the final submission.
+ */
+export async function writeBackToBgmeaAction(input: { recordId: string; factoryId: string; confirm: boolean; onlyFailed?: boolean }) {
+  const auth = await requireUd();
+  if ("error" in auth) return { ok: false as const, message: auth.error };
+  if (!(await assertRecordInFactory(input.recordId, input.factoryId))) return { ok: false as const, message: "Record not found for this factory." };
+  if (!input.confirm) return { ok: false as const, message: "Write-back needs your explicit confirmation." };
+  const res = await writeBackUd({ recordId: input.recordId, factoryId: input.factoryId, actor: auth.actor, onlyFailed: input.onlyFailed });
+  revalidatePath(`/ud-automation/${input.recordId}`);
+  return res;
+}
+
+/** Separate, never-automatic final-submission action (records intent; does not submit). */
+export async function requestBgmeaSubmitAction(input: { recordId: string; factoryId: string }) {
+  const auth = await requireUd();
+  if ("error" in auth) return { ok: false as const, message: auth.error };
+  if (!(await assertRecordInFactory(input.recordId, input.factoryId))) return { ok: false as const, message: "Record not found for this factory." };
+  return requestBgmeaSubmit({ recordId: input.recordId, factoryId: input.factoryId, actor: auth.actor });
 }
 
 export async function saveBgmeaCredentialsAction(input: { factoryId: string; username: string; password: string }) {

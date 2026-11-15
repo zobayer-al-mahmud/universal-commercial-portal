@@ -62,6 +62,7 @@ pending — never guessed.
 | Q-UD-10 | Extraction-confidence measurement + which values need mandatory human review | Low-confidence (<0.75) extracted values flagged `conflict` for review; threshold in `provenance.ts`. | Business owner |
 | Q-UD-11 | Whether/how ERP LC break-up feeds consumption (~30% incorrect per workflow doc) | Consumption is manual only. | Business owner + ERP decision |
 | Q-UD-12 | Pin Sales Contract / PI label rules against real sample documents | Indicative label rules in `extract.ts`; detections flagged low-confidence until confirmed. | Sample SC/PI documents |
+| Q-UD-13 | **BGMEA write-back vs read-only.** Should UCP populate/save BGMEA pages, or only read? | **RESOLVED (2026-11-15):** write-back is implemented as an **explicit, user-confirmed** populate+save action; **final submission is a separate action, never automatic** (`UD_NEVER_AUTO_SUBMITS`). Developed/verified against a **mock** adapter; `BGMEA_WRITEBACK_TARGET=nonprod` runs against a confirmed non-production URL only. **Production write-back is disabled** (`bgmeaWriteBackGate` refuses a production host unless `BGMEA_ALLOW_PRODUCTION_WRITE`, which stays off until explicit owner authorization). The guard now distinguishes page-SAVE (allowed under write-back) from final-SUBMIT (never automated). Still pending: the per-page BGMEA **WRITE** selector map (nonprod stays fail-closed until confirmed) and a confirmed non-prod environment. | Owner (prod authorization) + portal WRITE map |
 
 ## Credential handling (immediate)
 

@@ -3,12 +3,13 @@ import { requireSection } from "@/lib/access";
 import { PageHeader, StatusBadge } from "@/components/ui";
 import { env } from "@/lib/env";
 import { isKnownFactory, factoryById } from "@/server/ud-automation/factories";
-import { listFactories, listUdRecords } from "@/server/ud-automation/intake";
+import { listFactories, listUdRecords, catalogCount } from "@/server/ud-automation/intake";
 import { getBgmeaCredentialStatus } from "@/server/ud-automation/credentials";
 import { bgmeaLiveGate } from "@/server/ud-automation/guards";
 import { UdNewRecord } from "@/components/UdNewRecord";
 import { UdCredentialsPanel } from "@/components/UdCredentialsPanel";
 import { UdFactorySelect } from "@/components/UdFactorySelect";
+import { UdCatalogPanel } from "@/components/UdCatalogPanel";
 
 export const dynamic = "force-dynamic";
 
@@ -41,6 +42,7 @@ export default async function UdAutomationPage({ searchParams }: { searchParams:
   const canManageCreds = role === "ADMIN" || role === "COMMERCIAL";
   const credStatus = await getBgmeaCredentialStatus(selected);
   const gate = await bgmeaLiveGate(selected);
+  const udCatalogCount = await catalogCount(selected);
 
   return (
     <div>
@@ -56,9 +58,13 @@ export default async function UdAutomationPage({ searchParams }: { searchParams:
       />
 
       <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-        BGMEA access is read-only — UD Automation reads a UD&apos;s data to import into UCP (with review, duplicate and conflict checks) and never creates, edits or submits a portal record.
+        UD Automation reads a UD&apos;s data from BGMEA to import into UCP (with review, duplicate and conflict checks). After review you can explicitly populate &amp; save the BGMEA pages; the final submission is always a separate, manual step — UCP never submits automatically. Write-back is developed and verified against a mock and production write-back is disabled.
         {!gate.liveEnabled ? " Live portal access is disabled (fail-closed)." : ""}
-        {" "}The BGMEA read map, Excel auto-fill template and exact portal fields are pending confirmation, so those are shown as pending and field lists are indicative.
+        {" "}The BGMEA read/write map, Excel auto-fill template and exact portal fields are pending confirmation, so those are shown as pending and field lists are indicative.
+      </div>
+
+      <div className="mb-4">
+        <UdCatalogPanel factoryId={selected} factoryLabel={factory.label} count={udCatalogCount} />
       </div>
 
       <div className="mb-6 grid gap-4 lg:grid-cols-2">
