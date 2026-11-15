@@ -124,6 +124,16 @@ export async function capturePortalDump(page: Page): Promise<PortalDump> {
       }
       const label = labelFor(el);
       const region = regionFor(el);
+      // NEVER capture secrets. A password-type input — or any field that looks like
+      // a password/OTP/secret by id, name or label — has its value dropped here, at
+      // the single point of capture, so a portal password (e.g. the login form or a
+      // password-change prompt the user is on) can never reach the process log
+      // (summarizeDump → "Search result →" in All Processes), the dump summary, or
+      // the on-disk diagnostics JSON. Redaction only blanks a diagnostic value; it
+      // cannot affect readiness (record fields: Invoice No/Commodity/Quantity).
+      if (type === "password" || /pass|pwd|passwd|secret|otp/i.test(`${id} ${name} ${label}`)) {
+        value = value ? "[redacted]" : "";
+      }
       // A search field: id ends with a trailing digit variant (Pnn_X2) OR the
       // enclosing region/label mentions "search", OR it is one of the identifier
       // fields the search panel owns.
