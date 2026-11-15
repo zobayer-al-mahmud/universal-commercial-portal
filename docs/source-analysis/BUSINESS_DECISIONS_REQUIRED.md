@@ -39,7 +39,37 @@ money, shipment allocation, contract revisions, or an external record **fails cl
 | Q-PORT-01 | H&M / BB / Damco | In-scope processes, field lists, authorisation | Blocked; no live action. |
 | Q-SEC-01 | Common | Role assignment rules, retention periods, notification policy | Least-privilege baseline + 7-yr retention noted (SC-NFR-07); not enforced at storage yet. |
 
+## UD Automation (BGMEA UD Preparation) — from UCP_UD_Preparation_Automation_SRS.docx + UD_Preparation_Workflow_BGMEA.docx
+
+Each decision lists the safe behaviour implemented today. Automatic field population
+is restricted to the uploaded Sales Contract + PI (SRS §4); the BGMEA Excel auto-fill
+path is an additional, separate source whose template is unconfirmed. Nothing is ever
+auto-submitted to BGMEA (hard invariant); live portal driving is fail-closed behind
+`BGMEA_LIVE_ENABLED`. Fields/sections whose rules are unknown are kept manual or marked
+pending — never guessed.
+
+| ID | Question | Safe behaviour today | Owner / config point |
+|----|----------|----------------------|----------------------|
+| Q-UD-01 | Authoritative BGMEA Excel template per factory (sheets, columns, formats, size limits) | No workbook format invented; Excel auto-fill shown as "pending template"; only SC/PI PDF import is active. | Business owner + confirmed sample workbook per factory |
+| Q-UD-02 | Which portal sections support Excel auto-fill vs must stay manual | Every data step marked `excelSupport: "unconfirmed"` in `src/server/ud-automation/steps.ts`. | Portal inspection (authenticated/sample) |
+| Q-UD-03 | New UD vs update existing UD criteria; amendment handling; approval steps | Operator picks new/existing at step 1; no amendment/approval automation. | Business owner (workflow doc flags this undefined) |
+| Q-UD-04 | BTB-LC ↔ UD linking; amendment mapping/validation; ERP sourcing | BTB LCs are linked/created manually (`UdBtbLc`, `source: manual`); ERP sourcing not wired. | Business owner + ERP integration decision |
+| Q-UD-05 | Conflict precedence SC vs PI; how BGMEA-Excel interacts with SC/PI | Every value carries provenance; differing values raise a review conflict, never silent merge (`provenance.ts`). | Business owner |
+| Q-UD-06 | Export Invoice use for notify-party verification (SRS restricts auto-pop to SC/PI) | Notify party auto-fills from SC only; Export Invoice not used as a source. | Business owner (SRS vs workflow conflict) |
+| Q-UD-07 | Authoritative list of the 8 supporting documents + file constraints | Free-form "supporting" uploads; no list/type/size rules enforced beyond `BGMEA_MAX_FILE_MB`. | Business owner |
+| Q-UD-08 | Save/resume/retry/timeout/partial-failure for live portal driving | Workflow is resumable + append-only event log; no live driver implemented (fail-closed). | Business owner + portal behaviour |
+| Q-UD-09 | Exact BGMEA field requirements, dropdown choices, conditional behaviour, validation per factory | Field lists in `steps.ts` are indicative; per-factory differences tracked, not assumed identical. | Portal inspection per factory |
+| Q-UD-10 | Extraction-confidence measurement + which values need mandatory human review | Low-confidence (<0.75) extracted values flagged `conflict` for review; threshold in `provenance.ts`. | Business owner |
+| Q-UD-11 | Whether/how ERP LC break-up feeds consumption (~30% incorrect per workflow doc) | Consumption is manual only. | Business owner + ERP decision |
+| Q-UD-12 | Pin Sales Contract / PI label rules against real sample documents | Indicative label rules in `extract.ts`; detections flagged low-confidence until confirmed. | Sample SC/PI documents |
+
 ## Credential handling (immediate)
 
 The checklist document exposed live passwords for three portals. **Rotate them.**
 They are excluded from this repository and must live only in a secrets manager.
+
+**UD Automation (2026-11-15):** four BGMEA factory passwords were pasted into a chat
+session. **Rotate all four.** They were never stored in the repo, env, logs, or memory,
+and are never used to sign in. BGMEA credentials are entered only via the encrypted
+in-app per-factory panel (or per-factory `.env` in dev, placeholders in `.env.example`),
+and are isolated per factory (`PortalCredential` portal = `bgmea:<factoryId>`).

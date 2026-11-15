@@ -37,6 +37,8 @@ export default async function ModulePage({ params }: { params: { key: string } }
   // with "Open Customs Invoices →" and an empty "Recent jobs" panel
   // (user rule 2026-10-28).
   if (module.key === "customs-invoice") redirect("/customs-invoice");
+  // UD Automation has its own factory-first workspace (like Sales Contract).
+  if (module.key === "ud-automation") redirect("/ud-automation");
 
 
   if (module.key === "pdf-combiner") {

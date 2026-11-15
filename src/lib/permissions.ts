@@ -17,6 +17,7 @@ export const PERMISSIONS = {
   PDF_COMBINE: "pdf.combine",
   CONTAINER_SEARCH: "container.search",
   EXP_RUN: "exp.run",
+  UD_RUN: "ud.run",
   REVIEW_READ: "review.read",
   REVIEW_RESOLVE: "review.resolve",
   CONTRACT_APPROVE: "contract.approve",
@@ -45,6 +46,7 @@ export const PERMISSION_DESCRIPTIONS: Record<PermissionKey, string> = {
   [PERMISSIONS.PDF_COMBINE]: "Run the PDF Combiner and download combined PDFs",
   [PERMISSIONS.CONTAINER_SEARCH]: "Run CTG Port container searches and download the result PDF",
   [PERMISSIONS.EXP_RUN]: "Run EXP Automation (fill/verify EXP corrections & duplicates, download EXP PDFs)",
+  [PERMISSIONS.UD_RUN]: "Run UD Automation (prepare BGMEA UD records: factory-scoped, fill/review only — never submits)",
   [PERMISSIONS.REVIEW_READ]: "View the review queue",
   [PERMISSIONS.REVIEW_RESOLVE]: "Resolve / reject review tickets",
   [PERMISSIONS.CONTRACT_APPROVE]: "Approve a draft Sales Contract for submission",
@@ -78,6 +80,7 @@ export const ROLE_PERMISSIONS: Record<string, PermissionKey[]> = {
     PERMISSIONS.PDF_COMBINE,
     PERMISSIONS.CONTAINER_SEARCH,
     PERMISSIONS.EXP_RUN,
+    PERMISSIONS.UD_RUN,
   ],
   MERCHANDISER: [
     PERMISSIONS.DASHBOARD_VIEW,

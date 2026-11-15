@@ -24,6 +24,15 @@ const MODULES = [
   { key: "booking-correction", name: "Booking Correction", sortOrder: 7, status: "active", description: "Match packing-list weights, cartons and quantities against bookings and return verified PDFs." },
   { key: "container", name: "Container", sortOrder: 8, status: "active", description: "Search a container on the CTG Port system, verify the record, and capture the result as a PDF." },
   { key: "exp-automation", name: "EXP Automation", sortOrder: 9, status: "active", description: "Bangladesh Bank EXP portal: fill & verify Issued EXP Corrections and Duplicate EXP Reporting (never submits), and bulk-download EXP PDFs from Excel." },
+  { key: "ud-automation", name: "UD Automation", sortOrder: 10, status: "active", description: "BGMEA UD Preparation: factory-first, resumable 12-step workflow. Fill manually or import from Sales Contract / PI (review before apply); provenance-tracked; never auto-submits to BGMEA." },
+];
+
+// The four BGMEA factory accounts (stable ids — see src/server/ud-automation/factories.ts).
+const FACTORIES = [
+  { id: "1095", name: "ABM FASHIONS LTD.", sortOrder: 0 },
+  { id: "4148", name: "ANANTA GARMENTS LTD.", sortOrder: 1 },
+  { id: "4149", name: "ANANTA JEANS WEAR LTD.", sortOrder: 2 },
+  { id: "2966", name: "ANANTA SPORTSWEAR LTD", sortOrder: 3 },
 ];
 
 const ADAPTERS = [
@@ -91,6 +100,15 @@ async function main() {
   // Modules
   for (const m of MODULES) {
     await prisma.module.upsert({ where: { key: m.key }, update: m, create: m });
+  }
+
+  // BGMEA factories (UD Automation) — upsert by stable id; never store credentials here.
+  for (const f of FACTORIES) {
+    await prisma.factory.upsert({
+      where: { id: f.id },
+      update: { name: f.name, sortOrder: f.sortOrder, active: true },
+      create: { id: f.id, name: f.name, sortOrder: f.sortOrder, active: true },
+    });
   }
 
   // Integration adapters (all mock/not configured by default)

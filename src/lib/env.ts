@@ -252,6 +252,37 @@ const schema = z.object({
   EXP_INSERT_CHUNK: z.coerce.number().int().positive().default(500),
   // Max size (MB) for an uploaded EXP .xlsx.
   EXP_MAX_FILE_MB: z.coerce.number().positive().default(25),
+
+  // --- UD Automation (BGMEA UD Preparation portal) --------------------------
+  // The BGMEA portal is driven per FACTORY (four accounts). Live driving is
+  // fail-closed: nothing is submitted to BGMEA automatically, and when
+  // BGMEA_LIVE_ENABLED is off the module fills/reviews only and never touches a
+  // production record. The portal URL/selectors are PENDING confirmation against
+  // an authenticated session (the operator signs in; UCP never enters chat creds).
+  BGMEA_PORTAL_URL: z.string().default("https://bgmea.org/Account/Login?ReturnUrl=%2F"),
+  BGMEA_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
+  // Visible browser for the automation (own CDP port + profile so it never clashes
+  // with the Damco/Container/EXP windows). Reuses the shared Chromium when blank.
+  BGMEA_BROWSER_PATH: z.string().optional().or(z.literal("")),
+  BGMEA_CDP_PORT: z.coerce.number().int().min(1024).max(65535).default(9336),
+  BGMEA_SESSION_DIR: z.string().default("./var/bgmea-session"),
+  BGMEA_NAV_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
+  // Max size (MB) for an uploaded Sales Contract / PI / BGMEA workbook / supporting doc.
+  BGMEA_MAX_FILE_MB: z.coerce.number().positive().default(25),
+
+  // Per-factory portal credentials — DEV fallback only (the preferred source is
+  // the encrypted PortalCredential store, keyed "bgmea:<factoryId>", managed in
+  // the UI). Variable names use the STABLE BGMEA factory id, never the display
+  // name. NEVER commit real values; .env.example carries placeholders only. Read
+  // solely in server-side code, only by the gated live driver.
+  BGMEA_1095_USERNAME: z.string().optional().or(z.literal("")),
+  BGMEA_1095_PASSWORD: z.string().optional().or(z.literal("")),
+  BGMEA_4148_USERNAME: z.string().optional().or(z.literal("")),
+  BGMEA_4148_PASSWORD: z.string().optional().or(z.literal("")),
+  BGMEA_4149_USERNAME: z.string().optional().or(z.literal("")),
+  BGMEA_4149_PASSWORD: z.string().optional().or(z.literal("")),
+  BGMEA_2966_USERNAME: z.string().optional().or(z.literal("")),
+  BGMEA_2966_PASSWORD: z.string().optional().or(z.literal("")),
 });
 
 const parsed = schema.safeParse(process.env);
