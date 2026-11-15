@@ -55,6 +55,12 @@ provenance: `source`, `sourceRef`, `confidence`, `conflict`, `edited`) · `UdBtb
 - **BGMEA Excel auto-fill** (brief, additional): a separate path, **gated** until the real
   workbook template is confirmed per factory (Q-UD-01/02). The UI shows it as pending; no
   workbook format is invented.
+- **BGMEA portal read-only scrape** (`scrape.ts`): signs in with the factory's stored
+  credentials and **reads** a UD's data (by UD number) to import into UCP. It is strictly
+  **read-only** — it never creates, edits or submits a portal record. Scraped values become
+  `source: bgmea-portal` detections that go through the same preview (duplicates + conflicts)
+  before the user applies them; nothing is applied silently. Fail-closed on both the live gate
+  and `UD_SELECTORS_CONFIRMED` (reads nothing until the per-section read map is confirmed).
 
 Merge rules (`provenance.ts`, unit-tested): fill blanks only; identical values unchanged;
 differing non-empty values become **conflicts** that are never overwritten without an
@@ -63,8 +69,10 @@ and manual values stay visually distinct.
 
 ## Security & safety
 
-- **Never submits** to BGMEA (`UD_NEVER_AUTO_SUBMITS`, no flag enables it). Live portal
-  driving is fail-closed behind `BGMEA_LIVE_ENABLED` (default off) + per-factory creds.
+- **Read-only BGMEA access** — the portal is only ever read (scrape). UCP never creates,
+  edits, fills or submits a portal record (`UD_NEVER_AUTO_SUBMITS`, no flag enables it; the
+  scraper performs no writes). Live portal access is fail-closed behind `BGMEA_LIVE_ENABLED`
+  (default off) + per-factory creds, and the read map is fail-closed until confirmed.
 - **Credentials** are per-factory, encrypted at rest (`PortalCredential` = `bgmea:<id>`,
   AES-256-GCM) or per-factory `.env` in dev (placeholders only in `.env.example`). Never
   in source, logs, prompts, or client bundles; read only server-side. Passwords shared in

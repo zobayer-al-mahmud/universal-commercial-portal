@@ -13,9 +13,11 @@ import {
   addBtbLc,
   removeBtbLc,
   confirmReview,
+  createImportPreview,
+  findDuplicateUd,
 } from "@/server/ud-automation/intake";
 import { saveBgmeaCredentials } from "@/server/ud-automation/credentials";
-import { runUdLive } from "@/server/ud-automation/live-run";
+import { scrapeUd } from "@/server/ud-automation/scrape";
 
 /**
  * UD Automation server actions. Every mutation checks UD_RUN server-side and, for
@@ -101,15 +103,37 @@ export async function confirmReviewAction(input: { recordId: string; factoryId: 
   return res;
 }
 
-export async function runUdLiveAction(input: { recordId: string; factoryId: string }) {
+/**
+ * Read-only fetch: scrape a UD's data FROM BGMEA and stage it as an import PREVIEW
+ * (never auto-applied, never written back to the portal). Detects duplicates and
+ * surfaces conflicts for review before the user applies it into UCP.
+ */
+export async function fetchFromBgmeaAction(input: { recordId: string; factoryId: string; udNumber: string }) {
   const auth = await requireUd();
-  if ("error" in auth) return { ok: false as const, message: auth.error, filled: 0, verified: 0, mismatched: 0, results: [] };
+  if ("error" in auth) return { ok: false as const, message: auth.error };
   if (!(await assertRecordInFactory(input.recordId, input.factoryId))) {
-    return { ok: false as const, message: "Record not found for this factory.", filled: 0, verified: 0, mismatched: 0, results: [] };
+    return { ok: false as const, message: "Record not found for this factory." };
   }
-  const res = await runUdLive({ recordId: input.recordId, factoryId: input.factoryId, actor: auth.actor });
+
+  const scrape = await scrapeUd({ recordId: input.recordId, factoryId: input.factoryId, udNumber: input.udNumber, actor: auth.actor });
+  if (!scrape.ok) return { ok: false as const, message: scrape.message, needsManual: scrape.needsManual };
+
+  const dups = await findDuplicateUd(input.factoryId, input.udNumber, input.recordId);
+  const messages = [`Read ${scrape.detected.length} value(s) from BGMEA (read-only).`];
+  if (dups.length > 0) {
+    messages.push(`Duplicate: UD ${input.udNumber} is already imported in ${dups.length} other record(s) for this factory (${dups.map((d) => d.title).join(", ")}). Review before applying — existing values are not overwritten without your choice.`);
+  }
+
+  const { id: batchId, preview } = await createImportPreview({
+    recordId: input.recordId,
+    source: "bgmea-portal",
+    originalName: `BGMEA UD ${input.udNumber}`,
+    detected: scrape.detected,
+    messages,
+    actor: auth.actor,
+  });
   revalidatePath(`/ud-automation/${input.recordId}`);
-  return res;
+  return { ok: true as const, message: scrape.message, batchId, detectedCount: preview.detected.length, conflicts: preview.conflicts.length, duplicates: dups.length };
 }
 
 export async function saveBgmeaCredentialsAction(input: { factoryId: string; username: string; password: string }) {

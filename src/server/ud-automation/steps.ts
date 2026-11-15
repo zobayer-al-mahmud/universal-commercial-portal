@@ -18,7 +18,7 @@
  * confirmed portal form before any live use. Nothing here is auto-submitted.
  */
 
-export type UdSource = "manual" | "sales-contract" | "pi" | "export-invoice" | "bgmea-excel";
+export type UdSource = "manual" | "sales-contract" | "pi" | "export-invoice" | "bgmea-excel" | "bgmea-portal";
 
 export interface UdFieldDef {
   key: string;

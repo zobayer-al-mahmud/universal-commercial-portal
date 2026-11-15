@@ -33,6 +33,22 @@ export async function listUdRecords(factoryId: string) {
   });
 }
 
+/**
+ * Other UD records in the SAME factory that already carry this UD number — used to
+ * warn before a portal import so an already-imported UD is not silently re-created
+ * or overwritten (brief: detect duplicates; do not silently overwrite UCP data).
+ */
+export async function findDuplicateUd(factoryId: string, udNumber: string, excludeRecordId: string): Promise<{ id: string; title: string }[]> {
+  const n = udNumber.trim();
+  if (!n || !isKnownFactory(factoryId)) return [];
+  const rows = await prisma.udRecord.findMany({
+    where: { factoryId, udNumber: n, id: { not: excludeRecordId } },
+    select: { id: true, title: true },
+    take: 10,
+  });
+  return rows.map((r) => ({ id: r.id, title: r.title || r.id.slice(0, 8) }));
+}
+
 export async function createUdRecord(input: {
   factoryId: string;
   mode: "new" | "existing";

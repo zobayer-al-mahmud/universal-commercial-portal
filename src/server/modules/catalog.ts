@@ -149,7 +149,8 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
       "Guided, resumable 12-step workflow (Open UD → Lien Bank → Buyer → Export LC → BTB LC → Notify Party → Port → Garments → Size Chart → Fabric & Accessories → Consumption → Document Upload) with per-step status + save/resume.",
       "At each data step: Manual entry OR an import (Sales Contract / PI PDF extraction with OCR, per SRS) shown as a review-before-apply preview — mapped values, unmapped columns, missing-required, and conflicts; nothing is applied silently.",
       "Full provenance on every value (manual | sales-contract | pi | bgmea-excel), with source/cell refs; re-uploads never overwrite user-edited values without an explicit choice; low-confidence/conflicting values are flagged for review.",
-      "Per-factory encrypted portal credentials (store or dev env), managed in-app; credentials never in source/logs; nothing is auto-submitted to BGMEA (hard invariant); live portal driving is fail-closed behind BGMEA_LIVE_ENABLED.",
+      "Read-only BGMEA portal import: signs in with the factory's stored credentials and SCRAPES a UD's data (by UD number) to import into UCP — never creates, edits or submits a portal record. Scraped values go through the same review/duplicate/conflict preview and are never applied silently.",
+      "Per-factory encrypted portal credentials (store or dev env), managed in-app; credentials never in source/logs; BGMEA access is read-only (hard invariant); live portal access is fail-closed behind BGMEA_LIVE_ENABLED and the read map stays fail-closed until confirmed.",
       "PENDING confirmation (kept behind config / marked, never guessed): the BGMEA Excel auto-fill template + which sections support it; exact BGMEA field list/dropdowns/validation; the 8 supporting documents + constraints; BTB-LC↔UD + new-UD/amendment rules.",
     ],
     openQuestions: [

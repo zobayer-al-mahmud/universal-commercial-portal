@@ -56,9 +56,9 @@ export default async function UdAutomationPage({ searchParams }: { searchParams:
       />
 
       <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-        UD Automation never submits to BGMEA automatically — it fills and reviews only.
-        {!gate.liveEnabled ? " Live portal driving is disabled (fail-closed)." : ""}
-        {" "}The BGMEA Excel auto-fill template and exact portal fields are pending confirmation, so Excel auto-fill is shown as pending and field lists are indicative.
+        BGMEA access is read-only — UD Automation reads a UD&apos;s data to import into UCP (with review, duplicate and conflict checks) and never creates, edits or submits a portal record.
+        {!gate.liveEnabled ? " Live portal access is disabled (fail-closed)." : ""}
+        {" "}The BGMEA read map, Excel auto-fill template and exact portal fields are pending confirmation, so those are shown as pending and field lists are indicative.
       </div>
 
       <div className="mb-6 grid gap-4 lg:grid-cols-2">

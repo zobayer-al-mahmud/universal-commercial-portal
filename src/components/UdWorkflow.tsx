@@ -10,7 +10,7 @@ import {
   addBtbLcAction,
   removeBtbLcAction,
   confirmReviewAction,
-  runUdLiveAction,
+  fetchFromBgmeaAction,
 } from "@/app/actions/ud-automation";
 
 // ---- Serialized prop shapes (mirror the page loader) ----------------------
@@ -44,7 +44,7 @@ interface Preview {
 function cellKey(s: string, f: string, g: number) { return `${s}|${f}|${g}`; }
 
 const SOURCE_LABEL: Record<string, string> = {
-  manual: "Manual", "sales-contract": "Sales Contract", pi: "PI", "bgmea-excel": "BGMEA Excel", "export-invoice": "Export Invoice",
+  manual: "Manual", "sales-contract": "Sales Contract", pi: "PI", "bgmea-excel": "BGMEA Excel", "bgmea-portal": "BGMEA Portal", "export-invoice": "Export Invoice",
 };
 
 export function UdWorkflow(props: {
@@ -403,9 +403,10 @@ function DocumentsPanel({ recordId, documents }: { recordId: string; documents: 
 // ---- Source document import (SC/PI) --------------------------------------
 function SourceImportPanel(props: {
   factoryId: string;
-  record: { id: string };
+  record: { id: string; udNumber: string; mode: string };
   sourceDocs: SourceDoc[];
   pendingImports: PendingImport[];
+  liveEnabled: boolean;
 }) {
   const router = useRouter();
   const [source, setSource] = useState<"sales-contract" | "pi">("sales-contract");
@@ -414,6 +415,18 @@ function SourceImportPanel(props: {
   const [preview, setPreview] = useState<{ batchId: string; data: Preview } | null>(null);
   const [accepted, setAccepted] = useState<Record<string, boolean>>({});
   const [pending, start] = useTransition();
+  const [udNo, setUdNo] = useState(props.record.udNumber);
+  const [fetchMsg, setFetchMsg] = useState("");
+  const [fetchBusy, setFetchBusy] = useState(false);
+
+  async function fetchFromBgmea() {
+    setFetchMsg(""); setFetchBusy(true);
+    try {
+      const res = await fetchFromBgmeaAction({ recordId: props.record.id, factoryId: props.factoryId, udNumber: udNo.trim() });
+      setFetchMsg(res.message);
+      router.refresh();
+    } finally { setFetchBusy(false); }
+  }
 
   // Any pre-existing unresolved preview from the server.
   const serverPreview = props.pendingImports[0];
@@ -447,6 +460,23 @@ function SourceImportPanel(props: {
 
   return (
     <div className="card p-5">
+      {props.liveEnabled ? (
+        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+          <div className="text-sm font-semibold text-slate-800">Fetch from BGMEA (read-only)</div>
+          <p className="mb-2 mt-1 text-xs text-slate-500">
+            Signs in with this factory&apos;s stored credentials and <b>reads</b> the UD&apos;s data from the portal to import into UCP —
+            it never creates, edits or submits a portal record. Values are shown for review (with duplicates + conflicts) before you apply them;
+            existing UCP values are never overwritten without your choice. Reading is fail-closed until the portal field map is confirmed.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <input className="input w-auto" value={udNo} onChange={(e) => setUdNo(e.target.value)} placeholder="UD number" />
+            <button type="button" className="btn-ghost btn-sm" disabled={fetchBusy || !udNo.trim()} onClick={fetchFromBgmea}>
+              {fetchBusy ? "Fetching…" : "Fetch this UD"}
+            </button>
+          </div>
+          {fetchMsg ? <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 text-xs text-slate-600">{fetchMsg}</div> : null}
+        </div>
+      ) : null}
       <h3 className="text-sm font-semibold text-slate-800">Import from Sales Contract / PI</h3>
       <p className="mb-3 mt-1 text-xs text-slate-500">
         Auto-fill is restricted to the uploaded Sales Contract and PI (SRS). Values are detected, shown for review, and applied only when you confirm — never silently. Imported values stay marked and editable; re-uploads never overwrite your edits without asking.
@@ -540,13 +570,10 @@ function ReviewPanel(props: {
   fields: FieldState[];
   btbLcs: BtbLc[];
   documents: Doc[];
-  liveEnabled: boolean;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
   const [result, setResult] = useState<{ ok?: boolean; error?: string; missing?: { label: string }[] } | null>(null);
-  const [liveMsg, setLiveMsg] = useState("");
-  const [liveBusy, setLiveBusy] = useState(false);
 
   function confirm() {
     start(async () => {
@@ -554,15 +581,6 @@ function ReviewPanel(props: {
       setResult(res as any);
       if ("ok" in res) router.refresh();
     });
-  }
-
-  async function runLive() {
-    setLiveMsg(""); setLiveBusy(true);
-    try {
-      const res = await runUdLiveAction({ recordId: props.record.id, factoryId: props.factoryId });
-      setLiveMsg(res.message);
-      router.refresh();
-    } finally { setLiveBusy(false); }
   }
 
   const byStep = useMemo(() => {
@@ -629,21 +647,6 @@ function ReviewPanel(props: {
       <button type="button" className="btn-primary btn-sm mt-4" disabled={pending} onClick={confirm}>
         {pending ? "Checking…" : "Confirm — ready for manual submission"}
       </button>
-
-      {props.liveEnabled ? (
-        <div className="mt-5 border-t border-slate-100 pt-4">
-          <div className="mb-1 text-sm font-semibold text-slate-700">Live BGMEA fill (fill &amp; verify only)</div>
-          <p className="mb-2 text-xs text-slate-500">
-            Opens the BGMEA portal in the backend browser, signs in with this factory&apos;s stored credentials, and fills the
-            reviewed values — then reads them back. It <b>never submits</b>; you review and submit in the portal. Field writing is
-            disabled until the portal field map is confirmed (fail-closed), so until then this reports what is still needed.
-          </p>
-          <button type="button" className="btn-ghost btn-sm" disabled={liveBusy} onClick={runLive}>
-            {liveBusy ? "Running…" : "Run live fill"}
-          </button>
-          {liveMsg ? <div className="mt-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">{liveMsg}</div> : null}
-        </div>
-      ) : null}
     </div>
   );
 }

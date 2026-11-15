@@ -26,7 +26,7 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
       <PageHeader
         eyebrow={factory.label}
         title={record.title || `UD workflow ${record.id.slice(0, 8)}`}
-        subtitle="Guided, resumable UD preparation. Fill each step manually or import from the Sales Contract / PI (review before applying). Nothing is submitted to BGMEA."
+        subtitle="Guided, resumable UD preparation. Fill each step manually, import from the Sales Contract / PI, or read-only import from BGMEA — all reviewed before applying. BGMEA access is read-only; nothing is created, edited or submitted there."
         actions={
           <div className="flex items-center gap-2">
             <StatusBadge status={record.status} />
