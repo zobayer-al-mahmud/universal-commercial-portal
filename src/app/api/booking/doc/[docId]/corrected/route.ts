@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
+import { bookingPdfBase } from "@/server/booking-correction/output-name";
 
 export async function GET(_req: Request, { params }: { params: { docId: string } }) {
   const user = await getSessionUser();
@@ -15,11 +16,11 @@ export async function GET(_req: Request, { params }: { params: { docId: string }
   let buf: Buffer;
   try { buf = await readFile(doc.correctedPdfPath); } catch { return NextResponse.json({ error: "Corrected PDF file is missing from storage" }, { status: 404 }); }
   await audit({ entityType: "document", entityId: doc.id, action: "booking.download.corrected", actor: user.email });
-  const safe = `${doc.poNumber || "booking"}-${doc.bookingRef || doc.serial}`.replace(/[^\w.-]+/g, "-");
+  const safe = bookingPdfBase({ serial: doc.serial, poNumber: doc.poNumber, countryCode: doc.countryCode, frCode: doc.frCode, bookingRef: doc.bookingRef });
   return new NextResponse(buf, {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `attachment; filename="booking-corrected-${safe}.pdf"`,
+      "Content-Disposition": `attachment; filename="${safe}_edited.pdf"`,
       "Content-Length": String(buf.byteLength),
     },
   });

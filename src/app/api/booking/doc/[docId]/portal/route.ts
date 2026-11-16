@@ -5,6 +5,7 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { audit } from "@/lib/audit";
 import { validatePortalPdf } from "@/server/integrations/damco-live";
+import { bookingPdfBase } from "@/server/booking-correction/output-name";
 
 /**
  * Serve the genuine Damco portal PDF stored for this document.
@@ -33,11 +34,11 @@ export async function GET(req: Request, { params }: { params: { docId: string } 
   const disposition = forceDownload ? "attachment" : "inline";
 
   await audit({ entityType: "document", entityId: doc.id, action: forceDownload ? "booking.download.portal" : "booking.preview.portal", actor: user.email });
-  const safe = `${doc.poNumber || "booking"}-${doc.bookingRef || doc.serial}`.replace(/[^\w.-]+/g, "-");
+  const safe = bookingPdfBase({ serial: doc.serial, poNumber: doc.poNumber, countryCode: doc.countryCode, frCode: doc.frCode, bookingRef: doc.bookingRef });
   return new NextResponse(buf, {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `${disposition}; filename="damco-${safe}.pdf"`,
+      "Content-Disposition": `${disposition}; filename="${safe}.pdf"`,
       "Content-Length": String(buf.byteLength),
       "Cache-Control": "private, no-store",
     },
