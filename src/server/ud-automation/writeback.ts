@@ -88,8 +88,9 @@ const PAGE_TITLES: Record<string, string> = {
   "notify-party": "Notify Party",
   port: "Port",
   garments: "Garments",
-  fabric: "Fabric & Accessories · Fabric",
-  accessories: "Fabric & Accessories · Accessories",
+  fabric: "Fabric",
+  accessories: "Accessories",
+  "other-material": "Other Material",
 };
 
 async function wbEvent(recordId: string, stepKey: string, action: string, status: string, message: string, actor: string, data?: Record<string, unknown>) {

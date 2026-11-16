@@ -7,7 +7,7 @@ Sources: `UCP_UD_Preparation_Automation_SRS.docx` (product brief), `UD_Preparati
 
 ## What it does
 
-A **factory-first**, document-driven, **resumable** 12-step workflow that prepares a UD
+A **factory-first**, document-driven, **resumable** 14-step workflow that prepares a UD
 record for the BGMEA portal. The operator fills each step manually or imports values
 from the uploaded Sales Contract / PI, a read of the UD from BGMEA, or the catalog
 (all reviewed before applying). Every value keeps its **provenance**. After review the
@@ -30,12 +30,18 @@ Every `UdRecord`, upload, import and field value is scoped to the chosen factory
 (`factoryId`), and every server action re-asserts the record belongs to the claimed
 factory, so one factory's data can never appear in another's workflow.
 
-### The 12 steps (`src/server/ud-automation/steps.ts`)
+### The 14 steps (`src/server/ud-automation/steps.ts`)
 
 1. Open UD (new/existing) · 2. Lien Bank (×3, SC) · 3. Buyer (SC) · 4. Export LC (SC) ·
 5. BTB LC (select/create) · 6. Notify Party (SC; Export-Invoice verify pending) ·
 7. Port (SC/manual) · 8. Garments (qty from SC; rest manual) · 9. Size Chart (manual) ·
-10. Fabric & Accessories (PI only) · 11. Consumption (manual) · 12. Document Upload.
+10. Fabric (PI) · 11. Accessories (PI) · 12. Other Material · 13. Consumption (manual) · 14. Document Upload.
+
+Fabric, Accessories and Other Material are **three separate BGMEA pages and three separate UCP
+steps** (owner, 2026-11-16): each is fetched, shown (own loading / ok / empty / error status),
+reviewed, edited and saved independently, and their rows are never combined. An empty section is
+reported as `empty`, never as a fetch failure. Migration `20261116150000_split_fabric_accessories_other`
+moved existing combined rows to their own step (by the old item type) and renumbered rows per step.
 
 The step catalogue is the single source of truth for the stepper, manual forms, and
 import mapping. It encodes the SRS source rules: `autoSources: []` where the SRS requires
@@ -79,7 +85,7 @@ list of known UD tracking numbers, imported from the BGMEA UD-list export
   workbook template is confirmed per factory (Q-UD-01/02). The UI shows it as pending; no
   workbook format is invented.
 - **BGMEA portal fetch — live, read-only** (`scrape.ts` + `portal.ts` + `portal-map.ts`): reads
-  the selected UD from BGMEA with the factory's own account and maps it into all 12 UCP sections,
+  the selected UD from BGMEA with the factory's own account and maps it into all 14 UCP sections,
   with a live per-section status (`ok` / `partial` / `empty` / `unverified` / `error`) that the
   UI polls (`GET /api/ud/[id]/runs/[runId]`). Values become `source: bgmea-portal` detections with
   a precise `sourceRef` (route · UD · row id · portal key, e.g.
@@ -104,9 +110,11 @@ bundle; re-verified on 4 UDs of the 4 factories (see Status).
   `/NotifyParty` → Notify Party; `/UDPort` → Port (port code from the member port list);
   `/GarmentsInfo` → Garments; `/UDMeasurementChart` (grid `Table.rowN.columnM`, row0 = size
   headers) → Size Chart (one UCP row per measurement line, chart no + styles kept);
-  `/FabricInfo`, `/AccessoriesInfo`, `/OtherMaterial` → Fabric & Accessories (shared groups,
-  `itemType` set per page; Other Material rows reported as unmapped until a populated sample
-  confirms its keys); `/ConsumptionInfo` (style list + fabric list per consumption) →
+  `/FabricInfo` → Fabric; `/AccessoriesInfo` → Accessories; `/OtherMaterial` → Other Material (each its
+  own step and rows; Other Material row keys taken from that page's own list template —
+  `item.RawMaterialTypeName`, `Origin`, `UDNo`, `UDDate`, `HSID`, `HSDescription`, `TradeName`, `Qty`,
+  `MUnitname`, `MaterialValue`, `CurrencyName`, `SupplierName`, `SupplierAddress`, `CountryName`,
+  `PhoneNo` — plus `NetWeight`/`UseQty`/`Balance` from the bundle model); `/ConsumptionInfo` (style list + fabric list per consumption) →
   Consumption (one UCP row per fabric line, linked styles + qty kept); `/UDUpload` → Document
   Upload (type, upload time, file name — files are never downloaded). Side panels
   `/HsCodeInfo` and `/UnitInfo` are read as reference lists.
@@ -137,14 +145,14 @@ reviewed values to the selected UD's BGMEA pages (`writeback.ts`). The owner aut
   status: BGMEA allows editing only while it is NEW (0), DISCREPANCY (45) or CORRECTION (50) — the
   portal's own `canEdit`. Otherwise every page is reported `locked` and nothing is typed.
 - Per page (`PORTAL_WRITE_SECTIONS`: Lien Bank, Buyer, Export L/C, Import/BTB L/C, Notify Party,
-  Port, Garments, Fabric, Accessories): UCP rows are matched to existing BGMEA rows by key (style
+  Port, Garments, Fabric, Accessories, Other Material — each its own page): UCP rows are matched to existing BGMEA rows by key (style
   no + LC, LC no, name, HS code + description + LC …); ambiguous matches are skipped; only differing
   fields are written (by the form's visible label; a dropdown value must match exactly one option);
   then `.form-style__btn-save` ("Save"/"Update") → BGMEA's own confirm box → any BGMEA error box is
   captured → the page is **re-read and each written field verified**. A page stops at its first
   failure. BGMEA rows not in UCP are left unchanged; **nothing is ever deleted**.
 - Not automated (reported `manual` with the reason): UD information, Size Chart (grid builder),
-  Consumption (allocation with balance checks), Document Upload, Other Material.
+  Consumption (allocation with balance checks), Document Upload.
 - Every page/row result is persisted (`UdWriteBackPage`, `UdPortalRun` history, `UdStepEvent`,
   audit) without secrets; **Retry failed pages** re-runs only what did not save.
 - The **final submission is never automated** (`UD_NEVER_AUTO_SUBMITS`); delete / cancel /
@@ -177,7 +185,7 @@ Q-UD-09 read map confirmed).
 ## Status
 
 Implemented: factory-first workflow, per-factory UD catalog import + search/open, manual entry,
-SC/PI import with provenance, **live per-section BGMEA fetch for all 12 sections** (lists, grids,
+SC/PI import with provenance, **live per-section BGMEA fetch for all 14 sections** (lists, grids,
 sub-panels, dropdowns, reference panels) with live progress + history, review/apply with
 conflicts and unmapped flags, **Confirm Ready for BGMEA** live write-back (per-UD confirmation,
 verified saves, never deletes, never submits), per-factory encrypted credentials, fail-closed gates.
@@ -188,8 +196,8 @@ a conflict on re-fetch); 4148 · UD41482025004 — 544 values; 2966 · UD2966202
 4149 · UD41492023005 — 204 values. All four are PASSED_DISPATCHED in BGMEA, so write-back was not
 exercised (and no test save is made without the owner's confirmation for a specific factory + UD).
 
-Pending: the BGMEA Excel auto-fill template (Q-UD-01/02), Other Material field map (needs a
-populated sample), automated size-chart / consumption / document write, the 8 supporting-document
+Pending: the BGMEA Excel auto-fill template (Q-UD-01/02), a live Other Material sample to confirm
+the template-derived map on real rows, automated size-chart / consumption / document write, the 8 supporting-document
 rules, OCR for scanned SC/PI, and a first live save on an editable (NEW/CORRECTION) UD.
 **Not deployed** — awaiting explicit approval, and to be released separately from other process
 updates.

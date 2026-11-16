@@ -14,10 +14,20 @@ function dv(partial: Partial<DetectedValue> & Pick<DetectedValue, "stepKey" | "f
 }
 
 describe("step catalogue integrity", () => {
-  it("has 12 steps numbered 1..12 with unique keys", () => {
-    expect(UD_STEPS.length).toBe(12);
-    expect(new Set(UD_STEP_KEYS).size).toBe(12);
-    expect(UD_STEPS.map((s) => s.no)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+  it("has 14 steps numbered 1..14 with unique keys", () => {
+    expect(UD_STEPS.length).toBe(14);
+    expect(new Set(UD_STEP_KEYS).size).toBe(14);
+    expect(UD_STEPS.map((s) => s.no)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  });
+
+  it("keeps Fabric, Accessories and Other Material as three separate steps", () => {
+    expect(UD_STEP_KEYS.slice(9, 12)).toEqual(["fabric", "accessories", "other-material"]);
+    expect(UD_STEP_KEYS).not.toContain("fabric-accessories");
+    for (const key of ["fabric", "accessories", "other-material"]) {
+      const step = UD_STEPS.find((s) => s.key === key)!;
+      expect(step.group, key).toBeTruthy();
+      expect(step.fields.some((f) => f.key === "itemType"), key).toBe(false);
+    }
   });
 
   // SRS §4: DOCUMENT auto-fill (Sales Contract / PI) is restricted. A BGMEA portal
@@ -33,10 +43,14 @@ describe("step catalogue integrity", () => {
     }
   });
 
-  it("only allows PI (among documents) to auto-fill fabric & accessories", () => {
-    const step = UD_STEPS.find((s) => s.key === "fabric-accessories")!;
-    for (const f of step.fields) expect(docSources(f).every((s) => s === "pi")).toBe(true);
-    expect(step.fields.some((f) => docSources(f).includes("pi"))).toBe(true);
+  it("only allows PI (among documents) to auto-fill fabric and accessories; other material gets no document auto-fill", () => {
+    for (const key of ["fabric", "accessories"]) {
+      const step = UD_STEPS.find((s) => s.key === key)!;
+      for (const f of step.fields) expect(docSources(f).every((s) => s === "pi")).toBe(true);
+      expect(step.fields.some((f) => docSources(f).includes("pi"))).toBe(true);
+    }
+    const other = UD_STEPS.find((s) => s.key === "other-material")!;
+    for (const f of other.fields) expect(docSources(f)).toEqual([]);
   });
 
   it("auto-fills only the eligible garment quantity from the Sales Contract", () => {
@@ -48,7 +62,7 @@ describe("step catalogue integrity", () => {
   });
 
   it("lets a BGMEA fetch fill the BGMEA-backed fields of every data step", () => {
-    for (const key of ["lien-bank", "buyer", "export-lc", "btb-lc", "notify-party", "port", "garments", "size-chart", "fabric-accessories", "consumption", "documents", "ud-select"]) {
+    for (const key of ["lien-bank", "buyer", "export-lc", "btb-lc", "notify-party", "port", "garments", "size-chart", "fabric", "accessories", "other-material", "consumption", "documents", "ud-select"]) {
       const step = UD_STEPS.find((s) => s.key === key)!;
       expect(step.fields.some((f) => f.autoSources.includes("bgmea-portal")), key).toBe(true);
     }

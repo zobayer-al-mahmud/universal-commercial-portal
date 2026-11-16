@@ -24,7 +24,10 @@ describe("portal map integrity", () => {
     }
   });
 
-  it("covers all 12 UCP sections", () => {
+  it("covers all 14 UCP sections, one BGMEA page each for Fabric / Accessories / Other Material", () => {
+    for (const [id, step] of [["fabric", "fabric"], ["accessories", "accessories"], ["other-material", "other-material"]]) {
+      expect(readSectionById(id)!.stepKey).toBe(step);
+    }
     const steps = new Set(PORTAL_SECTIONS.map((s) => s.stepKey));
     for (const st of UD_STEPS) expect(steps.has(st.key), st.key).toBe(true);
   });
@@ -83,17 +86,24 @@ describe("row → UCP mapping", () => {
 
   it("flags unmapped portal fields instead of guessing", () => {
     const r = mapSectionRows(readSectionById("accessories")!, [{ UDTrackingNo: UD, AccessoriesID: 1, HSID: "9606.22.00", HSDescription: "Button", Fax: "123", WebAddress: "w" }], ctx());
-    expect(r.unmapped).toEqual(expect.arrayContaining(["Fabric & Accessories · Accessories: Fax", "Fabric & Accessories · Accessories: WebAddress"]));
-    expect(r.detected.find((d) => d.fieldKey === "itemType")!.value).toBe("Accessory");
+    expect(r.unmapped).toEqual(expect.arrayContaining(["Accessories: WebAddress"]));
+    expect(r.detected.find((d) => d.fieldKey === "fax")!.value).toBe("123");
   });
 
-  it("lets Fabric and Accessories share one step via group offsets", () => {
+  it("maps Fabric and Accessories into their OWN steps, each starting at row 0", () => {
     const fab = mapSectionRows(readSectionById("fabric")!, [{ UDTrackingNo: UD, FabricID: 1, IsLocal: "N", HSID: "5209.42.00", HSDescription: "Denim", MUnitID: "109501", CountryID: "65" }], ctx());
-    const acc = mapSectionRows(readSectionById("accessories")!, [{ UDTrackingNo: UD, AccessoriesID: 1, HSID: "9606.22.00", HSDescription: "Button" }], ctx(), fab.rows);
-    expect(fab.detected.every((d) => d.groupIndex === 0)).toBe(true);
-    expect(acc.detected.every((d) => d.groupIndex === 1)).toBe(true);
+    const acc = mapSectionRows(readSectionById("accessories")!, [{ UDTrackingNo: UD, AccessoriesID: 1, HSID: "9606.22.00", HSDescription: "Button" }], ctx());
+    expect(fab.detected.every((d) => d.stepKey === "fabric" && d.groupIndex === 0)).toBe(true);
+    expect(acc.detected.every((d) => d.stepKey === "accessories" && d.groupIndex === 0)).toBe(true);
     const f = Object.fromEntries(fab.detected.map((d) => [d.fieldKey, d.value]));
-    expect(f).toMatchObject({ itemType: "Fabric", origin: "Foreign", unit: "YDS - (YRD)", supplierCountry: "Denmark" });
+    expect(f).toMatchObject({ origin: "Foreign", unit: "YDS - (YRD)", supplierCountry: "Denmark" });
+    expect(f.itemType).toBeUndefined();
+  });
+
+  it("treats an empty section as empty, not as a failure", () => {
+    const r = mapSectionRows(readSectionById("accessories")!, [], ctx());
+    expect(r).toMatchObject({ portalRows: 0, rows: 0, rejectedRows: 0 });
+    expect(r.detected).toHaveLength(0);
   });
 
   it("expands a size chart grid into one row per measurement line, keeping chart + styles", () => {
@@ -116,10 +126,13 @@ describe("row → UCP mapping", () => {
     expect(v).toMatchObject({ consumptionNo: "2", styleNos: "ST-1 (Pant) — 4500 PCE", component: "5209.42.00", fabricSource: "From Import", totalConsumption: "3645", baseQuantity: "10046", fabricBalance: "6401", unit: "YRD" });
   });
 
-  it("reports Other Material rows as unmapped until a sample confirms the map", () => {
-    const r = mapSectionRows(readSectionById("other-material")!, [{ UDTrackingNo: UD, OtherRawMaterialID: 1, Qty: 5 }], ctx());
-    expect(r.detected).toHaveLength(0);
-    expect(r.unmapped.length).toBeGreaterThan(0);
+  it("maps Other Material rows (keys from the page's own list template) into their own step", () => {
+    const row = { UDTrackingNo: UD, OtherRawMaterialID: 4, RawMaterialTypeID: "1", RawMaterialTypeName: "Fabric", Origin: "Local", UDNo: "UD99992025003", UDDate: "2025-05-01T00:00:00", HSID: "5209.42.00", HSDescription: "Denim", TradeName: "3/1", Qty: 500, MUnitID: "109501", MUnitname: null, MaterialValue: 1200, CurrencyID: "201201", CurrencyName: null, SupplierName: "S", SupplierAddress: "A", CountryID: "65", CountryName: null, PhoneNo: "1", NetWeight: 0, Mystery: "x" };
+    const r = mapSectionRows(readSectionById("other-material")!, [row], ctx());
+    const v = Object.fromEntries(r.detected.map((d) => [d.fieldKey, d.value]));
+    expect(r.detected.every((d) => d.stepKey === "other-material" && d.groupIndex === 0)).toBe(true);
+    expect(v).toMatchObject({ materialType: "Fabric", origin: "Local", sourceUdNo: "UD99992025003", sourceUdDate: "2025-05-01", hsCode: "5209.42.00", tradeName: "3/1", quantity: "500", unit: "YDS - (YRD)", value: "1200", currency: "USD", supplierCountry: "Denmark", netWeight: "0" });
+    expect(r.unmapped).toEqual(["Other Material: Mystery"]);
   });
 
   it("derives a port code from the member's port list only when unambiguous", () => {

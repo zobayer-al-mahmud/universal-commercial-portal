@@ -146,7 +146,7 @@ export const MODULE_CATALOG: Record<string, ModuleCatalogEntry> = {
     status: "partial",
     scope: [
       "Factory-FIRST workflow: the operator picks one of the four factories before any UD selection or data entry; every record, upload, import and saved value is scoped to that factory and never crosses factories.",
-      "Guided, resumable 12-step workflow (Open UD → Lien Bank → Buyer → Export LC → BTB LC → Notify Party → Port → Garments → Size Chart → Fabric & Accessories → Consumption → Document Upload) with per-step status + save/resume.",
+      "Guided, resumable 14-step workflow (Open UD → Lien Bank → Buyer → Export LC → BTB LC → Notify Party → Port → Garments → Size Chart → Fabric → Accessories → Other Material → Consumption → Document Upload) with per-step status + save/resume.",
       "At each data step: Manual entry OR an import (Sales Contract / PI PDF extraction with OCR, per SRS) shown as a review-before-apply preview — mapped values, unmapped columns, missing-required, and conflicts; nothing is applied silently.",
       "Full provenance on every value (manual | sales-contract | pi | bgmea-excel), with source/cell refs; re-uploads never overwrite user-edited values without an explicit choice; low-confidence/conflicting values are flagged for review.",
       "Read-only BGMEA portal import: signs in with the factory's stored credentials and SCRAPES a UD's data (by UD number) to import into UCP — never creates, edits or submits a portal record. Scraped values go through the same review/duplicate/conflict preview and are never applied silently.",

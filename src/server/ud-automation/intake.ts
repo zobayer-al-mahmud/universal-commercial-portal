@@ -544,7 +544,14 @@ async function refreshStepStatus(recordId: string, stepKey: string, entryMode: "
     const allRequired = requiredKeys.every((k) => nonEmpty.has(k));
     status = needsReview ? "needs_review" : allRequired && nonEmpty.size > 0 ? "complete" : "in_progress";
   }
-  await prisma.udStep.update({ where: { recordId_stepKey: { recordId, stepKey } }, data: { status, entryMode, updatedBy: actor } });
+  // Upsert: records created before a step existed (e.g. the 2026-11-16 Fabric / Accessories /
+  // Other Material split) may not have that step row yet.
+  const stepNo = UD_STEPS.find((s) => s.key === stepKey)?.no ?? 0;
+  await prisma.udStep.upsert({
+    where: { recordId_stepKey: { recordId, stepKey } },
+    create: { recordId, stepKey, stepNo, status, entryMode, updatedBy: actor },
+    update: { status, entryMode, updatedBy: actor },
+  });
   if (!silent) await touchRecord(recordId);
 }
 

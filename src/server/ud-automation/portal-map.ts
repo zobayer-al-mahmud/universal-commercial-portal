@@ -403,14 +403,13 @@ export const PORTAL_SECTIONS: readonly PortalSectionRead[] = [
   },
   {
     id: "fabric",
-    stepKey: "fabric-accessories",
-    title: "Fabric & Accessories · Fabric",
+    stepKey: "fabric",
+    title: "Fabric",
     path: "/FabricInfo",
     component: "fabric-info",
     source: { prop: "list" },
     rowIdKey: "FabricID",
     udKey: "UDTrackingNo",
-    constants: { itemType: "Fabric" },
     fields: [
       { field: "origin", key: "IsLocal", derive: (r) => ORIGIN_LABEL[cleanValue(r.IsLocal)] || "" },
       { field: "importLcNo", key: "ImportLCNo" },
@@ -422,6 +421,8 @@ export const PORTAL_SECTIONS: readonly PortalSectionRead[] = [
       { field: "balance", key: "Balance" },
       { field: "unit", key: "MUnitName", fallback: { codeKey: "MUnitID", via: "unit" } },
       { field: "unitPrice", key: "UnitPrice" },
+      { field: "totalPrice", key: "TotalPriceValue" },
+      { field: "averageUnitPrice", key: "AverageUnitPrice" },
       { field: "currency", key: "CurrencyName", fallback: { codeKey: "CurrencyID", via: "currency" } },
       { field: "netWeight", key: "NetWeight" },
       { field: "supplierName", key: "SupplierName" },
@@ -434,14 +435,13 @@ export const PORTAL_SECTIONS: readonly PortalSectionRead[] = [
   },
   {
     id: "accessories",
-    stepKey: "fabric-accessories",
-    title: "Fabric & Accessories · Accessories",
+    stepKey: "accessories",
+    title: "Accessories",
     path: "/AccessoriesInfo",
     component: "ud-accessories-info",
     source: { prop: "list" },
     rowIdKey: "AccessoriesID",
     udKey: "UDTrackingNo",
-    constants: { itemType: "Accessory" },
     fields: [
       { field: "origin", key: "Origin", derive: (r) => cleanValue(r.Origin) || ORIGIN_LABEL[cleanValue(r.IsLocal)] || "" },
       { field: "importLcNo", key: "ImportLCNo" },
@@ -455,24 +455,49 @@ export const PORTAL_SECTIONS: readonly PortalSectionRead[] = [
       { field: "supplierAddress", key: "SupplierAddress" },
       { field: "supplierCountry", key: "Country", fallback: { codeKey: "CountryID", via: "country" } },
       { field: "phone", key: "PhoneNo" },
+      { field: "fax", key: "Fax" },
+      { field: "email", key: "Email" },
       { field: "remarks", key: "Remarks" },
     ],
     ignore: [...AUDIT, "UDTrackingNo", "AccessoriesID", "IsLocal", "MUnitID", "CountryID", "MemberHsId"],
   },
   {
     id: "other-material",
-    stepKey: "fabric-accessories",
-    title: "Fabric & Accessories · Other Material",
+    stepKey: "other-material",
+    title: "Other Material",
     path: "/OtherMaterial",
     component: "other-material",
     source: { prop: "list" },
     rowIdKey: "OtherRawMaterialID",
     udKey: "UDTrackingNo",
-    // No populated sample was available when mapping (0 rows on the inspected UD), so
-    // rows are REPORTED (unmapped) rather than mapped by guesswork.
-    unconfirmedRows: true,
-    fields: [],
-    ignore: [...AUDIT],
+    // Row keys taken from the page's own list template (v-text="item.<Key>" on
+    // /OtherMaterial: RawMaterialTypeName, Origin, UDNo, UDDate, HSID, HSDescription,
+    // TradeName, Qty, MUnitname, MaterialValue, CurrencyName, SupplierName,
+    // SupplierAddress, CountryName, PhoneNo + hidden code ids) and the component model
+    // (NetWeight, UseQty, Balance) in the portal bundle. Any other key with a value is
+    // still reported as unmapped.
+    fields: [
+      { field: "materialType", key: "RawMaterialTypeName", fallback: { codeKey: "RawMaterialTypeID", via: "material type" } },
+      { field: "origin", key: "Origin", derive: (r) => cleanValue(r.Origin) || ORIGIN_LABEL[cleanValue(r.IsLocal)] || "" },
+      { field: "sourceUdNo", key: "UDNo" },
+      { field: "sourceUdDate", key: "UDDate", date: true },
+      { field: "hsCode", key: "HSID" },
+      { field: "description", key: "HSDescription" },
+      { field: "tradeName", key: "TradeName" },
+      { field: "quantity", key: "Qty" },
+      { field: "usedQuantity", key: "UseQty" },
+      { field: "balance", key: "Balance" },
+      { field: "unit", key: "MUnitname", fallback: { codeKey: "MUnitID", via: "unit" } },
+      { field: "netWeight", key: "NetWeight" },
+      { field: "value", key: "MaterialValue" },
+      { field: "currency", key: "CurrencyName", fallback: { codeKey: "CurrencyID", via: "currency" } },
+      { field: "supplierName", key: "SupplierName" },
+      { field: "supplierAddress", key: "SupplierAddress" },
+      { field: "supplierCountry", key: "CountryName", fallback: { codeKey: "CountryID", via: "country" } },
+      { field: "phone", key: "PhoneNo" },
+      { field: "remarks", key: "Remarks" },
+    ],
+    ignore: [...AUDIT, "UDTrackingNo", "OtherRawMaterialID", "RawMaterialTypeID", "SupplierID", "MUnitID", "CurrencyID", "CountryID", "IsLocal", "MemberHsId"],
   },
   {
     id: "consumption",
@@ -581,7 +606,7 @@ function sourceRef(section: PortalSectionRead, ud: string, row: PortalRow, key: 
 
 /**
  * Map one portal page's rows into UCP DetectedValues. `groupOffset` lets several
- * portal pages (Fabric, Accessories, Other Material) share one UCP step's groups.
+ * portal pages share one UCP step's groups (each current page maps to its own step, so the offset is 0).
  */
 export function mapSectionRows(section: PortalSectionRead, rows: PortalRow[], ctx: ReadContext, groupOffset = 0): SectionMapResult {
   const detected: DetectedValue[] = [];
@@ -702,8 +727,8 @@ export interface PortalSectionWrite {
 
 /**
  * Pages whose BGMEA save flow is form-based and supported by the writer. Size chart
- * (grid builder), consumption (style/fabric allocation with balance checks), Other
- * Material, document upload and UD information are NOT written automatically —
+ * (grid builder), consumption (style/fabric allocation with balance checks), document upload
+ * and UD information are NOT written automatically —
  * the writer reports them as "manual" with the reason, never half-written.
  */
 export const PORTAL_WRITE_SECTIONS: readonly PortalSectionWrite[] = [
@@ -805,10 +830,9 @@ export const PORTAL_WRITE_SECTIONS: readonly PortalSectionWrite[] = [
   },
   {
     id: "fabric",
-    stepKey: "fabric-accessories",
+    stepKey: "fabric",
     mode: "form",
     match: { field: "hsCode", portalKey: "HSID", also: [{ field: "description", portalKey: "HSDescription" }, { field: "importLcNo", portalKey: "ImportLCNo" }] },
-    rowFilter: (v) => /^fabric$/i.test((v.itemType || "").trim()),
     fields: [
       { field: "origin", label: "Origin", kind: "select" },
       { field: "importLcNo", label: "L/C No", kind: "select", portalKey: "ImportLCNo" },
@@ -830,10 +854,9 @@ export const PORTAL_WRITE_SECTIONS: readonly PortalSectionWrite[] = [
   },
   {
     id: "accessories",
-    stepKey: "fabric-accessories",
+    stepKey: "accessories",
     mode: "form",
     match: { field: "hsCode", portalKey: "HSID", also: [{ field: "description", portalKey: "HSDescription" }, { field: "importLcNo", portalKey: "ImportLCNo" }] },
-    rowFilter: (v) => /^accessor/i.test((v.itemType || "").trim()),
     fields: [
       { field: "origin", label: "Origin", kind: "select", portalKey: "Origin" },
       { field: "importLcNo", label: "L/C No", kind: "select", portalKey: "ImportLCNo" },
@@ -845,6 +868,31 @@ export const PORTAL_WRITE_SECTIONS: readonly PortalSectionWrite[] = [
       { field: "supplierName", label: "Supplier Name", kind: "text", portalKey: "SupplierName" },
       { field: "supplierAddress", label: "Supplier Address", kind: "text", portalKey: "SupplierAddress" },
       { field: "supplierCountry", label: "Country", kind: "select", portalKey: "Country", compareVia: "country" },
+      { field: "phone", label: "Phone No", kind: "text", portalKey: "PhoneNo" },
+      { field: "remarks", label: "Remarks", kind: "text", portalKey: "Remarks" },
+    ],
+  },
+  {
+    // Form labels from the live /OtherMaterial page (inspected 2026-11-16).
+    id: "other-material",
+    stepKey: "other-material",
+    mode: "form",
+    match: { field: "hsCode", portalKey: "HSID", also: [{ field: "description", portalKey: "HSDescription" }, { field: "sourceUdNo", portalKey: "UDNo" }] },
+    fields: [
+      { field: "materialType", label: "Material Type", kind: "select", portalKey: "RawMaterialTypeName" },
+      { field: "origin", label: "Origins", kind: "select", portalKey: "Origin" },
+      { field: "sourceUdNo", label: "UD No.", kind: "select", portalKey: "UDNo" },
+      { field: "hsCode", label: "H.S. Code", kind: "text", portalKey: "HSID" },
+      { field: "description", label: "Description", kind: "text", portalKey: "HSDescription" },
+      { field: "tradeName", label: "Construction", kind: "text", portalKey: "TradeName" },
+      { field: "quantity", label: "Quantity", kind: "text", portalKey: "Qty" },
+      { field: "unit", label: "Unit Name", kind: "select", portalKey: "MUnitname", compareVia: "unit" },
+      { field: "netWeight", label: "Net Weight (KGS)", kind: "text", portalKey: "NetWeight" },
+      { field: "value", label: "Value", kind: "text", portalKey: "MaterialValue" },
+      { field: "currency", label: "Currency", kind: "select", portalKey: "CurrencyName", compareVia: "currency" },
+      { field: "supplierName", label: "Supplier Name", kind: "text", portalKey: "SupplierName" },
+      { field: "supplierAddress", label: "Address", kind: "text", portalKey: "SupplierAddress" },
+      { field: "supplierCountry", label: "Country", kind: "select", portalKey: "CountryName", compareVia: "country" },
       { field: "phone", label: "Phone No", kind: "text", portalKey: "PhoneNo" },
       { field: "remarks", label: "Remarks", kind: "text", portalKey: "Remarks" },
     ],

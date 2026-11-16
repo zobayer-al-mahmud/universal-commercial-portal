@@ -24,7 +24,7 @@ const MODULES = [
   { key: "booking-correction", name: "Booking Correction", sortOrder: 7, status: "active", description: "Match packing-list weights, cartons and quantities against bookings and return verified PDFs." },
   { key: "container", name: "Container", sortOrder: 8, status: "active", description: "Search a container on the CTG Port system, verify the record, and capture the result as a PDF." },
   { key: "exp-automation", name: "EXP Automation", sortOrder: 9, status: "active", description: "Bangladesh Bank EXP portal: fill & verify Issued EXP Corrections and Duplicate EXP Reporting (never submits), and bulk-download EXP PDFs from Excel." },
-  { key: "ud-automation", name: "UD Automation", sortOrder: 10, status: "active", description: "BGMEA UD Preparation: factory-first, resumable 12-step workflow. Fill manually or import from Sales Contract / PI (review before apply); provenance-tracked; never auto-submits to BGMEA." },
+  { key: "ud-automation", name: "UD Automation", sortOrder: 10, status: "active", description: "BGMEA UD Preparation: factory-first, resumable 14-step workflow. Fill manually or import from Sales Contract / PI (review before apply); provenance-tracked; never auto-submits to BGMEA." },
 ];
 
 // The four BGMEA factory accounts (stable ids — see src/server/ud-automation/factories.ts).

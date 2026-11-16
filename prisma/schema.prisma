@@ -1427,8 +1427,8 @@ model UdStep {
   id        String   @id @default(cuid())
   recordId  String
   record    UdRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
-  stepKey   String // lien-bank | buyer | export-lc | btb-lc | notify-party | port | garments | size-chart | fabric-accessories | consumption | documents | ud-select
-  stepNo    Int // 1..12
+  stepKey   String // ud-select | lien-bank | buyer | export-lc | btb-lc | notify-party | port | garments | size-chart | fabric | accessories | other-material | consumption | documents
+  stepNo    Int // 1..14
   status    String   @default("pending") // pending | in_progress | needs_review | complete | skipped
   entryMode String   @default("") // "" | manual | excel
   message   String   @default("")

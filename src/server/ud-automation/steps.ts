@@ -1,5 +1,5 @@
 /**
- * UD Automation — the 12-step workflow catalogue (pure config, no I/O).
+ * UD Automation — the 14-step workflow catalogue (pure config, no I/O).
  *
  * This is the single source of truth that drives the stepper UI, the manual-entry
  * forms, the import-preview mapping, and progress tracking. It encodes the
@@ -39,7 +39,7 @@ export interface UdGroupDef {
 
 export interface UdStepDef {
   key: string;
-  no: number; // 1..12
+  no: number; // 1..14
   title: string;
   dataSource: string; // human description from the SRS/workflow table
   /** Repeating group (lien banks ×3, garments, size rows, fabric/accessory rows, …). */
@@ -275,27 +275,31 @@ export const UD_STEPS: readonly UdStepDef[] = [
       { key: "quantity", label: "Quantity", type: "number", autoSources: MANUAL },
     ],
   },
+  // Fabric, Accessories and Other Material are three SEPARATE BGMEA pages and three
+  // separate UCP steps (user, 2026-11-16): fetched, reviewed, edited and saved
+  // independently; their rows are never combined.
   {
-    key: "fabric-accessories",
+    key: "fabric",
     no: 10,
-    title: "Fabric & Accessories",
-    dataSource: "PI fields only; remaining information manual or read from BGMEA (Fabric, Accessories, Other Material).",
-    group: { label: "Item", defaultCount: 1, min: 1, max: 500 },
+    title: "Fabric",
+    dataSource: "PI fields only; remaining information manual or read from BGMEA (Fabric page).",
+    group: { label: "Fabric", defaultCount: 1, min: 1, max: 300 },
     excelSupport: "unconfirmed",
     pdfExtract: true,
     manualOnly: false,
     fields: [
-      { key: "itemType", label: "Type (fabric / accessory / other)", type: "text", autoSources: PI_BG },
-      { key: "origin", label: "Origin", type: "text", autoSources: BGMEA },
+      { key: "origin", label: "Origin", type: "text", autoSources: BGMEA, note: "Foreign / Local" },
       { key: "importLcNo", label: "Import (BTB) L/C no", type: "text", autoSources: BGMEA },
       { key: "hsCode", label: "HS code", type: "text", autoSources: BGMEA },
       { key: "description", label: "Description", type: "text", autoSources: PI_BG },
-      { key: "composition", label: "Construction / trade name", type: "text", autoSources: PI_BG },
+      { key: "composition", label: "Construction", type: "text", autoSources: PI_BG },
       { key: "quantity", label: "Quantity", type: "number", autoSources: PI_BG },
       { key: "usedQuantity", label: "Used quantity", type: "number", autoSources: BGMEA },
       { key: "balance", label: "Balance", type: "number", autoSources: BGMEA },
       { key: "unit", label: "Unit", type: "text", autoSources: PI_BG },
       { key: "unitPrice", label: "Unit price", type: "number", autoSources: PI_BG },
+      { key: "totalPrice", label: "Total price", type: "number", autoSources: BGMEA },
+      { key: "averageUnitPrice", label: "Average unit price", type: "number", autoSources: BGMEA },
       { key: "currency", label: "Currency", type: "text", autoSources: BGMEA },
       { key: "netWeight", label: "Net weight (kg)", type: "number", autoSources: BGMEA },
       { key: "supplierName", label: "Supplier name", type: "text", autoSources: BGMEA },
@@ -306,8 +310,66 @@ export const UD_STEPS: readonly UdStepDef[] = [
     ],
   },
   {
-    key: "consumption",
+    key: "accessories",
     no: 11,
+    title: "Accessories",
+    dataSource: "PI fields only; remaining information manual or read from BGMEA (Accessories page).",
+    group: { label: "Accessory", defaultCount: 1, min: 1, max: 500 },
+    excelSupport: "unconfirmed",
+    pdfExtract: true,
+    manualOnly: false,
+    fields: [
+      { key: "origin", label: "Origin", type: "text", autoSources: BGMEA, note: "Foreign / Local" },
+      { key: "importLcNo", label: "Import (BTB) L/C no", type: "text", autoSources: BGMEA },
+      { key: "hsCode", label: "HS code", type: "text", autoSources: BGMEA },
+      { key: "description", label: "Description", type: "text", autoSources: PI_BG },
+      { key: "composition", label: "Trade name", type: "text", autoSources: BGMEA },
+      { key: "quantity", label: "Quantity", type: "number", autoSources: PI_BG },
+      { key: "usedQuantity", label: "Used quantity", type: "number", autoSources: BGMEA },
+      { key: "unit", label: "Unit", type: "text", autoSources: PI_BG },
+      { key: "supplierName", label: "Supplier name", type: "text", autoSources: BGMEA },
+      { key: "supplierAddress", label: "Supplier address", type: "textarea", autoSources: BGMEA },
+      { key: "supplierCountry", label: "Supplier country", type: "text", autoSources: BGMEA },
+      { key: "phone", label: "Phone", type: "text", autoSources: BGMEA },
+      { key: "fax", label: "Fax", type: "text", autoSources: BGMEA },
+      { key: "email", label: "Email", type: "text", autoSources: BGMEA },
+      { key: "remarks", label: "Remarks", type: "text", autoSources: BGMEA },
+    ],
+  },
+  {
+    key: "other-material",
+    no: 12,
+    title: "Other Material",
+    dataSource: "Fabric / accessories taken from stock of another UD/AM — manual or read from BGMEA (Other Material page).",
+    group: { label: "Other material", defaultCount: 1, min: 1, max: 300 },
+    excelSupport: "unconfirmed",
+    pdfExtract: false,
+    manualOnly: false,
+    fields: [
+      { key: "materialType", label: "Material type", type: "text", autoSources: BGMEA, note: "Fabric / Accessories" },
+      { key: "origin", label: "Origin", type: "text", autoSources: BGMEA, note: "Foreign / Local" },
+      { key: "sourceUdNo", label: "Source UD / AM no", type: "text", autoSources: BGMEA },
+      { key: "sourceUdDate", label: "Source UD date", type: "date", autoSources: BGMEA },
+      { key: "hsCode", label: "HS code", type: "text", autoSources: BGMEA },
+      { key: "description", label: "Description", type: "text", autoSources: BGMEA },
+      { key: "tradeName", label: "Construction / trade name", type: "text", autoSources: BGMEA },
+      { key: "quantity", label: "Quantity", type: "number", autoSources: BGMEA },
+      { key: "usedQuantity", label: "Used quantity", type: "number", autoSources: BGMEA },
+      { key: "balance", label: "Balance", type: "number", autoSources: BGMEA },
+      { key: "unit", label: "Unit", type: "text", autoSources: BGMEA },
+      { key: "netWeight", label: "Net weight (kg)", type: "number", autoSources: BGMEA },
+      { key: "value", label: "Value", type: "number", autoSources: BGMEA },
+      { key: "currency", label: "Currency", type: "text", autoSources: BGMEA },
+      { key: "supplierName", label: "Supplier name", type: "text", autoSources: BGMEA },
+      { key: "supplierAddress", label: "Supplier address", type: "textarea", autoSources: BGMEA },
+      { key: "supplierCountry", label: "Supplier country", type: "text", autoSources: BGMEA },
+      { key: "phone", label: "Phone", type: "text", autoSources: BGMEA },
+      { key: "remarks", label: "Remarks", type: "text", autoSources: BGMEA },
+    ],
+  },
+  {
+    key: "consumption",
+    no: 13,
     title: "Consumption",
     dataSource: "Manual entry, or read from BGMEA (one row per consumption fabric line, linked to its styles).",
     group: { label: "Consumption row", defaultCount: 1, min: 1, max: 300 },
@@ -331,7 +393,7 @@ export const UD_STEPS: readonly UdStepDef[] = [
   },
   {
     key: "documents",
-    no: 12,
+    no: 14,
     title: "Document Upload",
     dataSource: "Upload the required supporting documents. BGMEA fetch lists the documents already uploaded to the UD.",
     group: { label: "BGMEA document", defaultCount: 1, min: 1, max: 50 },

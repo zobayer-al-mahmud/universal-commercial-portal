@@ -99,6 +99,12 @@ describe("write planning (pure)", () => {
     expect(r3.plans[0].action).toBe("create");
   });
 
+  it("writes Fabric, Accessories and Other Material as separate BGMEA pages", () => {
+    const pages = PORTAL_WRITE_SECTIONS.filter((w) => ["fabric", "accessories", "other-material"].includes(w.id));
+    expect(pages.map((w) => w.stepKey)).toEqual(["fabric", "accessories", "other-material"]);
+    for (const w of pages) expect(w.rowFilter).toBeUndefined();
+  });
+
   it("leaves size chart, consumption, documents and UD info for manual completion", () => {
     expect(Object.keys(MANUAL_WRITE_STEPS).sort()).toEqual(["consumption", "documents", "size-chart", "ud-select"]);
   });
