@@ -51,6 +51,31 @@ export interface ImportPreview {
   messages: string[];
 }
 
+/** Per-section outcome of a BGMEA read (fetch). */
+export type SectionReadStatus = "ok" | "partial" | "empty" | "unverified" | "error" | "skipped";
+
+/** A portal dropdown (select) and its options (value code + display label). */
+export interface SectionDropdown {
+  label: string;
+  options: { value: string; label: string }[];
+}
+
+export interface SectionReadResult {
+  /** Portal page id (portal-map.ts); several pages can feed one step. */
+  key: string;
+  stepKey: string;
+  title: string;
+  status: SectionReadStatus;
+  /** Values read from the portal for this section. */
+  found: number;
+  /** Portal fields seen with no confirmed UCP mapping (reported, never guessed). */
+  unmapped: string[];
+  /** Human explanation — especially the specific missing mapping when unverified. */
+  message: string;
+  /** Dropdown (select) options read from this section's portal page. */
+  dropdowns?: SectionDropdown[];
+}
+
 /** Key for a single field cell (step|field|group). */
 export function cellKey(stepKey: string, fieldKey: string, groupIndex: number): string {
   return `${stepKey}|${fieldKey}|${groupIndex}`;

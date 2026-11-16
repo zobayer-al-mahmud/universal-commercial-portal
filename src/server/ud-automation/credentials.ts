@@ -74,7 +74,15 @@ export async function getBgmeaCredentials(factoryId: string): Promise<BgmeaCrede
   return null;
 }
 
-/** Status for the UI (never returns the password). */
+/** Mask a portal username for display (it is part of the credential): "user1234" → "us•••34". */
+export function maskUsername(u: string): string {
+  const s = (u || "").trim();
+  if (!s) return "";
+  if (s.length <= 4) return `${s[0]}•••`;
+  return `${s.slice(0, 2)}•••${s.slice(-2)}`;
+}
+
+/** Status for the UI (never returns the password; the username is masked). */
 export async function getBgmeaCredentialStatus(factoryId: string): Promise<BgmeaCredentialStatus> {
   const base: BgmeaCredentialStatus = { factoryId, configured: false, source: "none", username: "", updatedAt: null, updatedBy: null };
   if (!isKnownFactory(factoryId)) return base;
@@ -87,14 +95,14 @@ export async function getBgmeaCredentialStatus(factoryId: string): Promise<Bgmea
       ok = false;
     }
     if (ok) {
-      return { factoryId, configured: true, source: "store", username: row.username, updatedAt: row.updatedAt.toISOString(), updatedBy: row.updatedBy || null };
+      return { factoryId, configured: true, source: "store", username: maskUsername(row.username), updatedAt: row.updatedAt.toISOString(), updatedBy: row.updatedBy || null };
     }
   }
   const envc = envCredsFor(factoryId);
   if (envc.username && envc.password) {
-    return { ...base, configured: true, source: "env", username: envc.username };
+    return { ...base, configured: true, source: "env", username: maskUsername(envc.username) };
   }
-  return { ...base, username: row?.username ?? envc.username ?? "" };
+  return { ...base, username: maskUsername(row?.username ?? envc.username ?? "") };
 }
 
 /** Save/replace one factory's BGMEA credentials (encrypted). Password never stored plaintext. */

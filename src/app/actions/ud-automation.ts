@@ -21,6 +21,9 @@ import {
 import { saveBgmeaCredentials } from "@/server/ud-automation/credentials";
 import { scrapeUd } from "@/server/ud-automation/scrape";
 import { writeBackUd, requestBgmeaSubmit } from "@/server/ud-automation/writeback";
+import { confirmationMatches } from "@/server/ud-automation/guards";
+import { udBelongsToFactory } from "@/server/ud-automation/portal-map";
+import { safeRunId } from "@/server/ud-automation/runs";
 
 /**
  * UD Automation server actions. Every mutation checks UD_RUN server-side and, for
@@ -107,36 +110,72 @@ export async function confirmReviewAction(input: { recordId: string; factoryId: 
 }
 
 /**
- * Read-only fetch: scrape a UD's data FROM BGMEA and stage it as an import PREVIEW
- * (never auto-applied, never written back to the portal). Detects duplicates and
- * surfaces conflicts for review before the user applies it into UCP.
+ * Live, read-only fetch: read the selected UD's data FROM BGMEA (that factory's own
+ * account) and stage it as an import PREVIEW (never auto-applied). Duplicates and
+ * conflicts are surfaced for review; user-edited values are never silently
+ * overwritten. `runId` (client-generated) lets the UI poll live per-section progress.
  */
-export async function fetchFromBgmeaAction(input: { recordId: string; factoryId: string; udNumber: string }) {
+export async function fetchFromBgmeaAction(input: { recordId: string; factoryId: string; udNumber: string; runId?: string }) {
   const auth = await requireUd();
   if ("error" in auth) return { ok: false as const, message: auth.error };
   if (!(await assertRecordInFactory(input.recordId, input.factoryId))) {
     return { ok: false as const, message: "Record not found for this factory." };
   }
-
-  const scrape = await scrapeUd({ recordId: input.recordId, factoryId: input.factoryId, udNumber: input.udNumber, actor: auth.actor });
-  if (!scrape.ok) return { ok: false as const, message: scrape.message, needsManual: scrape.needsManual };
-
-  const dups = await findDuplicateUd(input.factoryId, input.udNumber, input.recordId);
-  const messages = [`Read ${scrape.detected.length} value(s) from BGMEA (read-only).`];
-  if (dups.length > 0) {
-    messages.push(`Duplicate: UD ${input.udNumber} is already imported in ${dups.length} other record(s) for this factory (${dups.map((d) => d.title).join(", ")}). Review before applying — existing values are not overwritten without your choice.`);
+  const record = await prisma.udRecord.findUnique({ where: { id: input.recordId }, select: { udNumber: true } });
+  const ud = (input.udNumber || "").trim().toUpperCase();
+  if (record?.udNumber && record.udNumber.trim().toUpperCase() !== ud) {
+    return { ok: false as const, message: `This workflow is for UD ${record.udNumber}; it cannot fetch a different UD (${ud || "blank"}).` };
+  }
+  if (!udBelongsToFactory(ud, input.factoryId)) {
+    return { ok: false as const, message: `UD ${ud || "(blank)"} does not belong to factory ${input.factoryId}.` };
   }
 
-  const { id: batchId, preview } = await createImportPreview({
-    recordId: input.recordId,
-    source: "bgmea-portal",
-    originalName: `BGMEA UD ${input.udNumber}`,
-    detected: scrape.detected,
-    messages,
-    actor: auth.actor,
-  });
+  const scrape = await scrapeUd({ recordId: input.recordId, factoryId: input.factoryId, udNumber: ud, actor: auth.actor, runId: safeRunId(input.runId) });
+
+  const dups = await findDuplicateUd(input.factoryId, ud, input.recordId);
+  const messages = [scrape.message];
+  if (dups.length > 0) {
+    messages.push(`Duplicate: UD ${ud} is already in ${dups.length} other UCP record(s) for this factory (${dups.map((d) => d.title || d.id.slice(0, 8)).join(", ")}). Review before applying — existing values are not overwritten without your choice.`);
+  }
+  const unmappedCount = scrape.unmapped.length;
+  if (unmappedCount > 0) messages.push(`${unmappedCount} BGMEA field(s) have no confirmed UCP mapping and were NOT applied: ${scrape.unmapped.slice(0, 12).join(", ")}${unmappedCount > 12 ? " …" : ""}`);
+
+  // Only stage a review preview when values were actually read.
+  let batchId: string | undefined;
+  let detectedCount = 0;
+  let conflicts = 0;
+  if (scrape.detected.length > 0) {
+    const { id, preview } = await createImportPreview({
+      recordId: input.recordId,
+      source: "bgmea-portal",
+      originalName: `BGMEA UD ${ud} (factory ${input.factoryId})`,
+      detected: scrape.detected,
+      unmapped: scrape.unmapped,
+      messages,
+      actor: auth.actor,
+    });
+    batchId = id;
+    detectedCount = preview.detected.length;
+    conflicts = preview.conflicts.length;
+  }
+
   revalidatePath(`/ud-automation/${input.recordId}`);
-  return { ok: true as const, message: scrape.message, batchId, detectedCount: preview.detected.length, conflicts: preview.conflicts.length, duplicates: dups.length };
+  return {
+    ok: scrape.ok as boolean,
+    blocked: scrape.blocked ?? false,
+    needsManual: scrape.needsManual ?? false,
+    target: scrape.target,
+    udFound: scrape.udFound,
+    runId: scrape.runId,
+    message: scrape.message,
+    sections: scrape.sections,
+    referenceLists: scrape.referenceLists,
+    unmapped: scrape.unmapped,
+    batchId,
+    detectedCount,
+    conflicts,
+    duplicates: dups.length,
+  };
 }
 
 /** Search a factory's UD catalog (read-only lookup for the UD picker). */
@@ -158,16 +197,25 @@ export async function openCatalogUdAction(input: { factoryId: string; trackingNo
 }
 
 /**
- * Populate + SAVE the UD's pages to BGMEA — explicit, user-confirmed (Q-UD-13).
- * `confirm` must be true (the UI asks first). Develops/verifies against the mock;
- * fail-closed otherwise. Never performs the final submission.
+ * "Confirm Ready for BGMEA": write the REVIEWED values to the selected UD's BGMEA
+ * pages and save them. Requires (1) the review to be confirmed (record status
+ * "ready"), and (2) an explicit confirmation naming THIS factory and THIS UD.
+ * Never performs the final BGMEA submission.
  */
-export async function writeBackToBgmeaAction(input: { recordId: string; factoryId: string; confirm: boolean; onlyFailed?: boolean }) {
+export async function writeBackToBgmeaAction(input: { recordId: string; factoryId: string; confirmFactoryId: string; confirmUdNumber: string; onlyFailed?: boolean; runId?: string }) {
   const auth = await requireUd();
   if ("error" in auth) return { ok: false as const, message: auth.error };
   if (!(await assertRecordInFactory(input.recordId, input.factoryId))) return { ok: false as const, message: "Record not found for this factory." };
-  if (!input.confirm) return { ok: false as const, message: "Write-back needs your explicit confirmation." };
-  const res = await writeBackUd({ recordId: input.recordId, factoryId: input.factoryId, actor: auth.actor, onlyFailed: input.onlyFailed });
+  const record = await prisma.udRecord.findUnique({ where: { id: input.recordId }, select: { factoryId: true, udNumber: true, status: true } });
+  if (!record) return { ok: false as const, message: "Record not found." };
+  if (!record.udNumber) return { ok: false as const, message: "This workflow has no BGMEA UD number, so there is no BGMEA UD to write to." };
+  if (record.status !== "ready" && record.status !== "completed") {
+    return { ok: false as const, message: "Confirm the review first (Review & confirm → Confirm reviewed). Nothing was written." };
+  }
+  if (!confirmationMatches({ confirmFactoryId: input.confirmFactoryId, confirmUdNumber: input.confirmUdNumber }, record)) {
+    return { ok: false as const, message: `Confirmation does not match this workflow (factory ${record.factoryId}, UD ${record.udNumber}). Nothing was written.` };
+  }
+  const res = await writeBackUd({ recordId: input.recordId, factoryId: record.factoryId, udNumber: record.udNumber, actor: auth.actor, onlyFailed: input.onlyFailed, runId: safeRunId(input.runId) });
   revalidatePath(`/ud-automation/${input.recordId}`);
   return res;
 }

@@ -1394,6 +1394,7 @@ model UdRecord {
   imports        UdImportBatch[]
   events         UdStepEvent[]
   writeBackPages UdWriteBackPage[]
+  portalRuns     UdPortalRun[]
 
   @@index([factoryId, status])
   @@index([udNumber])
@@ -1409,7 +1410,7 @@ model UdWriteBackPage {
   record    UdRecord  @relation(fields: [recordId], references: [id], onDelete: Cascade)
   stepKey   String
   status    String    @default("pending") // pending | saving | saved | failed | skipped
-  target    String    @default("mock") // mock | nonprod (never production)
+  target    String    @default("mock") // set explicitly: "live" = the BGMEA portal (legacy dev rows say mock)
   message   String    @default("")
   attempts  Int       @default(0)
   savedAt   DateTime?
@@ -1545,4 +1546,25 @@ model UdStepEvent {
   createdAt DateTime @default(now())
 
   @@index([recordId, createdAt])
+}
+
+/// One BGMEA portal run (fetch = read a UD; writeback = save reviewed values after
+/// "Confirm Ready for BGMEA"). Holds live per-section progress (polled by the UI)
+/// and the final report as history. Never stores credentials.
+model UdPortalRun {
+  id           String    @id @default(cuid())
+  recordId     String
+  record       UdRecord  @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  kind         String // fetch | writeback
+  factoryId    String
+  udNumber     String
+  status       String    @default("running") // running | ok | partial | failed | blocked
+  message      String    @default("")
+  sectionsJson String    @default("[]") // [{ key, title, stepKey, status, message, found }]
+  reportJson   String    @default("{}") // dropdowns, reference lists, per-page detail
+  actor        String    @default("system")
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+
+  @@index([recordId, startedAt])
 }

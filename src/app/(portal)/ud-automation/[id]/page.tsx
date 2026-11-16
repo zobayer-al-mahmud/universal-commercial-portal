@@ -5,7 +5,8 @@ import { PageHeader, StatusBadge } from "@/components/ui";
 import { isKnownFactory, factoryById } from "@/server/ud-automation/factories";
 import { getUdRecordScoped, loadFieldStates } from "@/server/ud-automation/intake";
 import { bgmeaLiveGate, bgmeaWriteBackGate } from "@/server/ud-automation/guards";
-import { listWriteBackPages } from "@/server/ud-automation/writeback";
+import { listWriteBackPages, WRITE_COVERAGE } from "@/server/ud-automation/writeback";
+import { expireStaleRuns, getRunReport, listRuns } from "@/server/ud-automation/runs";
 import { UdWorkflow } from "@/components/UdWorkflow";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +23,10 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
   const gate = await bgmeaLiveGate(factoryId);
   const wbGate = await bgmeaWriteBackGate(factoryId);
   const writeBackPages = await listWriteBackPages(record.id);
+  await expireStaleRuns(record.id);
+  const runs = await listRuns(record.id, 12);
+  const lastFetch = runs.find((r) => r.kind === "fetch" && r.status !== "running");
+  const lastFetchReport = lastFetch ? await getRunReport(record.id, lastFetch.id) : null;
   const factory = factoryById(factoryId)!;
 
   return (
@@ -29,7 +34,7 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
       <PageHeader
         eyebrow={factory.label}
         title={record.title || `UD workflow ${record.id.slice(0, 8)}`}
-        subtitle="Guided, resumable UD preparation. Fill each step manually, import from the Sales Contract / PI, or read a UD from BGMEA — all reviewed before applying. After review you can explicitly populate & save the BGMEA pages (gated; mock in dev, production disabled). The final submission is always separate and never automatic."
+        subtitle="Guided, resumable UD preparation. Fill each step manually, import from the Sales Contract / PI, or fetch the UD's existing data from BGMEA (this factory's own account) — all reviewed before applying. After review, Confirm Ready for BGMEA saves the reviewed values to this UD's BGMEA pages. The final submission is always a separate action you take in BGMEA."
         actions={
           <div className="flex items-center gap-2">
             <StatusBadge status={record.status} />
@@ -46,8 +51,12 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
         documents={record.documents.filter((d) => d.kind === "supporting").map((d) => ({ id: d.id, originalName: d.originalName, slotKey: d.slotKey, uploadedAt: d.uploadedAt.toISOString().slice(0, 16).replace("T", " ") }))}
         sourceDocs={record.documents.filter((d) => d.kind === "sales-contract" || d.kind === "pi").map((d) => ({ id: d.id, kind: d.kind, originalName: d.originalName }))}
         pendingImports={record.imports.filter((i) => i.status === "preview").map((i) => ({ id: i.id, source: i.source, stepKey: i.stepKey, previewJson: i.previewJson }))}
+        factoryLabel={factory.label}
         liveEnabled={gate.liveEnabled}
-        writeBack={{ enabled: wbGate.enabled, allowed: wbGate.allowed, target: wbGate.target, production: wbGate.production, reason: wbGate.reason, pages: writeBackPages }}
+        liveReason={gate.reason}
+        writeBack={{ enabled: wbGate.enabled, allowed: wbGate.allowed, target: wbGate.target, reason: wbGate.reason, pages: writeBackPages, coverage: WRITE_COVERAGE }}
+        runs={runs}
+        lastFetchReport={lastFetchReport as never}
       />
     </div>
   );

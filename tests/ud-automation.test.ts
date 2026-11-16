@@ -20,25 +20,38 @@ describe("step catalogue integrity", () => {
     expect(UD_STEPS.map((s) => s.no)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
   });
 
-  it("keeps SRS-mandated steps manual (no auto sources)", () => {
+  // SRS §4: DOCUMENT auto-fill (Sales Contract / PI) is restricted. A BGMEA portal
+  // fetch ("bgmea-portal") is a separate, reviewed source that reads the UD's
+  // existing BGMEA values, so it is allowed alongside these rules.
+  const docSources = (f: { autoSources: string[] }) => f.autoSources.filter((s) => s !== "bgmea-portal");
+
+  it("keeps SRS-mandated steps manual for document auto-fill", () => {
     for (const key of ["size-chart", "consumption"]) {
       const step = UD_STEPS.find((s) => s.key === key)!;
       expect(step.manualOnly).toBe(true);
-      for (const f of step.fields) expect(f.autoSources).toEqual([]);
+      for (const f of step.fields) expect(docSources(f)).toEqual([]);
     }
   });
 
-  it("only allows PI to auto-fill fabric & accessories", () => {
+  it("only allows PI (among documents) to auto-fill fabric & accessories", () => {
     const step = UD_STEPS.find((s) => s.key === "fabric-accessories")!;
-    for (const f of step.fields) expect(f.autoSources).toEqual(["pi"]);
+    for (const f of step.fields) expect(docSources(f).every((s) => s === "pi")).toBe(true);
+    expect(step.fields.some((f) => docSources(f).includes("pi"))).toBe(true);
   });
 
   it("auto-fills only the eligible garment quantity from the Sales Contract", () => {
     const step = UD_STEPS.find((s) => s.key === "garments")!;
     const qty = step.fields.find((f) => f.key === "quantityPcs")!;
-    expect(qty.autoSources).toEqual(["sales-contract"]);
-    // other garment fields stay manual
-    expect(step.fields.find((f) => f.key === "itemDescription")!.autoSources).toEqual([]);
+    expect(docSources(qty)).toEqual(["sales-contract"]);
+    // other garment fields get no document auto-fill
+    for (const f of step.fields.filter((x) => x.key !== "quantityPcs")) expect(docSources(f)).toEqual([]);
+  });
+
+  it("lets a BGMEA fetch fill the BGMEA-backed fields of every data step", () => {
+    for (const key of ["lien-bank", "buyer", "export-lc", "btb-lc", "notify-party", "port", "garments", "size-chart", "fabric-accessories", "consumption", "documents", "ud-select"]) {
+      const step = UD_STEPS.find((s) => s.key === key)!;
+      expect(step.fields.some((f) => f.autoSources.includes("bgmea-portal")), key).toBe(true);
+    }
   });
 
   it("marks Excel auto-fill as unconfirmed for data steps (template pending)", () => {
@@ -118,10 +131,10 @@ describe("provenance + conflict rules", () => {
   });
 
   it("never-submit guard forbids final-action controls but allows navigation/fill", () => {
-    for (const bad of ["Submit", "Save", "Save UD", "Finalize", "Approve", "Confirm", "Apply", "Acknowledge", "Complete", "Lock UD"]) {
+    for (const bad of ["Submit", "Save", "Save UD", "Finalize", "Approve", "Confirm", "Apply", "Acknowledge", "Complete", "Lock UD", "Delete", "Cancel"]) {
       expect(isForbiddenUdControl(bad)).toBe(true);
     }
-    for (const ok of ["Login", "Search", "Next", "Add Row", "Edit", "Browse", "Upload", "Cancel", ""]) {
+    for (const ok of ["Login", "Search", "Next", "Add Row", "Edit", "Browse", "Upload", ""]) {
       expect(isForbiddenUdControl(ok)).toBe(false);
     }
   });

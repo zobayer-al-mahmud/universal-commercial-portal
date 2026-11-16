@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { UD_STEPS, stepByKey, type UdStepDef } from "@/server/ud-automation/steps";
+import { UD_STEPS, stepByKey, fieldDef, type UdStepDef } from "@/server/ud-automation/steps";
+import { BgmeaFetchCard, ConfirmReadyForBgmea, type FetchReport, type RunView, type WriteBackProps } from "./UdBgmeaPanels";
 import {
   saveStepFieldsAction,
   applyImportAction,
@@ -10,9 +11,6 @@ import {
   addBtbLcAction,
   removeBtbLcAction,
   confirmReviewAction,
-  fetchFromBgmeaAction,
-  writeBackToBgmeaAction,
-  requestBgmeaSubmitAction,
 } from "@/app/actions/ud-automation";
 
 // ---- Serialized prop shapes (mirror the page loader) ----------------------
@@ -32,8 +30,7 @@ interface BtbLc { id: string; lcNumber: string; bank: string; amount: string; cu
 interface Doc { id: string; originalName: string; slotKey: string; uploadedAt: string }
 interface SourceDoc { id: string; kind: string; originalName: string }
 interface PendingImport { id: string; source: string; stepKey: string; previewJson: string }
-interface WriteBackPageState { stepKey: string; status: string; target: string; message: string; attempts: number; savedAt: string | null }
-interface WriteBackState { enabled: boolean; allowed: boolean; target: string; production: boolean; reason: string; pages: WriteBackPageState[] }
+type WriteBackState = WriteBackProps;
 
 interface Preview {
   source: string;
@@ -60,8 +57,12 @@ export function UdWorkflow(props: {
   documents: Doc[];
   sourceDocs: SourceDoc[];
   pendingImports: PendingImport[];
+  factoryLabel: string;
   liveEnabled: boolean;
+  liveReason: string;
   writeBack: WriteBackState;
+  runs: RunView[];
+  lastFetchReport: FetchReport | null;
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -183,7 +184,7 @@ function ProvenanceBadge({ f }: { f?: FieldState }) {
   const label = SOURCE_LABEL[f.source] ?? f.source;
   const tone = f.conflict ? "text-amber-700" : f.source === "manual" ? "text-slate-400" : "text-sky-700";
   return (
-    <span className={`ml-2 text-[11px] ${tone}`}>
+    <span className={`ml-2 text-[11px] ${tone}`} title={f.sourceRef ? `Source: ${f.sourceRef}` : undefined}>
       {label}{f.edited ? " · edited" : ""}{f.confidence != null ? ` · ${(f.confidence * 100).toFixed(0)}%` : ""}{f.conflict ? " · review" : ""}
     </span>
   );
@@ -227,15 +228,20 @@ function StepPanel(props: {
       ) : null}
 
       <div className="mt-4">
-        {step.special === "ud-select" ? (
-          <UdSelectSummary />
-        ) : step.special === "btb" ? (
-          <BtbPanel factoryId={props.factoryId} recordId={props.record.id} btbLcs={props.btbLcs} />
-        ) : step.special === "documents" ? (
-          <DocumentsPanel recordId={props.record.id} documents={props.documents} />
-        ) : (
-          <ManualForm {...props} />
-        )}
+        {step.special === "ud-select" ? <UdSelectSummary /> : null}
+        {step.special === "documents" ? <DocumentsPanel recordId={props.record.id} documents={props.documents} /> : null}
+        {step.fields.length > 0 ? (
+          <div className={step.special ? "mt-4" : ""}>
+            {step.special === "documents" ? <div className="mb-2 text-xs font-semibold text-slate-600">Documents already uploaded to BGMEA (from fetch)</div> : null}
+            <ManualForm {...props} />
+          </div>
+        ) : null}
+        {step.special === "btb" ? (
+          <div className="mt-6 border-t border-slate-100 pt-4">
+            <div className="mb-2 text-xs font-semibold text-slate-600">Linked BTB LCs recorded in UCP (manual list)</div>
+            <BtbPanel factoryId={props.factoryId} recordId={props.record.id} btbLcs={props.btbLcs} />
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -244,8 +250,8 @@ function StepPanel(props: {
 function UdSelectSummary() {
   return (
     <p className="text-sm text-slate-500">
-      The factory and new/existing UD choice were set when this workflow was created. New-UD vs amendment criteria and
-      approval steps are an open decision (Q-UD-03).
+      The factory and UD were chosen when this workflow was created (factory first, then a UD from that factory&apos;s catalog).
+      Fetching from BGMEA fills the UD Information below. New-UD vs amendment criteria are an open decision (Q-UD-03).
     </p>
   );
 }
@@ -408,10 +414,14 @@ function DocumentsPanel({ recordId, documents }: { recordId: string; documents: 
 // ---- Source document import (SC/PI) --------------------------------------
 function SourceImportPanel(props: {
   factoryId: string;
+  factoryLabel: string;
   record: { id: string; udNumber: string; mode: string };
   sourceDocs: SourceDoc[];
   pendingImports: PendingImport[];
   liveEnabled: boolean;
+  liveReason: string;
+  runs: RunView[];
+  lastFetchReport: FetchReport | null;
 }) {
   const router = useRouter();
   const [source, setSource] = useState<"sales-contract" | "pi">("sales-contract");
@@ -420,19 +430,6 @@ function SourceImportPanel(props: {
   const [preview, setPreview] = useState<{ batchId: string; data: Preview } | null>(null);
   const [accepted, setAccepted] = useState<Record<string, boolean>>({});
   const [pending, start] = useTransition();
-  const [udNo, setUdNo] = useState(props.record.udNumber);
-  const [fetchMsg, setFetchMsg] = useState("");
-  const [fetchBusy, setFetchBusy] = useState(false);
-
-  async function fetchFromBgmea() {
-    setFetchMsg(""); setFetchBusy(true);
-    try {
-      const res = await fetchFromBgmeaAction({ recordId: props.record.id, factoryId: props.factoryId, udNumber: udNo.trim() });
-      setFetchMsg(res.message);
-      router.refresh();
-    } finally { setFetchBusy(false); }
-  }
-
   // Any pre-existing unresolved preview from the server.
   const serverPreview = props.pendingImports[0];
 
@@ -465,23 +462,15 @@ function SourceImportPanel(props: {
 
   return (
     <div className="card p-5">
-      {props.liveEnabled ? (
-        <div className="mb-4 rounded-md border border-slate-200 bg-slate-50 p-3">
-          <div className="text-sm font-semibold text-slate-800">Fetch from BGMEA (read-only)</div>
-          <p className="mb-2 mt-1 text-xs text-slate-500">
-            Signs in with this factory&apos;s stored credentials and <b>reads</b> the UD&apos;s data from the portal to import into UCP —
-            it never creates, edits or submits a portal record. Values are shown for review (with duplicates + conflicts) before you apply them;
-            existing UCP values are never overwritten without your choice. Reading is fail-closed until the portal field map is confirmed.
-          </p>
-          <div className="flex flex-wrap items-center gap-2">
-            <input className="input w-auto" value={udNo} onChange={(e) => setUdNo(e.target.value)} placeholder="UD number" />
-            <button type="button" className="btn-ghost btn-sm" disabled={fetchBusy || !udNo.trim()} onClick={fetchFromBgmea}>
-              {fetchBusy ? "Fetching…" : "Fetch this UD"}
-            </button>
-          </div>
-          {fetchMsg ? <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 text-xs text-slate-600">{fetchMsg}</div> : null}
-        </div>
-      ) : null}
+      <BgmeaFetchCard
+        factoryId={props.factoryId}
+        factoryLabel={props.factoryLabel}
+        record={props.record}
+        liveEnabled={props.liveEnabled}
+        liveReason={props.liveReason}
+        lastFetch={props.runs.find((r) => r.kind === "fetch" && r.status !== "running") ?? null}
+        lastFetchReport={props.lastFetchReport}
+      />
       <h3 className="text-sm font-semibold text-slate-800">Import from Sales Contract / PI</h3>
       <p className="mb-3 mt-1 text-xs text-slate-500">
         Auto-fill is restricted to the uploaded Sales Contract and PI (SRS). Values are detected, shown for review, and applied only when you confirm — never silently. Imported values stay marked and editable; re-uploads never overwrite your edits without asking.
@@ -521,14 +510,15 @@ function ImportPreviewCard({ preview, batchId, accepted, setAccepted, onApply, o
         <p className="text-sm text-slate-400">No values detected to apply.</p>
       ) : (
         <table className="w-full text-xs">
-          <thead className="bg-slate-50"><tr><th className="th">Step</th><th className="th">Field</th><th className="th">Detected value</th><th className="th">Confidence</th></tr></thead>
+          <thead className="bg-slate-50"><tr><th className="th">Section</th><th className="th">Row</th><th className="th">Field</th><th className="th">Detected value</th><th className="th">Source</th></tr></thead>
           <tbody>
             {preview.detected.map((d, i) => (
-              <tr key={i} className="border-t border-slate-50">
+              <tr key={i} className="border-t border-slate-50 align-top">
                 <td className="td">{stepTitle(d.stepKey)}</td>
-                <td className="td">{d.fieldKey}</td>
+                <td className="td">{stepByKey(d.stepKey)?.group ? `#${d.groupIndex + 1}` : ""}</td>
+                <td className="td">{fieldDef(d.stepKey, d.fieldKey)?.label ?? d.fieldKey}</td>
                 <td className="td">{d.value}</td>
-                <td className="td">{d.confidence != null ? `${(d.confidence * 100).toFixed(0)}%` : "—"}</td>
+                <td className="td text-[11px] text-slate-400" title={d.sourceRef}>{SOURCE_LABEL[d.source] ?? d.source}{d.confidence != null && d.confidence < 1 ? ` · ${(d.confidence * 100).toFixed(0)}%` : ""}</td>
               </tr>
             ))}
           </tbody>
@@ -544,7 +534,7 @@ function ImportPreviewCard({ preview, batchId, accepted, setAccepted, onApply, o
               return (
                 <li key={i} className="flex items-center gap-2">
                   <input type="checkbox" checked={!!accepted[k]} onChange={(e) => setAccepted((p) => ({ ...p, [k]: e.target.checked }))} />
-                  <span>{stepTitle(c.stepKey)} · {c.fieldKey}: keep “{c.existingValue}”{c.existingEdited ? " (edited)" : ""} → “{c.incomingValue}”</span>
+                  <span>{stepTitle(c.stepKey)}{stepByKey(c.stepKey)?.group ? ` #${c.groupIndex + 1}` : ""} · {fieldDef(c.stepKey, c.fieldKey)?.label ?? c.fieldKey}: keep “{c.existingValue}”{c.existingEdited ? " (edited)" : ""} → “{c.incomingValue}”</span>
                 </li>
               );
             })}
@@ -557,7 +547,7 @@ function ImportPreviewCard({ preview, batchId, accepted, setAccepted, onApply, o
       ) : null}
 
       {preview.unmapped.length > 0 ? (
-        <div className="mt-2 text-xs text-slate-400">Unmapped columns: {preview.unmapped.join(", ")}</div>
+        <div className="mt-2 text-xs text-amber-700">Unmapped (read, not applied): {preview.unmapped.join(", ")}</div>
       ) : null}
 
       <div className="mt-3 flex gap-2">
@@ -571,11 +561,13 @@ function ImportPreviewCard({ preview, batchId, accepted, setAccepted, onApply, o
 // ---- Review & confirm -----------------------------------------------------
 function ReviewPanel(props: {
   factoryId: string;
-  record: { id: string; status: string };
+  factoryLabel: string;
+  record: { id: string; status: string; udNumber: string };
   fields: FieldState[];
   btbLcs: BtbLc[];
   documents: Doc[];
   writeBack: WriteBackState;
+  runs: RunView[];
 }) {
   const router = useRouter();
   const [pending, start] = useTransition();
@@ -601,7 +593,7 @@ function ReviewPanel(props: {
     <div className="card p-5">
       <h3 className="text-lg font-semibold text-slate-800">Review &amp; confirm</h3>
       <div className="mt-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-        Confirming marks this UD <b>ready for the operator to submit in the BGMEA portal</b>. UCP does <b>not</b> submit it. Review every value, especially items flagged for review.
+        Confirming the review marks this UD <b>ready</b>. Then <b>Confirm Ready for BGMEA</b> (below) saves the reviewed values to this UD&apos;s BGMEA pages. UCP never submits the UD. Review every value, especially items flagged for review.
       </div>
 
       {conflicts.length > 0 ? (
@@ -609,7 +601,7 @@ function ReviewPanel(props: {
       ) : null}
 
       <div className="mt-4 space-y-4">
-        {UD_STEPS.filter((s) => !s.special).map((s) => {
+        {UD_STEPS.filter((s) => s.fields.length > 0).map((s) => {
           const vals = byStep.get(s.key) ?? [];
           return (
             <div key={s.key}>
@@ -621,7 +613,7 @@ function ReviewPanel(props: {
                   <tbody>
                     {vals.map((v) => (
                       <tr key={cellKey(v.stepKey, v.fieldKey, v.groupIndex)} className="border-t border-slate-50">
-                        <td className="td w-1/3 text-slate-500">{v.fieldKey}{v.groupIndex > 0 ? ` #${v.groupIndex + 1}` : ""}</td>
+                        <td className="td w-1/3 text-slate-500">{fieldDef(v.stepKey, v.fieldKey)?.label ?? v.fieldKey}{s.group ? ` #${v.groupIndex + 1}` : ""}</td>
                         <td className="td">{v.value}</td>
                         <td className="td w-28 text-right"><ProvenanceBadge f={v} /></td>
                       </tr>
@@ -633,8 +625,8 @@ function ReviewPanel(props: {
           );
         })}
         <div>
-          <div className="mb-1 text-sm font-semibold text-slate-700">5. BTB LC</div>
-          <div className="text-xs text-slate-500">{props.btbLcs.length} linked.</div>
+          <div className="mb-1 text-sm font-semibold text-slate-700">5. BTB LC — manual list</div>
+          <div className="text-xs text-slate-500">{props.btbLcs.length} recorded in UCP.</div>
         </div>
         <div>
           <div className="mb-1 text-sm font-semibold text-slate-700">12. Supporting documents</div>
@@ -648,107 +640,13 @@ function ReviewPanel(props: {
           {result.missing && result.missing.length > 0 ? <div className="mt-1">Missing: {result.missing.map((m) => m.label).join("; ")}</div> : null}
         </div>
       ) : null}
-      {result?.ok ? <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-sm text-emerald-700">Marked ready. Populate &amp; save the BGMEA pages below, then submit it yourself in the portal.</div> : null}
+      {result?.ok ? <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 p-2 text-sm text-emerald-700">Review confirmed. Use Confirm Ready for BGMEA below to save the values to BGMEA, then submit it yourself in the portal.</div> : null}
 
       <button type="button" className="btn-primary btn-sm mt-4" disabled={pending} onClick={confirm}>
-        {pending ? "Checking…" : "Confirm — ready for BGMEA"}
+        {pending ? "Checking…" : "Confirm reviewed"}
       </button>
 
-      <WriteBackSection factoryId={props.factoryId} recordId={props.record.id} writeBack={props.writeBack} />
-    </div>
-  );
-}
-
-// ---- Write-back (populate + save to BGMEA) — explicit, confirmed; never submits ----
-function WriteBackSection({ factoryId, recordId, writeBack }: { factoryId: string; recordId: string; writeBack: WriteBackState }) {
-  const router = useRouter();
-  const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string; pages?: { stepKey: string; title: string; status: string; message: string }[] } | null>(null);
-  const [submitMsg, setSubmitMsg] = useState("");
-
-  const targetLabel = writeBack.target === "mock" ? "MOCK (simulated — no portal)" : "NON-PRODUCTION";
-
-  async function run(onlyFailed: boolean) {
-    setBusy(true);
-    try {
-      const res = await writeBackToBgmeaAction({ recordId, factoryId, confirm: true, onlyFailed });
-      setResult(res);
-      router.refresh();
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function submit() {
-    setSubmitMsg("");
-    const res = await requestBgmeaSubmitAction({ recordId, factoryId });
-    setSubmitMsg(res.message);
-  }
-
-  const statusTone = (s: string) =>
-    s === "saved" ? "text-emerald-700" : s === "failed" ? "text-rose-700" : s === "saving" ? "text-sky-700" : "text-slate-400";
-  const pages = result?.pages ?? writeBack.pages.map((p) => ({ stepKey: p.stepKey, title: stepByKey(p.stepKey)?.title ?? p.stepKey, status: p.status, message: p.message }));
-
-  return (
-    <div className="mt-6 border-t border-slate-100 pt-4">
-      <h4 className="text-sm font-semibold text-slate-800">Populate &amp; save to BGMEA</h4>
-      <p className="mt-1 text-xs text-slate-500">
-        Writes the reviewed values into the BGMEA pages and saves each page. This is an explicit, confirmed action — the <b>final submission is separate and never automatic</b>. Developed and verified against a mock; production write-back is disabled.
-      </p>
-
-      {!writeBack.enabled ? (
-        <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-500">
-          Write-back is disabled (fail-closed). {writeBack.reason}
-        </div>
-      ) : (
-        <>
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-            <span className={`rounded-full px-2 py-0.5 font-medium ${writeBack.target === "mock" ? "bg-slate-100 text-slate-600" : "bg-amber-100 text-amber-800"}`}>Target: {targetLabel}</span>
-            {!writeBack.allowed ? <span className="text-rose-700">{writeBack.reason}</span> : null}
-          </div>
-
-          <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
-            <input type="checkbox" checked={confirm} onChange={(e) => setConfirm(e.target.checked)} disabled={!writeBack.allowed} />
-            I reviewed the values and confirm populating &amp; saving them to the BGMEA pages ({targetLabel}).
-          </label>
-
-          <div className="mt-2 flex flex-wrap gap-2">
-            <button type="button" className="btn-primary btn-sm" disabled={busy || !writeBack.allowed || !confirm} onClick={() => run(false)}>
-              {busy ? "Saving pages…" : "Populate & save to BGMEA"}
-            </button>
-            {pages.some((p) => p.status === "failed") ? (
-              <button type="button" className="btn-ghost btn-sm" disabled={busy || !writeBack.allowed || !confirm} onClick={() => run(true)}>
-                Retry failed pages
-              </button>
-            ) : null}
-          </div>
-
-          {result ? <div className={`mt-2 rounded-md border p-2 text-xs ${result.ok ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-amber-200 bg-amber-50 text-amber-800"}`}>{result.message}</div> : null}
-
-          {pages.length > 0 ? (
-            <table className="mt-3 w-full text-xs">
-              <thead className="bg-slate-50"><tr><th className="th">Page</th><th className="th">Status</th><th className="th">Detail</th></tr></thead>
-              <tbody>
-                {pages.map((p) => (
-                  <tr key={p.stepKey} className="border-t border-slate-50">
-                    <td className="td">{p.title}</td>
-                    <td className={`td font-medium ${statusTone(p.status)}`}>{p.status}</td>
-                    <td className="td text-slate-500">{p.message}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : null}
-
-          {/* Final submission — a deliberately SEPARATE, never-automatic action. */}
-          <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3">
-            <div className="text-xs font-semibold text-slate-700">Final submission (separate step)</div>
-            <p className="mt-1 text-xs text-slate-500">UCP never submits automatically. When every page is saved and checked, submit the UD yourself in the BGMEA portal.</p>
-            <button type="button" className="btn-ghost btn-sm mt-2" onClick={submit}>How submission works</button>
-            {submitMsg ? <div className="mt-2 rounded-md border border-slate-200 bg-white p-2 text-xs text-slate-600">{submitMsg}</div> : null}
-          </div>
-        </>
-      )}
+      <ConfirmReadyForBgmea factoryId={props.factoryId} factoryLabel={props.factoryLabel} record={props.record} writeBack={props.writeBack} runs={props.runs} />
     </div>
   );
 }

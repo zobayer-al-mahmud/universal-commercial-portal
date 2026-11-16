@@ -254,11 +254,9 @@ const schema = z.object({
   EXP_MAX_FILE_MB: z.coerce.number().positive().default(25),
 
   // --- UD Automation (BGMEA UD Preparation portal) --------------------------
-  // The BGMEA portal is driven per FACTORY (four accounts). Live driving is
-  // fail-closed: nothing is submitted to BGMEA automatically, and when
-  // BGMEA_LIVE_ENABLED is off the module fills/reviews only and never touches a
-  // production record. The portal URL/selectors are PENDING confirmation against
-  // an authenticated session (the operator signs in; UCP never enters chat creds).
+  // The BGMEA portal is driven per FACTORY (four accounts, each with its own
+  // credentials). Fetch is READ-ONLY. Live access is fail-closed behind
+  // BGMEA_LIVE_ENABLED; nothing is ever submitted to BGMEA automatically.
   BGMEA_PORTAL_URL: z.string().default("https://bgmea.org/Account/Login?ReturnUrl=%2F"),
   BGMEA_LIVE_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
   // Visible browser for the automation (own CDP port + profile so it never clashes
@@ -270,19 +268,12 @@ const schema = z.object({
   // Max size (MB) for an uploaded Sales Contract / PI / BGMEA workbook / supporting doc.
   BGMEA_MAX_FILE_MB: z.coerce.number().positive().default(25),
 
-  // --- BGMEA write-back (populate + save portal pages) ----------------------
-  // Resolves Q-UD-13: populate/save is an EXPLICIT, user-confirmed action; final
-  // submission is a SEPARATE action and is never automatic. Fail-closed:
-  //   * BGMEA_WRITEBACK_ENABLED (default false) must be on for the feature at all.
-  //   * BGMEA_WRITEBACK_TARGET selects "mock" (simulated, no portal — the dev/verify
-  //     path) or "nonprod" (a confirmed non-production BGMEA at BGMEA_NONPROD_URL).
-  //   * PRODUCTION write-back stays DISABLED: a nonprod run refuses any URL on the
-  //     production host unless BGMEA_ALLOW_PRODUCTION_WRITE is true, which must not be
-  //     set without the owner's explicit authorization.
+  // --- BGMEA write-back ("Confirm Ready for BGMEA") ------------------------
+  // Saving reviewed values to the selected UD's BGMEA pages happens ONLY when the
+  // operator explicitly confirms "Confirm Ready for BGMEA" for that exact factory +
+  // UD. Final submission is a separate, never-automatic user action.
+  // BGMEA_WRITEBACK_ENABLED (default false) is the kill switch for the whole feature.
   BGMEA_WRITEBACK_ENABLED: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
-  BGMEA_WRITEBACK_TARGET: z.enum(["mock", "nonprod"]).default("mock"),
-  BGMEA_NONPROD_URL: z.string().optional().or(z.literal("")),
-  BGMEA_ALLOW_PRODUCTION_WRITE: z.enum(["true", "false"]).default("false").transform((v) => v === "true"),
 
   // Per-factory portal credentials — DEV fallback only (the preferred source is
   // the encrypted PortalCredential store, keyed "bgmea:<factoryId>", managed in

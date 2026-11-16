@@ -347,6 +347,10 @@ export async function createImportPreview(input: {
 }): Promise<{ id: string; preview: ImportPreview }> {
   const existing = await loadFieldStates(input.recordId);
   const preview = buildPreview({ source: input.source, originalName: input.originalName, detected: input.detected, existing, unmapped: input.unmapped ?? [], messages: input.messages });
+  if (input.source === "bgmea-portal") {
+    // A newer BGMEA fetch supersedes any earlier, still-unreviewed BGMEA preview.
+    await prisma.udImportBatch.updateMany({ where: { recordId: input.recordId, source: "bgmea-portal", status: "preview" }, data: { status: "superseded" } });
+  }
   const batch = await prisma.udImportBatch.create({
     data: {
       recordId: input.recordId,
