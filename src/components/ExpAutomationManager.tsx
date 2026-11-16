@@ -124,6 +124,24 @@ const PROCESSABLE = new Set(["pending", "not_found", "mismatch", "failed", "need
 const COUNT_DONE = new Set(["matched", "filled", "updated", "update_failed", "updated_verified", "partially_updated", "downloaded", "skipped", "not_found", "mismatch", "failed", "needs_auth"]);
 const COUNT_REMAINING = new Set(["pending", "queued", "running", "stopped"]);
 
+// --- All Documents filter: group the EXP row statuses into operator buckets ---
+type DocFilter = "all" | "completed" | "pending" | "failed";
+const DOC_COMPLETED = new Set(["matched", "filled", "updated", "updated_verified", "downloaded"]);
+const DOC_FAILED = new Set(["not_found", "mismatch", "needs_auth", "failed", "update_failed"]);
+/** Which filter bucket a row status belongs to (anything not completed/failed is "pending"). */
+function docBucket(status: string): Exclude<DocFilter, "all"> {
+  if (DOC_COMPLETED.has(status)) return "completed";
+  if (DOC_FAILED.has(status)) return "failed";
+  return "pending"; // pending | queued | running | stopped | partially_updated | skipped
+}
+/** Case-insensitive match of a search term against a row's identifiers. */
+function rowMatchesSearch(r: RowView, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  return [String(r.rowNo), r.adscode, r.expSerial, r.expYear, r.expNo, r.invoiceNo, r.saveAs]
+    .some((v) => (v || "").toLowerCase().includes(needle));
+}
+
 // --- per-tab / per-job UI persistence (survives tab switches + page refresh) ---
 const lastJobKey = (kind: ExpKind) => `exp:lastJob:${kind}`;
 const selKey = (jobId: string) => `exp:selected:${jobId}`;
@@ -134,10 +152,30 @@ function writeSession(k: string, v: string | null): void {
   try { if (v === null) sessionStorage.removeItem(k); else sessionStorage.setItem(k, v); } catch { /* storage unavailable */ }
 }
 
+/** One metric tile in the live process summary. */
+function SummaryCard({ label, value, tone }: { label: string; value: number; tone: "slate" | "sky" | "emerald" | "green" | "rose" | "amber" }) {
+  const tones: Record<string, string> = {
+    slate: "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200",
+    sky: "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-900/20 dark:text-sky-300",
+    emerald: "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300",
+    green: "border-green-200 bg-green-50 text-green-700 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300",
+    rose: "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-800 dark:bg-rose-900/20 dark:text-rose-300",
+    amber: "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-300",
+  };
+  return (
+    <div className={`rounded-lg border p-2.5 ${tones[tone]}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-wide opacity-70">{label}</div>
+      <div className="mt-0.5 text-xl font-bold tabular-nums">{value}</div>
+    </div>
+  );
+}
+
 function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAcknowledge, onHistoryChange, openJobId, onOpened }: { kind: ExpKind; liveEnabled: boolean; credsConfigured: boolean; autoApply: boolean; autoAcknowledge: boolean; onHistoryChange: () => void; openJobId: string | null; onOpened: () => void }) {
   const [jobId, setJobId] = useState<string | null>(null);
   const [job, setJob] = useState<JobStatus | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [docFilter, setDocFilter] = useState<DocFilter>("all");
+  const [docSearch, setDocSearch] = useState("");
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -210,7 +248,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
   // the "Process selected (N)" count never over-promises.
   useEffect(() => {
     if (!job) return;
-    const eligible = new Set(job.rows.filter((r) => PROCESSABLE.has(r.status)).map((r) => r.id));
+    const eligible = new Set(job.rows.filter((r) => PROCESSABLE.has(r.status) || r.hasPdf).map((r) => r.id));
     setSelected((prev) => {
       let changed = false;
       const next = new Set<string>();
@@ -250,7 +288,13 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
   function toggle(id: string) {
     setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
-  const selectableRows = (job?.rows ?? []).filter((r) => PROCESSABLE.has(r.status));
+  // A row is selectable if it can be processed OR it already has a PDF to download.
+  const isSelectable = (r: RowView) => PROCESSABLE.has(r.status) || r.hasPdf;
+  const processableRows = (job?.rows ?? []).filter((r) => PROCESSABLE.has(r.status));
+  const selectableRows = (job?.rows ?? []).filter(isSelectable);
+  // Split the current selection by what each action can actually use.
+  const selectedProcessableIds = processableRows.filter((r) => selected.has(r.id)).map((r) => r.id);
+  const selectedPdfIds = (job?.rows ?? []).filter((r) => r.hasPdf && selected.has(r.id)).map((r) => r.id);
   function toggleAll() {
     setSelected((s) => {
       if (s.size >= selectableRows.length && selectableRows.length > 0) return new Set();
@@ -267,7 +311,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
     // Live Apply Changes is an irreversible submission to the Bangladesh Bank
     // portal — confirm the exact row count before firing.
     if (apply) {
-      const n = rowIds ? rowIds.length : selectableRows.length;
+      const n = rowIds ? rowIds.length : processableRows.length;
       if (typeof window !== "undefined" && !window.confirm(`Apply Changes LIVE to the Bangladesh Bank EXP portal for ${n} selected row(s)?\n\nEach row is filled from Excel, read back, then Apply Changes is clicked and the portal response is verified. This is a real, irreversible submission. Acknowledge is never clicked.`)) return;
     }
     submittingRef.current = true;
@@ -353,6 +397,17 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
   const scopeRowNos = runScope ? new Set(scopedRows.map((r) => r.rowNo)) : null;
   const logEvents = scopeRowNos ? (job?.events ?? []).filter((e) => scopeRowNos.has(e.rowNo)) : (job?.events ?? []);
 
+  // --- All Documents: per-bucket counts (whole job) + the rows shown right now ---
+  const allRows = job?.rows ?? [];
+  const docCounts: Record<DocFilter, number> = {
+    all: allRows.length,
+    completed: allRows.filter((r) => docBucket(r.status) === "completed").length,
+    pending: allRows.filter((r) => docBucket(r.status) === "pending").length,
+    failed: allRows.filter((r) => docBucket(r.status) === "failed").length,
+  };
+  const visibleRows = allRows.filter((r) => (docFilter === "all" || docBucket(r.status) === docFilter) && rowMatchesSearch(r, docSearch));
+  const pdfCount = allRows.filter((r) => r.hasPdf).length;
+
   return (
     <div className="space-y-5">
       {!liveEnabled ? (
@@ -401,7 +456,7 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-sm font-semibold text-slate-800">Progress</h3>
             <div className="flex items-center gap-2 text-xs">
-              {isDownload && c && c.downloaded > 0 ? <a href={`/api/exp/${job.id}/zip`} className="btn-primary btn-xs">⬇ All PDFs ({c.downloaded}) ZIP</a> : null}
+              {pdfCount > 0 ? <a href={`/api/exp/${job.id}/zip`} className="btn-primary btn-xs" title="Download every captured PDF in this job as one ZIP, named by EXP fields.">⬇ All PDFs ({pdfCount}) ZIP</a> : null}
               {job.hasFile ? <a href={`/api/exp/${job.id}/file`} className="btn-ghost btn-xs" title="The original uploaded workbook (unchanged)">⬇ Original xlsx</a> : null}
               {job.hasFile ? <a href={`/api/exp/${job.id}/file?edited=1`} className="btn-ghost btn-xs" title="A workbook rebuilt from the current (edited) rows">⬇ Edited xlsx</a> : null}
               <a href={`/api/exp/${job.id}/report`} className="btn-ghost btn-xs">⬇ CSV report</a>
@@ -414,6 +469,19 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
             <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 p-2 text-[11px] text-amber-800">
               {c?.total ?? 0} row(s) parsed and ready to review. <strong>Nothing runs until you start it</strong> — select rows and click
               {" "}<strong>Process selected</strong>, or <strong>Process all pending</strong> below.
+            </div>
+          ) : null}
+
+          {/* Live Process Summary — tiles update automatically as rows finish. */}
+          {disp ? (
+            <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+              <SummaryCard label={isScoped ? "In this run" : "Total"} value={disp.total} tone="slate" />
+              <SummaryCard label="Processed" value={disp.processed} tone="sky" />
+              {isDownload
+                ? <SummaryCard label="Downloaded" value={disp.downloaded} tone="green" />
+                : <SummaryCard label="Form filled" value={disp.changed} tone="emerald" />}
+              <SummaryCard label="Failed" value={disp.failed} tone="rose" />
+              <SummaryCard label={job.running ? "Processing / left" : "Remaining"} value={disp.remaining} tone="amber" />
             </div>
           ) : null}
 
@@ -447,17 +515,45 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
           })()}
 
           <div className="mb-3 flex flex-wrap items-center gap-3">
-            <button onClick={() => process(Array.from(selected))} disabled={pending || selected.size === 0} className="btn-primary btn-sm disabled:opacity-40" title="Fill the form from Excel and read it back for review — nothing is submitted.">▶ {isDownload ? "Download selected" : "Fill selected for review"} ({selected.size})</button>
-            <button onClick={() => process(undefined)} disabled={pending || selectableRows.length === 0} className="btn-ghost btn-sm disabled:opacity-40">▶ {isDownload ? "Download all pending" : "Fill all pending"}</button>
+            <button onClick={() => process(selectedProcessableIds)} disabled={pending || selectedProcessableIds.length === 0} className="btn-primary btn-sm disabled:opacity-40" title="Fill the form from Excel and read it back for review — nothing is submitted.">▶ {isDownload ? "Download selected" : "Fill selected for review"} ({selectedProcessableIds.length})</button>
+            <button onClick={() => process(undefined)} disabled={pending || processableRows.length === 0} className="btn-ghost btn-sm disabled:opacity-40">▶ {isDownload ? "Download all pending" : "Fill all pending"}</button>
             {!isDownload && autoApply ? (
-              <button onClick={() => process(Array.from(selected), true)} disabled={pending || selected.size === 0} className="btn-danger btn-sm disabled:opacity-40" title="AUTOMATIC: fill, read back, then click Apply Changes on the live Bangladesh Bank portal for every selected row, sequentially. Irreversible. Acknowledge is never clicked.">⚑ Apply selected to portal ({selected.size})</button>
+              <button onClick={() => process(selectedProcessableIds, true)} disabled={pending || selectedProcessableIds.length === 0} className="btn-danger btn-sm disabled:opacity-40" title="AUTOMATIC: fill, read back, then click Apply Changes on the live Bangladesh Bank portal for every selected row, sequentially. Irreversible. Acknowledge is never clicked.">⚑ Apply selected to portal ({selectedProcessableIds.length})</button>
             ) : null}
-            {selected.size === 0 && selectableRows.length > 0 ? (
-              <span className="text-[11px] font-medium text-amber-600">Select rows to process{!isDownload && autoApply ? " or apply" : ""}, or use “{isDownload ? "Download" : "Fill"} all pending”.</span>
+            {/* Bulk download the captured PDFs of the selected rows (Correction/Duplicate
+                form PDFs + Download PDFs), named by their EXP fields. */}
+            {selectedPdfIds.length > 0 ? (
+              <a href={`/api/exp/${job.id}/zip?rowIds=${selectedPdfIds.join(",")}`} className="btn-ghost btn-sm" title="Download the captured PDFs for the selected rows as one ZIP, each named by its EXP fields.">⬇ Download selected PDFs ({selectedPdfIds.length})</a>
+            ) : null}
+            {selectedProcessableIds.length === 0 && selectedPdfIds.length === 0 && selectableRows.length > 0 ? (
+              <span className="text-[11px] font-medium text-amber-600">Select rows to process{!isDownload && autoApply ? " / apply" : ""} / download PDFs, or use “{isDownload ? "Download" : "Fill"} all pending”.</span>
             ) : null}
             <label className="ml-auto flex items-center gap-2 text-xs text-slate-500">
               <input type="checkbox" checked={selected.size >= selectableRows.length && selectableRows.length > 0} onChange={toggleAll} /> Select all
             </label>
+          </div>
+
+          {/* All Documents — filter by outcome + free-text search. */}
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            {(["all", "completed", "pending", "failed"] as DocFilter[]).map((key) => {
+              const label = key === "all" ? "All" : key.charAt(0).toUpperCase() + key.slice(1);
+              return (
+                <button
+                  key={key}
+                  onClick={() => setDocFilter(key)}
+                  className={`rounded-full border px-3 py-1 text-[11px] font-semibold ${docFilter === key ? "border-sky-400 bg-sky-50 text-sky-700 dark:border-sky-600 dark:bg-sky-900/30 dark:text-sky-300" : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400"}`}
+                >
+                  {label} ({docCounts[key]})
+                </button>
+              );
+            })}
+            <input
+              value={docSearch}
+              onChange={(e) => setDocSearch(e.target.value)}
+              placeholder={isDownload ? "Search EXP No, Save as, serial…" : "Search ADSCODE, serial, EXP No, invoice…"}
+              className="ml-auto w-64 max-w-full rounded border border-slate-300 px-2 py-1 text-xs dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+            />
+            <span className="text-[11px] text-slate-400">{visibleRows.length} shown</span>
           </div>
 
           <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-700">
@@ -468,19 +564,22 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
                   <th className="th text-left">#</th>
                   <th className="th text-left">{isDownload ? "EXP No / Save as" : "ADSCODE · Serial · Year"}</th>
                   <th className="th text-left">Status / step</th>
-                  <th className="th text-left">{isDownload ? "PDF" : "Fields filled"}</th>
+                  <th className="th text-left">{isDownload ? "PDF" : "Fields / PDF"}</th>
                   <th className="th text-left">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {job.rows.map((r) => {
+                {visibleRows.length === 0 ? (
+                  <tr><td className="td text-center text-slate-400" colSpan={6}>No documents match this filter{docSearch.trim() ? ` or “${docSearch.trim()}”` : ""}.</td></tr>
+                ) : null}
+                {visibleRows.map((r) => {
                   const err = TERMINAL.has(r.status) && (RETRYABLE.has(r.status) || (r.status === "downloaded" && !r.hasPdf));
                   const canEdit = EDITABLE.has(r.status) && !job.running;
                   return (
                     <Fragment key={r.id}>
                     <tr className="border-t border-slate-100 align-top dark:border-slate-700">
                       <td className="td">
-                        {PROCESSABLE.has(r.status) ? <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /> : null}
+                        {isSelectable(r) ? <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} /> : null}
                       </td>
                       <td className="td text-slate-400">{r.rowNo}</td>
                       <td className="td font-mono">
@@ -498,22 +597,33 @@ function WorkflowPanel({ kind, liveEnabled, credsConfigured, autoApply, autoAckn
                       </td>
                       <td className="td">
                         {isDownload ? (
-                          r.status === "downloaded" && r.hasPdf ? (
+                          r.hasPdf ? (
                             <span className="flex gap-2">
-                              <a href={`/api/exp/row/${r.id}/pdf`} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline">👁</a>
-                              <a href={`/api/exp/row/${r.id}/pdf?download=1`} className="text-sky-700 hover:underline">⬇</a>
+                              <a href={`/api/exp/row/${r.id}/pdf`} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline" title="Preview the PDF">👁</a>
+                              <a href={`/api/exp/row/${r.id}/pdf?download=1`} className="text-sky-700 hover:underline" title="Download the PDF (named by EXP fields)">⬇</a>
                             </span>
                           ) : "—"
-                        ) : r.mismatched.length ? (
-                          <details>
-                            <summary className="cursor-pointer text-emerald-700">{r.mismatched.length} field(s)</summary>
-                            <ul className="mt-1 space-y-0.5 text-[10px] text-slate-500">
-                              {r.mismatched.map((m, i) => (
-                                <li key={i}><span className="font-semibold text-slate-600">{m.portalLabel}</span>: “{m.portal || "—"}” → “{m.excel}”</li>
-                              ))}
-                            </ul>
-                          </details>
-                        ) : r.status === "matched" ? <span className="text-slate-400">unchanged</span> : "—"}
+                        ) : (
+                          <div className="space-y-1">
+                            {r.mismatched.length ? (
+                              <details>
+                                <summary className="cursor-pointer text-emerald-700">{r.mismatched.length} field(s)</summary>
+                                <ul className="mt-1 space-y-0.5 text-[10px] text-slate-500">
+                                  {r.mismatched.map((m, i) => (
+                                    <li key={i}><span className="font-semibold text-slate-600">{m.portalLabel}</span>: “{m.portal || "—"}” → “{m.excel}”</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            ) : r.status === "matched" ? <span className="text-slate-400">unchanged</span> : null}
+                            {r.hasPdf ? (
+                              <span className="flex gap-2">
+                                <a href={`/api/exp/row/${r.id}/pdf`} target="_blank" rel="noreferrer" className="text-sky-700 hover:underline" title="Preview the captured form PDF">👁 PDF</a>
+                                <a href={`/api/exp/row/${r.id}/pdf?download=1`} className="text-sky-700 hover:underline" title="Download the captured form PDF (named by EXP fields)">⬇</a>
+                              </span>
+                            ) : null}
+                            {!r.mismatched.length && r.status !== "matched" && !r.hasPdf ? "—" : null}
+                          </div>
+                        )}
                       </td>
                       <td className="td">
                         {(() => {
