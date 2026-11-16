@@ -334,13 +334,11 @@ export async function runExpRow(rowId: string, actor: string, apply = false): Pr
   else if (row.kind === "duplicate") result = await runDuplicate(parsedRow, onProgress, { apply });
   else result = await runDownload(parsedRow, onProgress);
 
-  // Persist the captured PDF: the Download kind's portal PDF, AND the read-only
-  // filled-form PDF now captured for Correction/Duplicate (stored even when an
-  // Apply was not confirmed, so the reviewed document is never lost).
+  // Persist the PDF (download kind).
   let pdfPath: string | null = null;
   let pdfSha256: string | null = null;
   let pdfPages = 0;
-  if (result.pdf) {
+  if (result.ok && result.pdf) {
     try {
       const dir = storageDir();
       await mkdir(dir, { recursive: true });

@@ -3,9 +3,8 @@ import { NextResponse } from "next/server";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
-import { expPdfBase } from "@/server/exp-automation/output-name";
 
-/** Serve one EXP PDF (inline preview, or ?download=1 to save it named by EXP fields). */
+/** Serve one downloaded EXP PDF (inline preview, or ?download=1 to save as <Save_As>.pdf). */
 export async function GET(req: Request, { params }: { params: { rowId: string } }) {
   const user = await getSessionUser();
   if (!user) return NextResponse.json({ error: "Unauthenticated" }, { status: 401 });
@@ -22,11 +21,7 @@ export async function GET(req: Request, { params }: { params: { rowId: string } 
   }
 
   const download = new URL(req.url).searchParams.get("download") === "1";
-  // Name by the record's own EXP fields (Save_As → EXP No → ADSCode_Serial_Year → …).
-  const safeName = expPdfBase({
-    rowNo: row.rowNo, expNo: row.expNo, adscode: row.adscode, expSerial: row.expSerial,
-    expYear: row.expYear, invoiceNo: row.invoiceNo, saveAs: row.saveAs,
-  });
+  const safeName = (row.saveAs || row.expSerial || row.id).replace(/[^\w.-]+/g, "_").replace(/\.pdf$/i, "");
   return new NextResponse(bytes as unknown as BodyInit, {
     headers: {
       "Content-Type": "application/pdf",

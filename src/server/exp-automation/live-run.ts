@@ -9,7 +9,7 @@ import { type FieldDiff, valuesEquivalent, formatDateLike, normDate } from "./co
 import { capturePortalDump, summarizeDump, writeDump, isEditFormLoaded, type PortalDump } from "./diagnostics";
 import { CORRECTION_FIELDS, DUPLICATE_FIELDS, type FieldMap, type ParsedExpRow, type ExpKind } from "./types";
 import { neutralizeFinalControls, assertSafeToClick, type ClickPolicy } from "./guards";
-import { validateCapturedPdf, printPageToPdf } from "./pdf";
+import { validateCapturedPdf } from "./pdf";
 import { parsePdfText } from "@/server/pdf/parse-pdf";
 import { CORRECTION_STEPS, DUPLICATE_STEPS } from "./progress";
 
@@ -303,25 +303,6 @@ function kindTag(fields: FieldMap[]): string {
 }
 
 /**
- * Capture the Edit/Update EXP form exactly as it stands on screen (filled from
- * Excel) as a PDF, using CDP Page.printToPDF. This is READ-ONLY — it prints the
- * current page, never clicks Apply/Submit/Acknowledge — so a Correction/Duplicate
- * record becomes a reviewable, downloadable document alongside the Download kind.
- * Best-effort: a capture or validation failure returns null and never fails the
- * fill (the operator still has the live form in the visible browser).
- */
-async function captureFormPdf(page: Page): Promise<{ buffer: Buffer; bytes: number; pages: number } | null> {
-  try {
-    const buf = await printPageToPdf(page);
-    const v = validateCapturedPdf(buf);
-    if (!v.ok || !buf) return null;
-    return { buffer: buf, bytes: v.bytes, pages: v.pages };
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Shared workflow for Issued EXP Correction AND Duplicate EXP Reporting — both
  * use the SAME logic: search, open the Edit/Update EXP form, and FILL every
  * mapped field directly from the Excel row (regardless of any existing portal
@@ -446,14 +427,6 @@ async function runFormFill(
       }
       await neutralizeFinalControls(page, policy);
 
-      // Capture the filled Edit/Update form as a read-only PDF document (CDP print
-      // — never a submit/acknowledge), so this Correction/Duplicate record can be
-      // previewed, named by its EXP fields, and bulk-downloaded like a Download
-      // row. Only when something was actually written; best-effort (never fails
-      // the fill). The apply branch below reuses the same captured bytes.
-      const formPdf = written.length > 0 ? await captureFormPdf(page) : null;
-      if (formPdf) await emit("Document captured", `Saved the filled form as a PDF (${formPdf.bytes} bytes, ${formPdf.pages} pg).`);
-
       const parts = [`Filled ${written.length} field(s) from Excel`];
       if (notConfirmed) parts.push(`${notConfirmed} not confirmed`);
       if (failed.length) parts.push(`${failed.length} could not be filled`);
@@ -482,10 +455,10 @@ async function runFormFill(
         await neutralizeFinalControls(page, {}); // re-harden after the attempt
         if (upd.ok) {
           await emit("Apply confirmed", `${parts.join(", ")}. ${upd.message}`);
-          return { ...base("UPDATED", `${parts.join(", ")}; Apply Changes submitted and confirmed by the portal: ${upd.message}`, auth), ok: true, mismatchedFields: confirmed, portalValues: {}, pdf: formPdf };
+          return { ...base("UPDATED", `${parts.join(", ")}; Apply Changes submitted and confirmed by the portal: ${upd.message}`, auth), ok: true, mismatchedFields: confirmed, portalValues: {} };
         }
         await emit("Apply failed", upd.message);
-        return { ...base("UPDATE_FAILED", `${parts.join(", ")}; Apply Changes was not confirmed: ${upd.message}`, auth), mismatchedFields: confirmed, portalValues: {}, pdf: formPdf };
+        return { ...base("UPDATE_FAILED", `${parts.join(", ")}; Apply Changes was not confirmed: ${upd.message}`, auth), mismatchedFields: confirmed, portalValues: {} };
       }
 
       await emit("Form Filled", `${parts.join(", ")}. Review and submit it yourself in the visible browser.`);
@@ -494,7 +467,6 @@ async function runFormFill(
         ok: true,
         mismatchedFields: confirmed,
         portalValues: {},
-        pdf: formPdf,
       };
     } catch (e) {
       return base("FAILED", e instanceof Error ? e.message : "EXP form workflow failed.", auth);
