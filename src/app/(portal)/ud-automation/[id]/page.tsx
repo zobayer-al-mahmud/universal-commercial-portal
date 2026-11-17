@@ -11,6 +11,31 @@ import { UdWorkflow } from "@/components/UdWorkflow";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Keep only the lightweight parts of a fetch report for the persistent page payload:
+ * per-section status/counts/unmapped. The heavy captured dropdown options and the HS
+ * Code / Unit reference-list rows (~300 KB) are dropped here — they are shown from the
+ * live in-session fetch result, and keeping them in every render/refresh made the RSC
+ * refresh after "Apply reviewed values" abort, so applied values did not appear.
+ */
+function summariseFetchReport(report: Record<string, unknown>): Record<string, unknown> {
+  const sections = Array.isArray(report.sections) ? report.sections : [];
+  return {
+    sections: sections.map((s: Record<string, unknown>) => ({
+      key: s.key,
+      stepKey: s.stepKey,
+      title: s.title,
+      status: s.status,
+      found: s.found,
+      message: s.message,
+      unmapped: s.unmapped,
+      // `dropdowns` intentionally omitted (the heavy part).
+    })),
+    referenceLists: [], // rows omitted (the heavy part); available from the live fetch result.
+    unmapped: Array.isArray(report.unmapped) ? report.unmapped : [],
+  };
+}
+
 export default async function UdWorkflowPage({ params, searchParams }: { params: { id: string }; searchParams: { factory?: string } }) {
   await requireSection("processes");
   const factoryId = searchParams.factory ?? "";
@@ -26,7 +51,14 @@ export default async function UdWorkflowPage({ params, searchParams }: { params:
   await expireStaleRuns(record.id);
   const runs = await listRuns(record.id, 12);
   const lastFetch = runs.find((r) => r.kind === "fetch" && r.status !== "running");
-  const lastFetchReport = lastFetch ? await getRunReport(record.id, lastFetch.id) : null;
+  // A fetch report can be very large (thousands of captured dropdown options + the
+  // HS Code / Unit reference lists ≈ 300 KB). Serialising all of it into the client
+  // on every render — and on every router.refresh() after a mutation — made those
+  // RSC refreshes abort, so applied values never appeared until a full reload. Only
+  // the lightweight per-section summary + unmapped list needs to survive a reload;
+  // the full dropdown/reference detail is shown from the live fetch result in-session.
+  const fullFetchReport = lastFetch ? await getRunReport(record.id, lastFetch.id) : null;
+  const lastFetchReport = fullFetchReport ? summariseFetchReport(fullFetchReport) : null;
   const factory = factoryById(factoryId)!;
 
   return (

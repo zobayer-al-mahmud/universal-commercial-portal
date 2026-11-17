@@ -449,9 +449,16 @@ function SourceImportPanel(props: {
 
   function apply(batchId: string, data: Preview) {
     const acc = data.conflicts.filter((c) => accepted[cellKey(c.stepKey, c.fieldKey, c.groupIndex)]).map((c) => cellKey(c.stepKey, c.fieldKey, c.groupIndex));
+    setError("");
     start(async () => {
-      const res = await applyImportAction({ recordId: props.record.id, factoryId: props.factoryId, batchId, acceptedConflicts: acc });
-      if (!("error" in res)) { setPreview(null); router.refresh(); }
+      try {
+        const res = await applyImportAction({ recordId: props.record.id, factoryId: props.factoryId, batchId, acceptedConflicts: acc });
+        if ("error" in res) { setError(res.error); return; }
+        setPreview(null);
+        router.refresh();
+      } catch {
+        setError("Could not apply the reviewed values. Please try again.");
+      }
     });
   }
   function discard(batchId: string) {
