@@ -161,8 +161,8 @@ export function NotificationBell({ canAnnounce = false }: { canAnnounce?: boolea
       </button>
 
       {open ? (
-        <div className="absolute right-0 z-50 mt-2 w-[22rem] max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-pop">
-          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+        <div className="fixed inset-x-3 top-16 z-50 flex max-h-[calc(100vh-5rem)] w-auto flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-pop lg:absolute lg:inset-x-auto lg:right-0 lg:top-auto lg:mt-2 lg:w-[28rem] lg:max-h-[min(36rem,calc(100vh-5rem))] lg:max-w-[calc(100vw-1.5rem)]">
+          <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-100 px-4 py-2.5">
             <div className="text-sm font-semibold text-slate-800">Notifications{unread ? <span className="ml-1 text-xs font-normal text-slate-400">({unread} unread)</span> : null}</div>
             <div className="flex items-center gap-2">
               {canAnnounce ? (
@@ -175,12 +175,12 @@ export function NotificationBell({ canAnnounce = false }: { canAnnounce?: boolea
           {canAnnounce && composer ? (
             <form
               onSubmit={(e) => { e.preventDefault(); submitAnnouncement(e.currentTarget); }}
-              className="space-y-2 border-b border-slate-100 bg-slate-50/60 px-4 py-3"
+              className="shrink-0 space-y-2.5 border-b border-slate-100 bg-slate-50/60 px-4 py-3"
             >
-              <input name="title" required placeholder="Announcement title" className="w-full rounded border border-slate-200 px-2 py-1 text-xs" />
-              <textarea name="body" rows={2} placeholder="Message (optional)" className="w-full rounded border border-slate-200 px-2 py-1 text-xs" />
-              <div className="flex items-center gap-2">
-                <select name="audience" className="rounded border border-slate-200 px-2 py-1 text-xs" defaultValue="all">
+              <input name="title" required placeholder="Announcement title" className="w-full rounded border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-ananta focus:ring-1 focus:ring-ananta/30" />
+              <textarea name="body" rows={2} placeholder="Message (optional)" className="w-full resize-none rounded border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-ananta focus:ring-1 focus:ring-ananta/30" />
+              <div className="grid grid-cols-2 gap-2">
+                <select name="audience" className="w-full rounded border border-slate-200 px-2 py-1.5 text-xs" defaultValue="all">
                   <option value="all">Everyone</option>
                   <option value="ADMIN">Admins</option>
                   <option value="COMMERCIAL">Commercial</option>
@@ -188,21 +188,23 @@ export function NotificationBell({ canAnnounce = false }: { canAnnounce?: boolea
                   <option value="REVIEWER">Reviewers</option>
                   <option value="VIEWER">Viewers</option>
                 </select>
-                <select name="level" className="rounded border border-slate-200 px-2 py-1 text-xs" defaultValue="info">
+                <select name="level" className="w-full rounded border border-slate-200 px-2 py-1.5 text-xs" defaultValue="info">
                   <option value="info">Info</option>
                   <option value="success">Success</option>
                   <option value="warning">Warning</option>
                   <option value="error">Alert</option>
                 </select>
-                <input name="link" placeholder="/link (optional)" className="w-24 flex-1 rounded border border-slate-200 px-2 py-1 text-xs" />
-                <button type="submit" className="rounded bg-ananta px-3 py-1 text-xs font-medium text-white hover:opacity-90">Send</button>
+              </div>
+              <div className="flex items-center gap-2">
+                <input name="link" placeholder="/link (optional)" className="min-w-0 flex-1 rounded border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-ananta focus:ring-1 focus:ring-ananta/30" />
+                <button type="submit" className="shrink-0 rounded bg-ananta px-4 py-1.5 text-xs font-medium text-white hover:opacity-90">Send</button>
               </div>
             </form>
           ) : null}
 
-          {toast ? <div className="bg-emerald-50 px-4 py-1.5 text-[11px] text-emerald-700">{toast}</div> : null}
+          {toast ? <div className="shrink-0 bg-emerald-50 px-4 py-1.5 text-[11px] text-emerald-700">{toast}</div> : null}
 
-          <div className="max-h-[22rem] overflow-y-auto">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             {loading && items.length === 0 ? (
               <div className="px-4 py-6 text-center text-xs text-slate-400">Loading…</div>
             ) : items.length === 0 ? (
