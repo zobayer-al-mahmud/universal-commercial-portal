@@ -252,6 +252,14 @@ const schema = z.object({
   EXP_INSERT_CHUNK: z.coerce.number().int().positive().default(500),
   // Max size (MB) for an uploaded EXP .xlsx.
   EXP_MAX_FILE_MB: z.coerce.number().positive().default(25),
+  // Official exporter seal + signature image (PNG/JPG) auto-stamped onto EXP PDFs
+  // at DOWNLOAD time, below "Declaration of undertaking by Exporter" (matching the
+  // Bangladesh Bank EXP FORM layout). This is a SENSITIVE business asset (an
+  // executive's signature) and is deliberately NOT committed to the repo — it lives
+  // outside git under STORAGE_ROOT/var by default; place the approved image here on
+  // each host. When the file is absent/unreadable the EXP download still works and
+  // simply serves the un-stamped PDF (audited as skipped) — never fail the download.
+  EXP_SEAL_IMAGE_PATH: z.string().default("./var/exp-seal/seal.png"),
 
   // --- UD Automation (BGMEA UD Preparation portal) --------------------------
   // The BGMEA portal is driven per FACTORY (four accounts, each with its own

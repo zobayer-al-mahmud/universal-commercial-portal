@@ -4,6 +4,8 @@ import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
 import { prisma } from "@/lib/db";
 import { buildZip, type ZipEntry } from "@/server/booking-correction/zip";
+import { audit } from "@/lib/audit";
+import { sealExpPdf } from "@/server/exp-automation/seal";
 
 /** Download every captured EXP PDF in a job as one ZIP (named by Save_As, de-duped). */
 export async function GET(_req: Request, { params }: { params: { jobId: string } }) {
@@ -19,10 +21,16 @@ export async function GET(_req: Request, { params }: { params: { jobId: string }
 
   const entries: ZipEntry[] = [];
   const used = new Set<string>();
+  let sealedCount = 0;
+  let unsealedCount = 0;
   for (const r of rows) {
     if (!r.pdfPath) continue;
     let data: Buffer;
     try { data = await readFile(r.pdfPath); } catch { continue; }
+    // Auto-attach the official seal to each PDF (original on disk is preserved).
+    const seal = await sealExpPdf(data);
+    data = seal.buffer;
+    if (seal.sealed) sealedCount++; else unsealedCount++;
     let base = (r.saveAs || r.expSerial || `row-${r.rowNo}`).replace(/[^\w.-]+/g, "_").replace(/\.pdf$/i, "");
     let name = `${base}.pdf`;
     let n = 2;
@@ -31,6 +39,14 @@ export async function GET(_req: Request, { params }: { params: { jobId: string }
     entries.push({ name, data });
   }
   if (entries.length === 0) return NextResponse.json({ error: "Stored PDFs are missing." }, { status: 404 });
+
+  await audit({
+    entityType: "exp",
+    entityId: job.id,
+    action: "exp.download.zip",
+    actor: user.email,
+    data: { files: entries.length, sealed: sealedCount, unsealed: unsealedCount },
+  }).catch(() => undefined);
 
   const zip = buildZip(entries);
   return new NextResponse(zip as unknown as BodyInit, {
