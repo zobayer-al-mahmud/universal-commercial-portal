@@ -30,6 +30,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const contractIds = idsParam
     ? idsParam.split(",").map((s) => s.trim()).filter(Boolean)
     : undefined;
+  // Season filter — `?season=<season>-<poYear>` (format matches the PDF's
+  // "Season:" field, e.g. "4-2026"). Both halves must be present for the
+  // filter to engage; a malformed value is ignored (treated as "all seasons").
+  // User rule 2026-11-12.
+  const seasonParam = (searchParams.get("season") || "").trim();
+  const seasonMatch = seasonParam.match(/^(\d{1,2})\s*-\s*(\d{4})$/);
+  const season = seasonMatch?.[1];
+  const poYear = seasonMatch?.[2];
   const mode = (searchParams.get("mode") || "xlsx").toLowerCase();
 
   // JSON preview mode — returns the mapped rows so the UI's "View summary"
@@ -40,6 +48,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       const { rows, skippedPos, contractCount } = await collectSummaryRows({
         contractId,
         contractIds,
+        season,
+        poYear,
       });
       return NextResponse.json({
         ok: true,
@@ -55,7 +65,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    const result = await generateHmSummary({ contractId, contractIds });
+    const result = await generateHmSummary({ contractId, contractIds, season, poYear });
     const buffer = await readFile(result.outputPath);
     await audit({
       entityType: "contract", entityId: contractId ?? "all",

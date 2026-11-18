@@ -5,6 +5,7 @@ import { createSalesContractAction } from "@/app/actions/sales-contract";
 import { listFolderMappings } from "@/server/sales-contract/config-intake";
 import { SalesContractScanner } from "@/components/SalesContractScanner";
 import { SalesContractListTable, type SalesContractListRow } from "@/components/SalesContractListTable";
+import { SalesContractSeasonFilter, type SeasonOption } from "@/components/SalesContractSeasonFilter";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -16,9 +17,52 @@ async function createAndRedirect() {
   redirect(`/sales-contract/${res.id}`);
 }
 
-export default async function SalesContractListPage() {
+export default async function SalesContractListPage({
+  searchParams,
+}: {
+  searchParams?: { season?: string };
+}) {
+  // Season filter (user rule 2026-11-12). URL value is "<season>-<poYear>",
+  // matching the H&M PO PDF's "Season:" field verbatim (e.g. "4-2026"). A
+  // malformed value is ignored — treated as "all seasons".
+  const activeSeasonKey = (searchParams?.season || "").trim();
+  const seasonMatch = activeSeasonKey.match(/^(\d{1,2})\s*-\s*(\d{4})$/);
+  const activeSeason = seasonMatch?.[1];
+  const activePoYear = seasonMatch?.[2];
+
+  // Distinct seasons across every PO, counted, sorted by year DESC then
+  // season ASC so the latest season is first in the dropdown.
+  const seasonGroups = await prisma.salesContractPo.groupBy({
+    by: ["season", "poYear"],
+    where: { season: { not: "" }, poYear: { not: "" } },
+    _count: { _all: true },
+  });
+  const seasonOptions: SeasonOption[] = seasonGroups
+    .map((g) => ({
+      key: `${g.season}-${g.poYear}`,
+      label: `Season ${g.season} · ${g.poYear}`,
+      poCount: g._count._all,
+      sortYear: Number(g.poYear) || 0,
+      sortSeason: Number(g.season) || 0,
+    }))
+    .sort((a, b) => b.sortYear - a.sortYear || a.sortSeason - b.sortSeason)
+    .map(({ key, label, poCount }) => ({ key, label, poCount }));
+
+  // When a season is active, only show contracts that have at least one PO
+  // in that season, and only include THOSE POs in each contract's row (so
+  // the Ready/Blocked/Failed counts reflect the filter).
+  const seasonActive = Boolean(activeSeason && activePoYear);
   const [contracts, folderMappings] = await Promise.all([
-    prisma.salesContract.findMany({ orderBy: { createdAt: "desc" }, take: 50, include: { pos: true } }),
+    prisma.salesContract.findMany({
+      where: seasonActive ? { pos: { some: { season: activeSeason, poYear: activePoYear } } } : {},
+      orderBy: { createdAt: "desc" },
+      take: 50,
+      include: {
+        pos: seasonActive
+          ? { where: { season: activeSeason, poYear: activePoYear } }
+          : true,
+      },
+    }),
     listFolderMappings(),
   ]);
   const current = contracts.find((c) => c.isCurrent) ?? null;
@@ -43,13 +87,14 @@ export default async function SalesContractListPage() {
         actions={
           <div className="flex items-center gap-2">
             <Link href="/sales-contract/config" className="btn-ghost text-xs">Config</Link>
-            <a href="/api/sales-contract/summary" className="btn-ghost text-xs" download>Download Summary Excel</a>
             <form action={createAndRedirect}>
               <button className="btn-primary text-xs">+ New Sales Contract</button>
             </form>
           </div>
         }
       />
+
+      <SalesContractSeasonFilter options={seasonOptions} active={activeSeasonKey} />
 
       <div className="card text-xs">
         <div className="font-semibold mb-1">Current Sales Contract (default for new uploads)</div>
@@ -75,7 +120,11 @@ export default async function SalesContractListPage() {
       ) : null}
 
       {contracts.length === 0 ? (
-        <Empty>No H&M Sales Contracts yet. Click &quot;+ New Sales Contract&quot; to start one.</Empty>
+        <Empty>
+          {seasonActive
+            ? `No Sales Contracts have a PO in season ${activeSeasonKey}. Clear the filter above to see every contract.`
+            : "No H&M Sales Contracts yet. Click “+ New Sales Contract” to start one."}
+        </Empty>
       ) : (
         <SalesContractListTable
           rows={contracts.map<SalesContractListRow>((c) => ({

@@ -237,11 +237,15 @@ export async function importShipmentRowsIntoSchedule(
     if (!r.orderNo) { result.skippedBlank++; continue; }
 
     const prefix = r.orderNo.split("-")[0] || r.orderNo;
-    const pos = await prisma.salesContractPo.findMany({
-      where: { orderNo: { startsWith: prefix + "-" } },
-      include: { contract: true },
-      take: 20,
-    });
+    const [pos, buyerCodes] = await Promise.all([
+      prisma.salesContractPo.findMany({
+        where: { orderNo: { startsWith: prefix + "-" } },
+        include: { contract: true },
+        take: 20,
+      }),
+      // Modern buyer-code source — see matchByOrderNoPrefix for the lookup rule.
+      prisma.salesContractBuyerCode.findMany({ where: { active: true } }),
+    ]);
     const lookups: SalesContractLookup[] = pos.map((p) => ({
       contract: {
         marchentContNo: p.contract.marchentContNo,
@@ -249,12 +253,14 @@ export async function importShipmentRowsIntoSchedule(
         buyerCode: p.contract.buyerCode,
         commercialContNo: p.contract.commercialContNo,
         commercialDate: p.contract.commercialDate,
+        contractNo: p.contract.contractNo,
       },
       orderNo: p.orderNo,
       state: p.state,
       rowsJson: p.rowsJson,
+      folderLetter: p.folderLetter,
     }));
-    const match = matchByOrderNoPrefix(prefix, lookups);
+    const match = matchByOrderNoPrefix(prefix, lookups, { buyerCodes });
     const h = match.hydrated;
     if (match.matched) result.hydrated++;
 

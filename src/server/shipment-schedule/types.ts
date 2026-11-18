@@ -50,13 +50,19 @@ export interface SalesContractLookup {
   contract: {
     marchentContNo: string;
     contractDate: string;
-    buyerCode: string;
+    buyerCode: string;            // legacy single-value field (fallback)
     commercialContNo: string;
     commercialDate: string;
+    contractNo: string;           // numeric "99" from AGL/H&M/99/2026 — used as
+                                  // the key into SalesContractBuyerCode together
+                                  // with folderLetter (2026-10-26 spec).
   };
   orderNo: string;         // "734928-8404"
   state: string;           // "READY" | "UPLOADED" | ...
   rowsJson: string;        // SalesContractTemplateRow[] JSON
+  folderLetter: string;    // "A" / "B" / "C" — the PO's source folder; keys
+                           // the per-folder buyer-code lookup together with
+                           // the numeric contract no.
 }
 
 /** Shape of what we pull from a matched sales-contract row. */

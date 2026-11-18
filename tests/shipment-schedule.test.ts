@@ -137,12 +137,14 @@ describe("matchByOrderNoPrefix", () => {
       buyerCode: "AGL 365 C",
       commercialContNo: "",
       commercialDate: "",
+      contractNo: "99",
     },
     orderNo: "569959-5686",
     state: "READY",
     rowsJson: JSON.stringify([
       { isAnchor: true, orderNo: "569959-5686", orderQty: 2000, styleNo: "Kaito Ripstop Trousers", fob: 12.64, itemDes: "Trousers Men Woven Shell" },
     ]),
+    folderLetter: "A",
   };
 
   it("matches when prefix equals the first segment of orderNo", () => {

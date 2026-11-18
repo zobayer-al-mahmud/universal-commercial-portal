@@ -3,6 +3,7 @@ import { PageHeader, StatusBadge } from "@/components/ui";
 import { listInvoiceReadyRows } from "@/server/customs-invoice/invoice-ready";
 import { listTemplates, resolveTemplate } from "@/server/customs-invoice/templates";
 import { CustomsInvoiceBulkUpload } from "@/components/CustomsInvoiceBulkUpload";
+import { CustomsInvoiceBookingUpload } from "@/components/CustomsInvoiceBookingUpload";
 import {
   CustomsInvoiceReadyTable,
   type InvoiceReadyListRow,
@@ -61,6 +62,10 @@ export default async function CustomsInvoiceListPage() {
           </div>
         }
       />
+
+      <div className="mb-4">
+        <CustomsInvoiceBookingUpload />
+      </div>
 
       <div className="mb-4 grid gap-3 sm:grid-cols-3">
         <div className="card p-4">

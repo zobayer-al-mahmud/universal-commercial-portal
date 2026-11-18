@@ -105,7 +105,7 @@ export async function createInvoiceForOrder(
 export async function updateInvoiceFields(
   invoiceId: string,
   patch: Partial<InvoiceFields>,
-  opts: { actor?: string; source?: "user" | "pdf-extract" | "prefill" } = {},
+  opts: { actor?: string; source?: "user" | "pdf-extract" | "prefill" | "booking-pdf" } = {},
 ): Promise<{ updated: number }> {
   const actor = opts.actor ?? "system";
   const source = opts.source ?? "user";

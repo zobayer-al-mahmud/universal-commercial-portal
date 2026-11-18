@@ -11,6 +11,23 @@ interface HmTemplateRowLike {
   country?: string;
 }
 
+/** A row from SalesContractBuyerCode — the modern per-(contract × folder)
+ *  buyer-code source. `active` defaults to true when the field is omitted,
+ *  matching the Prisma schema default. */
+export interface BuyerCodeLookup {
+  contractNo: string;      // numeric "99" (not the full AGL/H&M/99/2026 ref)
+  folderLetter: string;    // "A" / "B" / "C"
+  buyerCode: string;       // "AGL 349 A"
+  active?: boolean;
+}
+
+/** Keep only the digits so "AGL/H&M/99/2026" / "99/2026" / "99" all resolve
+ *  to the same lookup key the buyer-code table stores ("99"). */
+function numericContractKey(raw: string): string {
+  const m = (raw || "").match(/(\d+)/);
+  return m ? m[1] : "";
+}
+
 /**
  * Match a PDF's order-no prefix (e.g. "569959") against a candidate list of
  * `SalesContractPo` rows. The match is on the OrderNo prefix because the
@@ -31,6 +48,7 @@ interface HmTemplateRowLike {
 export function matchByOrderNoPrefix(
   orderNoPrefix: string,
   candidates: SalesContractLookup[],
+  opts: { buyerCodes?: BuyerCodeLookup[] } = {},
 ): MatchResult {
   const candidateOrderNos = candidates.map((c) => c.orderNo);
   const prefix = orderNoPrefix.trim();
@@ -47,7 +65,7 @@ export function matchByOrderNoPrefix(
   const uniq = Array.from(new Map(matches.map((m) => [m.orderNo, m])).values());
 
   const first = uniq[0];
-  const hydrated = hydrateFromSalesContract(first);
+  const hydrated = hydrateFromSalesContract(first, opts.buyerCodes);
 
   if (uniq.length > 1) {
     return {
@@ -65,7 +83,10 @@ export function matchByOrderNoPrefix(
   return { matched: true, reason: "matched", hydrated, candidates: candidateOrderNos };
 }
 
-function hydrateFromSalesContract(po: SalesContractLookup): SalesContractHydrated {
+function hydrateFromSalesContract(
+  po: SalesContractLookup,
+  buyerCodes?: BuyerCodeLookup[],
+): SalesContractHydrated {
   const rows: HmTemplateRowLike[] = safeJsonArray(po.rowsJson);
   // The anchor row carries orderQty / styleNo / fob / itemDes. If there's no
   // anchor flag (older data), fall back to the first row.
@@ -75,8 +96,24 @@ function hydrateFromSalesContract(po: SalesContractLookup): SalesContractHydrate
   // – pull marketCodeB out of the parentheses to build the Market+Sub combo.
   const sub = anchor?.country ? /\(([^)]+)\)/.exec(anchor.country)?.[1] ?? "" : "";
   const marketSubCode = marketCode && sub ? `${marketCode}${sub}` : marketCode;
+
+  // Buyer Code resolution (bug fix 2026-11-12): the modern source is the
+  // per-(contract × folder) SalesContractBuyerCode table; the legacy
+  // SalesContract.buyerCode single-value field is the fallback. Before this
+  // fix the booking-PDF intake wrote "" into every row whose contract had
+  // migrated to the lookup table.
+  const numeric = numericContractKey(po.contract.contractNo || po.contract.marchentContNo);
+  let buyerCode = "";
+  if (numeric && po.folderLetter && Array.isArray(buyerCodes)) {
+    const row = buyerCodes.find(
+      (b) => b.active !== false && b.contractNo === numeric && b.folderLetter === po.folderLetter,
+    );
+    if (row && row.buyerCode) buyerCode = row.buyerCode;
+  }
+  if (!buyerCode) buyerCode = po.contract.buyerCode || "";
+
   return {
-    buyerCode: po.contract.buyerCode || "",
+    buyerCode,
     contractNo: po.contract.marchentContNo || "",
     contractDate: po.contract.contractDate || "",
     orderNo: po.orderNo,
