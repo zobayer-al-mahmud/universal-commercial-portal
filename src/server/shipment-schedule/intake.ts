@@ -156,11 +156,16 @@ export async function uploadPdfsToCutoff(opts: {
       marketSubCode: string;
     } | undefined;
     if (orderNoPrefix) {
-      const pos = await prisma.salesContractPo.findMany({
-        where: { orderNo: { startsWith: orderNoPrefix + "-" } },
-        include: { contract: true },
-        take: 20,
-      });
+      const [pos, buyerCodes] = await Promise.all([
+        prisma.salesContractPo.findMany({
+          where: { orderNo: { startsWith: orderNoPrefix + "-" } },
+          include: { contract: true },
+          take: 20,
+        }),
+        // Buyer-code resolution uses the per-(contract × folder) table; see
+        // matchByOrderNoPrefix for the lookup rule and legacy fallback.
+        prisma.salesContractBuyerCode.findMany({ where: { active: true } }),
+      ]);
       const candidates: SalesContractLookup[] = pos.map((p) => ({
         contract: {
           marchentContNo: p.contract.marchentContNo,
@@ -168,12 +173,14 @@ export async function uploadPdfsToCutoff(opts: {
           buyerCode: p.contract.buyerCode,
           commercialContNo: p.contract.commercialContNo,
           commercialDate: p.contract.commercialDate,
+          contractNo: p.contract.contractNo,
         },
         orderNo: p.orderNo,
         state: p.state,
         rowsJson: p.rowsJson,
+        folderLetter: p.folderLetter,
       }));
-      const m = matchByOrderNoPrefix(orderNoPrefix, candidates);
+      const m = matchByOrderNoPrefix(orderNoPrefix, candidates, { buyerCodes });
       matched = m.matched;
       matchReason = m.reason;
       hydrated = m.hydrated;

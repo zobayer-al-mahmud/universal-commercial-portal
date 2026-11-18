@@ -47,13 +47,19 @@ export default async function CustomsInvoiceDetail({ params }: { params: { id: s
   if (prefill) {
     const nextCountryCode = prefill.marketCode;
     const patch: Partial<InvoiceFields> = {};
-    // Mechanical / derived fields — always follow the shipment row.
+    // Mechanical / derived fields — follow the shipment row BUT never clobber
+    // an existing non-empty invoice value with an empty prefill (user rule
+    // 2026-11-12). Booking-PDF values that land on the invoice through the
+    // list-page uploader must survive the next detail-page open, which runs
+    // this sync. An empty prefill means "I don't know", not "it's empty".
     const setStr = (key: keyof InvoiceFields, next: string, cur: string) => {
-      if ((next ?? "") !== (cur ?? "")) (patch as Record<string, unknown>)[key] = next ?? "";
+      const n = next ?? "";
+      const c = cur ?? "";
+      if (n && n !== c) (patch as Record<string, unknown>)[key] = n;
     };
     const setNum = (key: keyof InvoiceFields, next: number | null | undefined, cur: number | null) => {
-      const n = next == null ? null : next;
-      if (n !== cur) (patch as Record<string, unknown>)[key] = n;
+      if (next == null) return;            // empty prefill → leave current value alone
+      if (next !== cur) (patch as Record<string, unknown>)[key] = next;
     };
     setStr("marketCode", prefill.marketCode, inv.marketCode);
     setStr("marketSubCode", prefill.marketSubCode, inv.marketSubCode);

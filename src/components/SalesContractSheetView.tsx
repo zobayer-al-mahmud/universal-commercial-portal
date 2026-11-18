@@ -34,7 +34,16 @@ type EditableKey =
  * any cell, type, press Save — the row's overrides are persisted on the PO
  * (sheetEditsJson) and merged back on every subsequent read + xlsx download.
  */
-export function SalesContractSheetView({ contractId }: { contractId: string }) {
+export function SalesContractSheetView({
+  contractId,
+  seasonKey = "",
+}: {
+  contractId: string;
+  /** "<season>-<poYear>", e.g. "4-2026" — empty string = all seasons.
+   *  Threaded into the preview fetch and the Download .xlsx link so the
+   *  sheet view respects the season filter set at the page level. */
+  seasonKey?: string;
+}) {
   const [data, setData] = useState<SheetPayload | null>(null);
   const [error, setError] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(false);
@@ -43,13 +52,18 @@ export function SalesContractSheetView({ contractId }: { contractId: string }) {
   const [saving, setSaving] = useState<boolean>(false);
   const [savedMsg, setSavedMsg] = useState<string>("");
 
+  const seasonQuery = seasonKey ? `&season=${encodeURIComponent(seasonKey)}` : "";
+  const downloadHref = seasonKey
+    ? `/api/sales-contract/${contractId}/sheet?season=${encodeURIComponent(seasonKey)}`
+    : `/api/sales-contract/${contractId}/sheet`;
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       setError("");
       try {
-        const res = await fetch(`/api/sales-contract/${contractId}/sheet?mode=json`, { cache: "no-store" });
+        const res = await fetch(`/api/sales-contract/${contractId}/sheet?mode=json${seasonQuery}`, { cache: "no-store" });
         // A Next.js error page (HTML) can come back when the dev server's
         // route tree is stale after a hot-reload hiccup, or on 404/500/auth
         // redirects. Peek at the content-type so a stray `<!DOCTYPE …>` body
@@ -70,7 +84,7 @@ export function SalesContractSheetView({ contractId }: { contractId: string }) {
       }
     })();
     return () => { cancelled = true; };
-  }, [contractId, refreshToken]);
+  }, [contractId, refreshToken, seasonKey]);
 
   const blockRef = (() => {
     const cn = (data?.header.contractNo || "").trim();
@@ -170,7 +184,7 @@ export function SalesContractSheetView({ contractId }: { contractId: string }) {
           <button onClick={save} disabled={saving || dirtyCount === 0} className={dirtyCount > 0 ? "btn-primary text-xs" : "btn-ghost text-xs cursor-not-allowed opacity-60"}>
             {saving ? "Saving…" : "💾 Save edits"}
           </button>
-          <a href={`/api/sales-contract/${contractId}/sheet`} download className="btn-primary text-xs">⬇ Download .xlsx</a>
+          <a href={downloadHref} download className="btn-primary text-xs">⬇ Download .xlsx{seasonKey ? ` · ${seasonKey}` : ""}</a>
         </div>
       </div>
 

@@ -14,6 +14,23 @@ export function shortOrderKey(raw: string): string {
   return m ? m[0] : raw.trim();
 }
 
+/**
+ * Format the Sales Contract reference the way the invoice header expects it:
+ * "AGL/H&M/<numeric>/<poYear>" (user rule 2026-11-12 — the Contact no. cell
+ * must show the full reference, not just the short numeric). Leaves an
+ * already-formatted ref alone and returns the raw value if we don't have
+ * enough pieces to build the full form.
+ */
+export function formatContractRef(raw: string | null | undefined, poYear: string | null | undefined): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  if (/AGL\/H&M\//i.test(s)) return s;
+  const digits = s.match(/^(\d+)$/)?.[1] ?? s.match(/(\d{1,5})/)?.[1] ?? "";
+  if (!digits) return s;
+  const y = String(poYear ?? "").trim();
+  return y ? `AGL/H&M/${digits}/${y}` : `AGL/H&M/${digits}`;
+}
+
 export interface OrderNoRow {
   orderNo: string; // short key – primary join field
   hmOrderNo: string; // raw with suffix if known
@@ -57,7 +74,7 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
     prisma.salesContractPo.findMany({
       where: { orderNo: { not: "" } },
       include: {
-        contract: { select: { marchentContNo: true, contractDate: true, buyerCode: true, packSet: true } },
+        contract: { select: { marchentContNo: true, contractNo: true, contractDate: true, buyerCode: true, packSet: true } },
       },
     }),
     prisma.shipmentScheduleRow.findMany({ where: { orderNo: { not: "" } } }),
@@ -129,6 +146,10 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
     const row = put(short);
     row.foundInShipmentSchedule = true;
     row.hmOrderNo ||= r.pdfOrderNo || r.orderNo;
+    // ShipmentScheduleRow.contractNo carries just the numeric part ("100");
+    // the year is not stored on the row, so we leave it short here and
+    // let the PO loop below upgrade it to the full "AGL/H&M/100/2026" ref
+    // once we see a PO with poYear.
     row.contractNo ||= r.contractNo;
     row.contractDate ||= r.contractDate;
     row.buyerCode ||= r.buyerCode;
@@ -161,7 +182,16 @@ export async function listOrderNosWithPrefill(): Promise<OrderNoRow[]> {
     const row = put(short);
     row.foundInSalesContract = true;
     row.hmOrderNo ||= po.orderNo;
-    row.contractNo ||= po.contract?.marchentContNo ?? "";
+    // Always upgrade contractNo to the full "AGL/H&M/<n>/<year>" form whenever
+    // we have the numeric part on the contract + a poYear on this PO — this
+    // overrides a short numeric that may have come from the shipment row.
+    const fullRef = formatContractRef(
+      po.contract?.contractNo || po.contract?.marchentContNo || "",
+      po.poYear,
+    );
+    if (fullRef) {
+      if (!row.contractNo || !/AGL\/H&M\//i.test(row.contractNo)) row.contractNo = fullRef;
+    }
     row.contractDate ||= po.contract?.contractDate ?? "";
     row.buyerCode ||= po.contract?.buyerCode ?? "";
     row.packSet ||= po.contract?.packSet ?? "";
@@ -271,7 +301,7 @@ export async function buildPrefill(
       // Also hydrate contract metadata from the Sales Contract PO when possible.
       const po = await prisma.salesContractPo.findFirst({
         where: { orderNo: { startsWith: short } },
-        include: { contract: { select: { marchentContNo: true, contractDate: true, buyerCode: true, packSet: true } } },
+        include: { contract: { select: { marchentContNo: true, contractNo: true, contractDate: true, buyerCode: true, packSet: true } } },
       });
       // The invoice's displayed country code is the shipment destination
       // (MY / AU / NL …). It no longer picks a template — the writer always
@@ -283,7 +313,10 @@ export async function buildPrefill(
         countryCode: country,
         marketCode: country,
         marketSubCode: fallback.marketSubCode,
-        contractNo: fallback.contractNo || po?.contract?.marchentContNo || "",
+        contractNo: formatContractRef(
+          po?.contract?.contractNo || po?.contract?.marchentContNo || fallback.contractNo || "",
+          po?.poYear,
+        ),
         contractDate: fallback.contractDate || po?.contract?.contractDate || "",
         hmOrderNo: fallback.pdfOrderNo || fallback.orderNo,
         buyerCode: fallback.buyerCode || po?.contract?.buyerCode || "",

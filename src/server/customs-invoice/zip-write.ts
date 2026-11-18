@@ -313,6 +313,80 @@ function patchPackSize(sheetXml: string, ss: SharedStrings, packSet: string): st
 }
 
 /**
+ * Strip cached `<v>` results from every formula cell in the sheet.
+ *
+ * The template was saved by Excel with cached last-computed values beside
+ * each `<f>` formula. When we patch the input row with UCP data, Excel can
+ * open the file and show the STALE cached value from the template sample
+ * (e.g. "AGL/H&M/98/2025", "609747/7917", "54211", "15.04.2026") instead of
+ * re-evaluating the formulas against the new input row (user-visible bug
+ * 2026-11-12: "these are not coming from UCP portal data, coming from the
+ * template"). Stripping `<v>` forces Excel to treat every formula as
+ * dirty and compute it fresh on open, so the header cells always display
+ * the real UCP value (or blank, when UCP has nothing to fill).
+ *
+ * Preserves `<f>` verbatim (including `t="shared"` / `si="…"` / `ref="…"`)
+ * so shared-formula families keep working.
+ */
+function stripCachedFormulaValues(sheetXml: string): string {
+  return sheetXml.replace(
+    /(<c\b[^>]*>[\s\S]*?<f\b[^>]*>[\s\S]*?<\/f>)[\s\S]*?(<\/c>)/g,
+    (_m, before, close) => `${before}${close}`,
+  );
+}
+
+/**
+ * Turn on `fullCalcOnLoad` in the workbook's calcPr, so Excel recomputes
+ * every formula on open (matching the cached-value strip above). Creates
+ * calcPr if the template didn't carry one. Harmless for files Excel would
+ * recompute anyway — it just makes the behaviour explicit and consistent
+ * across viewers (Excel, Numbers, LibreOffice, Google Sheets).
+ */
+function forceFullCalcOnLoad(wbXml: string): string {
+  if (/<calcPr\b[^>]*fullCalcOnLoad="1"/i.test(wbXml)) return wbXml;
+  if (/<calcPr\b[^/>]*\/?>/i.test(wbXml)) {
+    return wbXml.replace(/<calcPr\b([^/>]*)\/?>/i, (_m, attrs) => `<calcPr${attrs} fullCalcOnLoad="1"/>`);
+  }
+  // No calcPr — insert one just before </workbook>.
+  return wbXml.replace(/<\/workbook>/i, `<calcPr fullCalcOnLoad="1"/></workbook>`);
+}
+
+/**
+ * Overwrite one named cell with a direct value, deleting any `<f>` formula
+ * it carried. Used for cells whose UCP source doesn't have a column on the
+ * input row (e.g. `invoiceDate` — the template's visible Invoice Date cell
+ * points at the Exp Date column, which breaks when the two should differ).
+ *
+ * When `value` is empty the cell is cleared (formula removed, value removed)
+ * so the template's original formula can't surface a stale cached result.
+ */
+function writeDirectCell(sheetXml: string, ref: string, value: string, ss: SharedStrings): string {
+  const existing = new RegExp(`<c\\b[^>]*\\br="${ref}"[^>]*?(?:/>|>[\\s\\S]*?<\\/c>)`);
+  const match = sheetXml.match(existing);
+  if (!match) return sheetXml;
+  const styleM = match[0].match(/\bs="(\d+)"/);
+  const styleAttr = styleM ? ` s="${styleM[1]}"` : "";
+  if (!value || value.trim() === "") {
+    return sheetXml.replace(existing, `<c r="${ref}"${styleAttr}/>`);
+  }
+  const idx = ss.indexOf(value);
+  return sheetXml.replace(existing, `<c r="${ref}"${styleAttr} t="s"><v>${idx}</v></c>`);
+}
+
+/**
+ * Cells that need a direct overwrite (bypassing the input-row + formula
+ * indirection) because the template doesn't route a UCP field through its
+ * input row. Keep this list small — row 72 + formulas handle most of it.
+ */
+const DIRECT_HEADER_WRITES: { ref: string; field: keyof InvoiceFields }[] = [
+  // Visible "Invoice Date" cell. In the AZ / AZ Pack templates this cell
+  // reads `=K13` which in turn reads `=Q72` (Exp Date), so without this
+  // direct write the Invoice Date would mirror the Exp Date. The user's
+  // `invoiceDate` is a distinct field and must show its own value.
+  { ref: "H11", field: "invoiceDate" },
+];
+
+/**
  * Patch a template xlsx with the invoice's values. Images, drawings, styles,
  * merged cells, formulas (column R) and all other sheets are preserved
  * byte-for-byte.
@@ -364,8 +438,33 @@ export async function patchTemplate(templatePath: string, inv: InvoiceFields, pl
   }
 
   sheetXml = sheetXml.replace(rowRe, rowXml);
+
+  // Overwrite the header cells that can't be routed through the input row
+  // (see DIRECT_HEADER_WRITES rationale). An empty UCP value clears the cell
+  // outright — no stale template value is allowed to survive.
+  for (const d of DIRECT_HEADER_WRITES) {
+    const raw = (inv as unknown as Record<string, unknown>)[d.field];
+    const value = raw == null ? "" : String(raw);
+    sheetXml = writeDirectCell(sheetXml, d.ref, value, ss);
+    if (value) fieldsWritten.push(d.field);
+  }
+
+  // Force every formula to re-evaluate on open (user bug 2026-11-12). Without
+  // this the template's cached sample values show instead of the UCP data.
+  sheetXml = stripCachedFormulaValues(sheetXml);
+
   zip.file(sheetPath, sheetXml);
   zip.file("xl/sharedStrings.xml", ss.render());
+
+  // Workbook: set fullCalcOnLoad so viewers recompute even when they would
+  // otherwise trust the cached values. Delete calcChain so Excel regenerates
+  // it against the new input-row values (a stale calcChain can mask formulas).
+  const wbFile = zip.file("xl/workbook.xml");
+  if (wbFile) {
+    const wbXml = await wbFile.async("string");
+    zip.file("xl/workbook.xml", forceFullCalcOnLoad(wbXml));
+  }
+  if (zip.file("xl/calcChain.xml")) zip.remove("xl/calcChain.xml");
 
   const out = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE" });
   return { buffer: out, inputRow, fieldsWritten };

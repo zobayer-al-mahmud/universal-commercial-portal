@@ -26,9 +26,14 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
   }
   const url = new URL(req.url);
   const mode = url.searchParams.get("mode") ?? "download";
+  // `?season=<season>-<poYear>` (e.g. "4-2026") — same format as the list
+  // page filter. Malformed value → ignored (all seasons). User rule 2026-11-12.
+  const seasonParam = (url.searchParams.get("season") || "").trim();
+  const seasonMatch = seasonParam.match(/^(\d{1,2})\s*-\s*(\d{4})$/);
+  const seasonFilter = seasonMatch ? { season: seasonMatch[1], poYear: seasonMatch[2] } : {};
 
   try {
-    const { header, rows } = await buildContractSheetRows(params.id);
+    const { header, rows } = await buildContractSheetRows(params.id, seasonFilter);
     if (mode === "json") {
       return NextResponse.json({ ok: true, header, rows });
     }

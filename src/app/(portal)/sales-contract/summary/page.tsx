@@ -51,7 +51,10 @@ const COLS: { header: string; render: (r: SummaryRow) => string }[] = [
   { header: "HTS",                render: (r) => r.hts || "—" },
   { header: "CONTRACT VALUE",     render: (r) => (r.contractValue != null ? r.contractValue.toLocaleString(undefined, { maximumFractionDigits: 2 }) : "—") },
   { header: "TOD",                render: (r) => r.tod || "—" },
-  { header: "COUNTRY",            render: (r) => r.country || "—" },
+  // UI-only trim (user rule 2026-11-12): show just the country code, drop
+  // the parenthesised long name — "OE (OLCEU)" → "OE". The xlsx download
+  // still carries the full string.
+  { header: "COUNTRY",            render: (r) => shortCountry(r.country) || "—" },
   { header: "REMARKS",            render: (r) => r.remarks || "—" },
   { header: "Merchandiser Name",  render: (r) => r.merchandiserName || "—" },
   { header: "pack/set Qty",       render: (r) => (r.packSetQty != null ? r.packSetQty.toLocaleString() : "—") },
@@ -60,6 +63,15 @@ const COLS: { header: string; render: (r: SummaryRow) => string }[] = [
   { header: "Discount FOB con: date",     render: (r) => r.discountFobConDate || "—" },
 ];
 const NUMERIC_HEADERS = new Set(["Order Qty", "FOB", "CONTRACT VALUE", "pack/set Qty", "pack/set"]);
+
+/** "OE (OLCEU)" → "OE"; "OE" → "OE"; "" → "". Trims the parenthesised long
+ *  name so the on-screen summary stays scan-friendly. UI-only — the xlsx
+ *  download keeps the full string. */
+function shortCountry(raw: string): string {
+  if (!raw) return "";
+  const idx = raw.indexOf("(");
+  return (idx >= 0 ? raw.slice(0, idx) : raw).trim();
+}
 
 /**
  * "View summary" page — renders the exact rows the Download Summary .xlsx

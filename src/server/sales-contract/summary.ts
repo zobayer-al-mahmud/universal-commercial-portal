@@ -24,6 +24,12 @@ export interface GenerateSummaryOptions {
   /** Restrict to a list of Sales Contracts (by SalesContract.id). Default: all.
    *  When set alongside `contractId`, the single id is folded in automatically. */
   contractIds?: string[];
+  /** Restrict to POs from a specific H&M season. Values match the DB fields
+   *  (`season` is the digit-part of the PDF "Season:" field — e.g. "4" from
+   *  "4-2026"; `poYear` is the 4-digit year). Both must be set together for
+   *  the filter to apply; either alone is ignored. User rule 2026-11-12. */
+  season?: string;
+  poYear?: string;
   /** Deduplicate POs by their short order no, keeping the OLDEST extracted
    *  copy. Default true — a PO scanned into several contracts (e.g. because
    *  the folder was re-scanned) only appears once in the Summary. */
@@ -43,7 +49,11 @@ export async function generateHmSummary(opts: GenerateSummaryOptions = {}): Prom
   const idSet = new Set<string>();
   if (opts.contractId) idSet.add(opts.contractId);
   for (const id of opts.contractIds ?? []) if (id) idSet.add(id);
-  const where = idSet.size > 0 ? { contractId: { in: [...idSet] } } : {};
+  const where: Record<string, unknown> = idSet.size > 0 ? { contractId: { in: [...idSet] } } : {};
+  if (opts.season && opts.poYear) {
+    where.season = opts.season;
+    where.poYear = opts.poYear;
+  }
   const dedup = opts.dedupByOrderNo !== false; // default true
   let pos = await prisma.salesContractPo.findMany({
     where: { ...where, state: "READY", blockWrite: false },
@@ -168,7 +178,7 @@ export async function generateHmSummary(opts: GenerateSummaryOptions = {}): Prom
  * writer path.
  */
 export async function collectSummaryRows(
-  opts: Pick<GenerateSummaryOptions, "contractId" | "contractIds" | "dedupByOrderNo"> = {},
+  opts: Pick<GenerateSummaryOptions, "contractId" | "contractIds" | "dedupByOrderNo" | "season" | "poYear"> = {},
 ): Promise<{
   rows: SalesContractSummaryRow[];
   skippedPos: GenerateSummaryResult["skippedPos"];
@@ -177,7 +187,11 @@ export async function collectSummaryRows(
   const idSet = new Set<string>();
   if (opts.contractId) idSet.add(opts.contractId);
   for (const id of opts.contractIds ?? []) if (id) idSet.add(id);
-  const where = idSet.size > 0 ? { contractId: { in: [...idSet] } } : {};
+  const where: Record<string, unknown> = idSet.size > 0 ? { contractId: { in: [...idSet] } } : {};
+  if (opts.season && opts.poYear) {
+    where.season = opts.season;
+    where.poYear = opts.poYear;
+  }
   const dedup = opts.dedupByOrderNo !== false;
   let pos = await prisma.salesContractPo.findMany({
     where: { ...where, state: "READY", blockWrite: false },

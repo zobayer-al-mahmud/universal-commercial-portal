@@ -6,18 +6,56 @@ import { SalesContractHeader } from "@/components/SalesContractHeader";
 import { SalesContractScanner } from "@/components/SalesContractScanner";
 import { SalesContractSheetView } from "@/components/SalesContractSheetView";
 import { SalesContractPreview, type SalesContractPreviewPo } from "@/components/SalesContractPreview";
+import { SalesContractDetailSeasonFilter } from "@/components/SalesContractDetailSeasonFilter";
+import type { SeasonOption } from "@/components/SalesContractSeasonFilter";
 import { listFolderMappings } from "@/server/sales-contract/config-intake";
 import { reassignPoByOrderNoAction } from "@/app/actions/sales-contract-config";
 
 export const dynamic = "force-dynamic";
 
-export default async function SalesContractDetail({ params }: { params: { id: string } }) {
+export default async function SalesContractDetail({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams?: { season?: string };
+}) {
   const contract = await prisma.salesContract.findUnique({ where: { id: params.id } });
   if (!contract) notFound();
 
+  // Season filter (user rule 2026-11-12): URL value is "<season>-<poYear>",
+  // matching the H&M PO PDF's "Season:" field (e.g. "4-2026"). Both halves
+  // must parse for the filter to engage; malformed → ignored (all seasons).
+  const activeSeasonKey = (searchParams?.season || "").trim();
+  const seasonMatch = activeSeasonKey.match(/^(\d{1,2})\s*-\s*(\d{4})$/);
+  const activeSeason = seasonMatch?.[1];
+  const activePoYear = seasonMatch?.[2];
+  const seasonActive = Boolean(activeSeason && activePoYear);
+
+  // Distinct seasons on THIS contract (not every contract) — a season the
+  // contract never used would just confuse the dropdown.
+  const seasonGroups = await prisma.salesContractPo.groupBy({
+    by: ["season", "poYear"],
+    where: { contractId: contract.id, season: { not: "" }, poYear: { not: "" } },
+    _count: { _all: true },
+  });
+  const seasonOptions: SeasonOption[] = seasonGroups
+    .map((g) => ({
+      key: `${g.season}-${g.poYear}`,
+      label: `Season ${g.season} · ${g.poYear}`,
+      poCount: g._count._all,
+      sortYear: Number(g.poYear) || 0,
+      sortSeason: Number(g.season) || 0,
+    }))
+    .sort((a, b) => b.sortYear - a.sortYear || a.sortSeason - b.sortSeason)
+    .map(({ key, label, poCount }) => ({ key, label, poCount }));
+
   const [pos, folderMappings, allContracts] = await Promise.all([
     prisma.salesContractPo.findMany({
-      where: { contractId: contract.id },
+      where: {
+        contractId: contract.id,
+        ...(seasonActive ? { season: activeSeason, poYear: activePoYear } : {}),
+      },
       orderBy: { createdAt: "asc" },
       include: { pdfs: true, edits: { orderBy: { editedAt: "asc" } } },
     }),
@@ -63,13 +101,16 @@ export default async function SalesContractDetail({ params }: { params: { id: st
     <div>
       <PageHeader
         title={`Sales Contract ${contract.contractNo || contract.id.slice(0, 8)}`}
-        subtitle={`${pos.length} PO set(s) · ${readyRows} row(s) ready to export${blockedPos ? ` · ${blockedPos} BLOCKED` : ""}`}
-        actions={
-          <a href={`/api/sales-contract/${contract.id}/sheet`} download className="btn-primary text-xs">
-            ⬇ Download .xlsx
-          </a>
-        }
+        subtitle={`${pos.length} PO set(s) · ${readyRows} row(s) ready to export${blockedPos ? ` · ${blockedPos} BLOCKED` : ""}${seasonActive ? ` · season ${activeSeasonKey}` : ""}`}
       />
+
+      <div className="mb-4">
+        <SalesContractDetailSeasonFilter
+          contractId={contract.id}
+          options={seasonOptions}
+          active={activeSeasonKey}
+        />
+      </div>
 
       <div className="mb-6">
         <SalesContractHeader
@@ -100,7 +141,7 @@ export default async function SalesContractDetail({ params }: { params: { id: st
       </div>
 
       <div className="mb-6">
-        <SalesContractSheetView contractId={contract.id} />
+        <SalesContractSheetView contractId={contract.id} seasonKey={activeSeasonKey} />
       </div>
 
       <div className="mb-6 grid gap-2 sm:grid-cols-3">

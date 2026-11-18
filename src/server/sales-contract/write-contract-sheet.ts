@@ -243,15 +243,26 @@ export async function writeContractSheet(opts: WriteContractSheetOptions): Promi
  * given contract. TOD picks the earliest market TOD; commercial ref is built
  * from (contractNo, folderLetter, poYear).
  */
-export async function buildContractSheetRows(contractId: string): Promise<{
+export async function buildContractSheetRows(
+  contractId: string,
+  filter: { season?: string; poYear?: string } = {},
+): Promise<{
   header: SalesContractSheetHeader;
   rows: SalesContractSheetRow[];
 }> {
   const contract = await prisma.salesContract.findUnique({ where: { id: contractId } });
   if (!contract) throw new Error("Sales Contract not found");
 
+  // Season filter (user rule 2026-11-12): both halves must be present for the
+  // filter to apply; either alone is ignored (treated as "all seasons").
+  const seasonActive = Boolean(filter.season && filter.poYear);
   const pos = await prisma.salesContractPo.findMany({
-    where: { contractId, state: "READY", blockWrite: false },
+    where: {
+      contractId,
+      state: "READY",
+      blockWrite: false,
+      ...(seasonActive ? { season: filter.season, poYear: filter.poYear } : {}),
+    },
     orderBy: { createdAt: "asc" },
   });
 
