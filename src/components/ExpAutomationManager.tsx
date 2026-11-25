@@ -3,11 +3,20 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Fragment, useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { processExpRowsAction, retryExpRowAction, applyExpRowAction, updateExpRowAction, saveExpCredentialsAction } from "@/app/actions/exp";
+import { processExpRowsAction, retryExpRowAction, applyExpRowAction, updateExpRowAction, saveExpCredentialsAction, verifyAndResumeExpAction } from "@/app/actions/exp";
 import { fieldsForKind } from "@/server/exp-automation/types";
 import { StopProcessButton } from "@/components/StopProcessButton";
 
 export type ExpKind = "correction" | "duplicate" | "download";
+
+/** Bangladesh Bank sign-in lock state (mirrors /api/exp/auth-lock). No secrets. */
+interface ExpAuthLockView {
+  locked: boolean;
+  reason: string;
+  at: string | null;
+  username: string;
+  message: string;
+}
 
 export interface ExpCredStatusView {
   source: "store" | "env" | "none";
@@ -664,6 +673,88 @@ function CredentialsPanel({ status }: { status: ExpCredStatusView }) {
   );
 }
 
+/**
+ * Global Bangladesh Bank sign-in lock gate. Polls /api/exp/auth-lock; when the
+ * portal has rejected the saved password it shows the exact popup once, plus a
+ * persistent banner, and offers "Verify sign-in & resume" (one login attempt →
+ * unlock → resume paused jobs from the last completed record). EXP-only.
+ */
+function ExpAuthLockGate({ canManageCreds }: { canManageCreds: boolean }) {
+  const router = useRouter();
+  const [lock, setLock] = useState<ExpAuthLockView | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  const prevLocked = useRef(false);
+
+  const poll = useCallback(async () => {
+    try {
+      const r = await fetch("/api/exp/auth-lock", { cache: "no-store" });
+      if (!r.ok) return;
+      const data = (await r.json()) as ExpAuthLockView;
+      setLock(data);
+      if (data.locked && !prevLocked.current) { setDismissed(false); setMsg(null); setErr(null); } // re-pop on each new lock
+      prevLocked.current = data.locked;
+    } catch { /* keep polling */ }
+  }, []);
+
+  useEffect(() => {
+    void poll();
+    const t = setInterval(() => void poll(), 4000);
+    return () => clearInterval(t);
+  }, [poll]);
+
+  function verifyResume() {
+    setErr(null); setMsg(null);
+    startTransition(async () => {
+      const res = await verifyAndResumeExpAction();
+      if (res.error) { setErr(res.error); return; }
+      setMsg(res.message ?? "Sign-in verified.");
+      setDismissed(true);
+      await poll();
+      router.refresh();
+    });
+  }
+
+  if (!lock?.locked) return null;
+  const text = lock.message || "EXP automation is paused: Bangladesh Bank rejected the saved password.";
+  return (
+    <>
+      {!dismissed ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-md rounded-lg border border-rose-300 bg-white p-5 shadow-xl dark:border-rose-700 dark:bg-slate-900">
+            <div className="flex items-center gap-2 text-rose-700 dark:text-rose-300">
+              <span className="text-xl" aria-hidden>⚠</span>
+              <h3 className="text-base font-semibold">Bangladesh Bank Login Failed – Incorrect Password</h3>
+            </div>
+            <p className="mt-2 text-sm text-slate-700 dark:text-slate-200">
+              All EXP automation processes have been stopped. Please update the password in UCP
+              {canManageCreds ? " (EXP portal credentials panel below)" : " — ask an Admin or Commercial user to update it"}.
+            </p>
+            {err ? <div className="mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-700">{err}</div> : null}
+            {msg ? <div className="mt-2 rounded border border-emerald-200 bg-emerald-50 p-2 text-xs text-emerald-700">{msg}</div> : null}
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <button onClick={() => setDismissed(true)} className="btn-ghost btn-sm">Update password</button>
+              <button onClick={verifyResume} disabled={pending} className="btn-primary btn-sm disabled:opacity-40">{pending ? "Verifying…" : "Verify sign-in & resume"}</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <div className="rounded-md border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-700 dark:bg-rose-900/20 dark:text-rose-200">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span><strong>EXP automation is paused.</strong> {text}</span>
+          <div className="flex items-center gap-2">
+            {err ? <span className="text-xs text-rose-700 dark:text-rose-300">{err}</span> : null}
+            {msg ? <span className="text-xs text-emerald-700 dark:text-emerald-300">{msg}</span> : null}
+            <button onClick={verifyResume} disabled={pending} className="btn-primary btn-xs disabled:opacity-40">{pending ? "Verifying…" : "Verify sign-in & resume"}</button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function ExpAutomationManager({ liveEnabled, credsConfigured, canManageCreds, credStatus, autoApply, autoAcknowledge, recentJobs }: { liveEnabled: boolean; credsConfigured: boolean; canManageCreds: boolean; credStatus: ExpCredStatusView; autoApply: boolean; autoAcknowledge: boolean; recentJobs: ExpRecentJob[] }) {
   const router = useRouter();
   const [tab, setTab] = useState<ExpKind>("correction");
@@ -680,6 +771,7 @@ export function ExpAutomationManager({ liveEnabled, credsConfigured, canManageCr
 
   return (
     <div className="space-y-6">
+      <ExpAuthLockGate canManageCreds={canManageCreds} />
       {canManageCreds ? <CredentialsPanel status={credStatus} /> : null}
 
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200">

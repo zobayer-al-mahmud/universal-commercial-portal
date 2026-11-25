@@ -38,6 +38,7 @@ export type ExpOutcome =
   | "DOWNLOADED"
   | "NOT_FOUND"
   | "NEEDS_AUTH"
+  | "AUTH_FAILED" // the portal rejected the saved password — stop everything, never retry
   | "NAV_ERROR"
   | "NO_PDF"
   | "FAILED";
@@ -339,6 +340,7 @@ async function runFormFill(
 
       await emit(steps[1], "Ensuring an authenticated session.");
       auth = await ensureExpAuth();
+      if (auth.outcome === "INVALID_CREDENTIALS") return base("AUTH_FAILED", auth.message, auth);
       if (auth.outcome === "VERIFICATION_REQUIRED") return base("NEEDS_AUTH", auth.message, auth);
       if (auth.outcome === "CONFIG_MISSING") return base("FAILED", auth.message, auth);
       if (auth.outcome === "LOGIN_FAILED") return base("FAILED", auth.message, auth);
@@ -586,6 +588,7 @@ export function runDownload(row: ParsedExpRow, onProgress?: ProgressFn): Promise
 
       await emit("Signing in", "Ensuring an authenticated session.");
       auth = await ensureExpAuth();
+      if (auth.outcome === "INVALID_CREDENTIALS") return base("AUTH_FAILED", auth.message, auth);
       if (auth.outcome === "VERIFICATION_REQUIRED") return base("NEEDS_AUTH", auth.message, auth);
       if (auth.outcome !== "AUTHENTICATED") return base("FAILED", auth.message, auth);
 

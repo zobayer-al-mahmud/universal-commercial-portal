@@ -19,7 +19,8 @@ import { getExpCredentials } from "./credentials";
 
 export type AuthOutcome =
   | "AUTHENTICATED"
-  | "LOGIN_FAILED"
+  | "INVALID_CREDENTIALS" // the portal explicitly rejected the username/password (wrong password)
+  | "LOGIN_FAILED" // did not reach an authenticated page, but NOT a confirmed credential rejection (network/transient/unknown)
   | "VERIFICATION_REQUIRED"
   | "CONFIG_MISSING";
 
@@ -139,5 +140,28 @@ export async function ensureExpAuth(): Promise<AuthResult> {
   const err = await readLoginError(page);
   const changePw = await hasVisibleText(page, /change.*password|password.*expired|new password/i);
   if (changePw) return { outcome: "VERIFICATION_REQUIRED", message: "The portal is requesting a password change. Complete it in the visible browser; the run resumes once a session is valid." };
-  return { outcome: "LOGIN_FAILED", message: err ? `Portal rejected the login: ${err}` : "Login did not reach an authenticated page. Check the credentials / portal in the visible browser." };
+
+  // A visible login-error alert AFTER we submitted the credentials means the
+  // portal rejected the sign-in itself. CAPTCHA / MFA / lockout / change-password
+  // are all detected and returned ABOVE, so a remaining error alert here is a
+  // credential rejection (wrong username/password) — distinct from a network blip
+  // or a session expiry (which leave no login-error alert). Fail CLOSED: treat an
+  // explicit portal error as invalid credentials so the bad password is never
+  // retried; only a silent no-alert failure is reported as a transient LOGIN_FAILED.
+  if (err && isInvalidCredentialError(err)) {
+    return { outcome: "INVALID_CREDENTIALS", message: `Bangladesh Bank rejected the sign-in: ${err}` };
+  }
+  if (err) {
+    return { outcome: "INVALID_CREDENTIALS", message: `Bangladesh Bank rejected the sign-in: ${err}` };
+  }
+  return { outcome: "LOGIN_FAILED", message: "Login did not reach an authenticated page and the portal showed no error — this looks like a network/portal problem, not a wrong password. Check connectivity and the visible browser, then retry." };
+}
+
+/**
+ * Does a portal login-error message indicate wrong credentials (as opposed to a
+ * generic/other failure)? Used only to enrich the message — any explicit login
+ * error after a submit is treated as a credential rejection regardless.
+ */
+export function isInvalidCredentialError(text: string): boolean {
+  return /invalid\s+(login\s+)?(credential|user\s?name|user\s?id|user|password)|incorrect\s+(user\s?name|password|user|login|credential)|wrong\s+(password|user\s?name|credential)|authentication\s+fail|login\s+fail|bad\s+credential|password.*(incorrect|invalid|wrong)|credential.*(invalid|incorrect)|user.*(not\s+found|does\s+not\s+exist)/i.test(text);
 }

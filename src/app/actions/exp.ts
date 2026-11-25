@@ -3,8 +3,9 @@
 import { revalidatePath } from "next/cache";
 import { getSessionUser, userHasPermission } from "@/lib/auth";
 import { PERMISSIONS } from "@/lib/permissions";
-import { processExpRows, retryExpRow, applyExpRow, updateExpRow } from "@/server/exp-automation/batch";
+import { processExpRows, retryExpRow, applyExpRow, updateExpRow, getExpAuthLock, verifyAndResumeExp } from "@/server/exp-automation/batch";
 import { getExpCredentialStatus, saveExpCredentials, type ExpCredentialStatus } from "@/server/exp-automation/credentials";
+import type { ExpAuthLock } from "@/server/exp-automation/auth-lock";
 
 /**
  * Server actions for the EXP Automation module. Upload (multipart) is handled by
@@ -72,6 +73,36 @@ export async function updateExpRowAction(rowId: string, patch: ExpRowPatch): Pro
     return r.ok ? { ok: true } : { error: r.message };
   } catch (e) {
     return { error: e instanceof Error ? e.message : "Update failed." };
+  }
+}
+
+/* ------------------------- EXP sign-in lock / safe resume ------------------ */
+
+/** Current Bangladesh Bank sign-in lock state (for the banner/popup). No secrets. */
+export async function getExpAuthLockAction(): Promise<{ lock?: ExpAuthLock; error?: string }> {
+  const auth = await requireExpUser();
+  if ("error" in auth) return { error: auth.error };
+  try {
+    return { lock: await getExpAuthLock() };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Could not read sign-in status." };
+  }
+}
+
+/**
+ * Safe Resume: after the password was updated, verify it with ONE login attempt
+ * and, on success, unlock EXP and resume the paused job(s) from the last completed
+ * record (no duplicates). Available to EXP operators.
+ */
+export async function verifyAndResumeExpAction(): Promise<{ ok?: boolean; message?: string; resumedJobs?: number; queued?: number; error?: string }> {
+  const auth = await requireExpUser();
+  if ("error" in auth) return { error: auth.error };
+  try {
+    const r = await verifyAndResumeExp(auth.user.email);
+    revalidatePath("/modules/exp-automation");
+    return r.ok ? { ok: true, message: r.message, resumedJobs: r.resumedJobs, queued: r.queued } : { error: r.message };
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : "Verification failed." };
   }
 }
 

@@ -115,6 +115,27 @@ export const notifyReviewUpdate = safe(async (input: {
 });
 
 /**
+ * Bangladesh Bank EXP portal rejected the saved password. Every EXP automation
+ * run has been stopped (see exp-automation/batch.ts). Notifies EXP operators and
+ * ADMINs with the exact operator-facing message. Collapses to a single live item
+ * per incident (groupKey) so repeated signals never flood the bell. No secrets.
+ */
+export const notifyExpAuthFailure = safe(async () => {
+  await createNotification({
+    category: "automation",
+    level: "error",
+    title: "Bangladesh Bank Login Failed – Incorrect Password",
+    body: "All EXP automation processes have been stopped. Please update the password in UCP.",
+    link: "/modules/exp-automation",
+    entityType: "exp",
+    entityId: "auth",
+    groupKey: "exp-auth-failure",
+    actor: "system",
+    scope: { permission: PERMISSIONS.EXP_RUN, roles: ["ADMIN"] },
+  });
+});
+
+/**
  * An admin-authored system announcement / alert. Scope is chosen by the admin
  * (everyone, a role, or a permission). Never collapsed.
  */

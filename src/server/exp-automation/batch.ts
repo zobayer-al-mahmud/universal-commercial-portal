@@ -8,8 +8,16 @@ import { parseExpWorkbook } from "./excel";
 import { type ExpKind, type ParsedExpRow } from "./types";
 import { runCorrection, runDuplicate, runDownload, type ExpRowResult, type ProgressFn } from "./live-run";
 import { detachExpBrowser } from "./browser";
+import { ensureExpAuth } from "./auth";
+import { serializeExpRun } from "./nav";
+import { getExpCredentials, getExpCredentialStatus } from "./credentials";
+import { isExpAuthLocked, lockExpAuth, clearExpAuthLock, readExpAuthLock, EXP_AUTH_LOCK_MESSAGE, type ExpAuthLock } from "./auth-lock";
 import { runKey, startRun, requestCancel, isRunning, onCancel, cancelInfo, type RunHandle } from "@/server/automation/cancellation";
 import { recordError } from "@/server/monitoring/errors";
+import { notifyExpAuthFailure } from "@/server/notifications/events";
+
+/** Reason recorded when a run is stopped because Bangladesh Bank rejected the password. */
+const EXP_AUTH_STOP_REASON = "Stopped: Bangladesh Bank rejected the EXP password.";
 
 const EXP_STOP_REASON = "Stopped by the operator.";
 function expKey(jobId: string): string {
@@ -178,6 +186,10 @@ export interface ProcessResult {
  * processing. Returns immediately so the UI can poll.
  */
 export async function processExpRows(input: { jobId: string; rowIds?: string[]; actor: string; apply?: boolean }): Promise<ProcessResult> {
+  // Never start a run while the sign-in is locked (bad password). The operator
+  // must update the password and Verify & Resume first — we never retry it.
+  if (await isExpAuthLocked()) return { ok: false, queued: 0, message: EXP_AUTH_LOCK_MESSAGE };
+
   const job = await prisma.expJob.findUnique({ where: { id: input.jobId } });
   if (!job) return { ok: false, queued: 0, message: "Job not found." };
 
@@ -227,6 +239,9 @@ async function runQueue(jobId: string, actor: string, run: RunHandle, apply = fa
     // Re-fetch each loop so rows queued mid-run are also processed.
     for (;;) {
       if (run.signal.aborted) break; // Stop requested → process no more rows.
+      // Hard stop the instant the sign-in is locked (a prior row hit a bad
+      // password): never advance to another row with the known-bad credentials.
+      if (await isExpAuthLocked()) break;
       const row = await prisma.expJobRow.findFirst({ where: { jobId, status: "queued" }, orderBy: { rowNo: "asc" } });
       if (!row) break;
       if (run.signal.aborted) break;
@@ -380,6 +395,103 @@ export async function runExpRow(rowId: string, actor: string, apply = false): Pr
 
   await logEvent(rowId, result.outcome, result.ok ? "ok" : "failed", result.message, actor);
   await audit({ entityType: "exp", entityId: rowId, action: `exp.row.${status}`, actor, data: { kind: row.kind, outcome: result.outcome, authOutcome: result.auth.outcome, mismatched: result.mismatchedFields?.length ?? 0, pdfBytes: result.pdf?.bytes ?? 0 } });
+
+  // Bangladesh Bank rejected the password on this row → latch the global lock,
+  // stop every running/queued EXP run immediately, and raise the popup. Nothing
+  // retries the bad password (runQueue breaks; processExpRows/retry/apply refuse).
+  if (result.outcome === "AUTH_FAILED") {
+    await handleExpAuthFailure(row.jobId, actor).catch(() => undefined);
+  }
+}
+
+/**
+ * React to a confirmed wrong-password rejection: latch the durable sign-in lock
+ * and STOP all running/queued Bangladesh Bank EXP automation at once. Idempotent
+ * within one incident — the popup notification fires only on the first latch.
+ * BGMEA / Damco are untouched (this is EXP-only). Never exposes the password.
+ */
+async function handleExpAuthFailure(triggerJobId: string, actor: string): Promise<void> {
+  const already = await isExpAuthLocked();
+
+  // Every EXP job with work in flight — the trigger plus any other running job.
+  const active = await prisma.expJob.findMany({ where: { status: { in: ["running", "stopping"] } }, select: { id: true } });
+  const jobIds = Array.from(new Set<string>([triggerJobId, ...active.map((j) => j.id)]));
+
+  const status = await getExpCredentialStatus().catch(() => null);
+  await lockExpAuth({ reason: EXP_AUTH_STOP_REASON, username: status?.username ?? "", jobIds });
+
+  // Cancel each run. For the trigger job we are inside its own runQueue, whose
+  // `finally` will finalize it on the aborted signal; a job with no live loop in
+  // this process (e.g. after a restart) is reconciled here directly.
+  for (const id of jobIds) {
+    const key = expKey(id);
+    const live = isRunning(key);
+    requestCancel(key, EXP_AUTH_STOP_REASON);
+    if (!live) await finalizeExpStop(id, actor);
+  }
+
+  await audit({ entityType: "exp", entityId: triggerJobId, action: "exp.auth.locked", actor, data: { reason: "invalid_credentials", jobs: jobIds.length } });
+  if (!already) await notifyExpAuthFailure(); // persistent, role-scoped popup (exact spec text)
+}
+
+/** Current sign-in lock state for the UI (never includes any secret). */
+export async function getExpAuthLock(): Promise<ExpAuthLock> {
+  return readExpAuthLock();
+}
+
+/**
+ * Safe Resume: verify the SAVED credentials with ONE real login attempt and, on
+ * success, clear the lock and re-queue the rows the lock stopped — continuing from
+ * the last completed record (done rows are excluded, so nothing is duplicated). On
+ * failure the lock stays set and nothing is retried.
+ */
+export async function verifyAndResumeExp(actor: string): Promise<{ ok: boolean; message: string; resumedJobs?: number; queued?: number }> {
+  if (!env.EXP_LIVE_ENABLED) return { ok: false, message: "Live EXP automation is disabled (EXP_LIVE_ENABLED)." };
+  const creds = await getExpCredentials();
+  if (!creds) return { ok: false, message: "No EXP credentials are configured. Save the username/password first, then verify." };
+
+  // One sign-in attempt, serialized so it never collides with a running driver.
+  const auth = await serializeExpRun(() => ensureExpAuth()).catch((e) => ({ outcome: "LOGIN_FAILED" as const, message: e instanceof Error ? e.message : "Verification failed." }));
+
+  if (auth.outcome === "INVALID_CREDENTIALS") {
+    const status = await getExpCredentialStatus().catch(() => null);
+    await lockExpAuth({ reason: EXP_AUTH_STOP_REASON, username: status?.username ?? "" });
+    await audit({ entityType: "exp", entityId: "auth", action: "exp.auth.verify_failed", actor });
+    return { ok: false, message: "Bangladesh Bank still rejected the password. Update it in the Credentials panel and verify again." };
+  }
+  if (auth.outcome !== "AUTHENTICATED") {
+    // Network / CAPTCHA / MFA / change-password — keep the lock; tell the operator.
+    return { ok: false, message: auth.message || "Could not verify the sign-in. Try again, or complete any portal step in the visible browser." };
+  }
+
+  // Verified. Clear the lock, then resume exactly the jobs the lock stopped.
+  const lock = await readExpAuthLock();
+  await clearExpAuthLock();
+  await audit({ entityType: "exp", entityId: "auth", action: "exp.auth.verified", actor });
+
+  // Rows left unprocessed by the stop: still-pending, parked-stopped, and the row
+  // that hit the bad password (needs_auth). Completed rows (filled/updated/
+  // downloaded) are NOT included, so resuming never repeats or duplicates them —
+  // it continues from the last completed record. Rows that previously failed for
+  // other reasons keep their verdict (retry them individually if wanted).
+  const RESUME_STATUSES = ["pending", "stopped", "needs_auth"];
+  let resumedJobs = 0;
+  let queued = 0;
+  for (const jobId of lock.jobIds) {
+    const job = await prisma.expJob.findUnique({ where: { id: jobId }, select: { id: true, status: true } });
+    if (!job) continue;
+    // Only resume jobs still parked as stopped (don't disturb ones since finished).
+    if (job.status !== "stopped") continue;
+    const rows = await prisma.expJobRow.findMany({ where: { jobId, status: { in: RESUME_STATUSES } }, select: { id: true } });
+    if (rows.length === 0) continue;
+    const r = await processExpRows({ jobId, rowIds: rows.map((x) => x.id), actor });
+    if (r.ok) { resumedJobs++; queued += r.queued; }
+  }
+
+  const msg = resumedJobs > 0
+    ? `Sign-in verified. Resumed ${resumedJobs} paused job(s) (${queued} row(s) re-queued) from the last completed record.`
+    : "Sign-in verified with Bangladesh Bank. EXP automation is unlocked — start or resume processing when ready.";
+  return { ok: true, message: msg, resumedJobs, queued };
 }
 
 function outcomeToStatus(result: ExpRowResult, hasPdf: boolean): string {
@@ -390,6 +502,7 @@ function outcomeToStatus(result: ExpRowResult, hasPdf: boolean): string {
     case "DOWNLOADED": return hasPdf ? "downloaded" : "failed";
     case "NOT_FOUND": return "not_found";
     case "NEEDS_AUTH": return "needs_auth";
+    case "AUTH_FAILED": return "needs_auth"; // bad password — resumable once the password is fixed + verified
     default: return "failed"; // NAV_ERROR | NO_PDF | FAILED
   }
 }
@@ -399,6 +512,7 @@ const CLEAN_STATUSES = new Set(["filled", "updated", "downloaded"]);
 
 /** Retry one row (re-queues it; a serialized queue drains it). */
 export async function retryExpRow(rowId: string, actor: string): Promise<{ ok: boolean; message: string }> {
+  if (await isExpAuthLocked()) return { ok: false, message: EXP_AUTH_LOCK_MESSAGE };
   const row = await prisma.expJobRow.findUnique({ where: { id: rowId } });
   if (!row) return { ok: false, message: "Row not found." };
   if (row.status === "skipped") return { ok: false, message: "This row is invalid and cannot be processed." };
@@ -419,6 +533,7 @@ export async function retryExpRow(rowId: string, actor: string): Promise<{ ok: b
  * ticks Acknowledge. The operator clicks this per row after reviewing it.
  */
 export async function applyExpRow(rowId: string, actor: string): Promise<{ ok: boolean; message: string }> {
+  if (await isExpAuthLocked()) return { ok: false, message: EXP_AUTH_LOCK_MESSAGE };
   const row = await prisma.expJobRow.findUnique({ where: { id: rowId } });
   if (!row) return { ok: false, message: "Row not found." };
   if (row.kind === "download") return { ok: false, message: "Download rows have no Apply Changes step." };
